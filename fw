@@ -1,0 +1,143 @@
+#!/bin/zsh
+# fw — open a free-writing entry, optionally with a writing timer.
+#
+#   fw              new entry; quitting it goes home to pick the next
+#   fw -t           new entry with a 10-minute timer (also: --timer)
+#   fw -t 15        new entry with a 15-minute timer (decimals ok: -t 7.5)
+#   fw journal      open/append the entry titled "journal" (created if missing)
+#   fw journal -t   same, with a 10-minute timer
+#   fw last         append to the most recent entry
+#   fw open         start at home, a search over every entry (also: fw o)
+#   fw list         show all entries (also: fw ls)
+#   fw stop         cancel a running timer without opening anything
+#                   (also: fw s / fw cancel / fw -s)
+#
+# Entries are blocks, stored with every other block in freewrites.json; see
+# schema/block.schema.json for the shape of one. fw_store.py validates and
+# migrates the whole store on every run.
+
+dir="${0:A:h}"
+pidfile="$dir/.fw-timer.pid"
+store="$dir/fw_store.py"
+py="${FW_PYTHON:-python3}"
+
+stop_timer() {
+  [[ -f "$pidfile" ]] || return
+  local p; p="$(<"$pidfile")"
+  if [[ -n "$p" ]]; then
+    pkill -P "$p" 2>/dev/null   # the sleep child
+    kill "$p" 2>/dev/null       # the timer subshell
+  fi
+  rm -f "$pidfile"
+}
+
+usage() {
+  print -- "fw — free-writing pericopes with a writing timer.
+
+Usage:
+  fw                 new pericope; quitting it (^Q) goes home, a search over every
+                     pericope: type to filter, Enter opens, Esc quits fw
+  fw -t [minutes]    add a writing timer, 10 minutes unless given (also: --timer)
+                     works with any of these:  fw -t 15,  fw journal -t,  fw last -t 5
+  fw <title>         open/append the pericope with that title (created if missing);
+                     quote titles with spaces:  fw \"garden notes\"
+  fw last            append to the most-recently-created pericope
+  fw open            start at home                (also: fw o)
+  fw list            list every pericope         (also: fw ls)
+  fw stop            cancel a running timer       (also: fw s / cancel / -s)
+  fw help            show this message            (also: fw -h / --help)
+
+Editor:  fw_edit.py (saves as you type; ^Q home, ^Z undo, ^Y redo, Enter new block;
+         every key: KEYS.md).
+Storage: ${FW_DATA:-$dir/freewrites.json}  (shape: schema/block.schema.json;
+         \$FW_DATA picks another store)
+         validated and migrated on every run by fw_store.py"
+}
+
+# --- subcommands that don't open an editor ---------------------------
+case "$1" in
+  help|-h|--help|'-?')
+    usage
+    exit 0
+    ;;
+  stop|s|cancel|-s)
+    stop_timer
+    print -- "Timer cancelled."
+    exit 0
+    ;;
+  list|ls)
+    exec "$py" "$store" list
+    ;;
+esac
+
+# --- 'open' / 'o': choose the entry from an arrow-key menu ----------
+pick=0
+if [[ "$1" == open || "$1" == o ]]; then
+  pick=1
+  shift
+fi
+
+# --- parse args: -t [minutes] turns the timer on, anything else is the target
+number='^[0-9]+(\.[0-9]+)?$'
+timer=0
+minutes=10
+target=""
+while (( $# )); do
+  case "$1" in
+    -t|--timer)
+      timer=1
+      if [[ "$2" =~ $number ]]; then minutes="$2"; shift; fi
+      ;;
+    *)
+      if [[ "$1" =~ $number ]]; then
+        print -u2 -- "fw: for a timer use:  fw -t $1"
+        exit 1
+      elif [[ -z "$target" ]]; then
+        target="$1"
+      else
+        print -u2 -- "fw: unexpected extra argument '$1'"
+        exit 1
+      fi
+      ;;
+  esac
+  shift
+done
+
+# --- the built-in editor needs a real terminal; check before the timer starts
+if [[ ! ( -t 0 && -t 1 ) ]]; then
+  print -u2 -- "fw: needs an interactive terminal (run it in a terminal window, not through a pipe or '!')"
+  exit 1
+fi
+
+# --- validate + migrate the store before touching anything ----------
+"$py" "$store" migrate || exit 1
+
+start_timer() {   # only with -t
+  [[ "$timer" == 1 ]] || return
+  stop_timer   # clear any previous one
+  local seconds=$(( minutes * 60 ))
+  (
+    sleep "$seconds"
+    if (( $+commands[osascript] )); then
+      osascript -e 'display notification "Time is up. Pens down." with title "Free write" sound name "Glass"' 2>/dev/null
+    elif (( $+commands[notify-send] )); then
+      notify-send "Free write" "Time is up. Pens down." 2>/dev/null
+    fi
+    rm -f "$pidfile"
+  ) </dev/null >/dev/null 2>&1 &!   # detached, so it never holds the terminal or a pipe
+  print -- "$!" > "$pidfile"
+  print -- "writing for ${minutes} min.  Stop early:  fw stop"
+}
+
+# --- fw is one app: write the entry, then quitting it goes home to pick the
+# next (fw_app.py)
+if [[ "$pick" == 1 && -n "$target" ]]; then
+  print -u2 -- "fw: 'fw open' takes no title — just an optional -t timer"; exit 1
+fi
+start_timer
+if [[ "$pick" == 1 ]]; then intent=(--home)
+elif [[ -z "$target" ]]; then intent=(--new)
+elif [[ "$target" == last ]]; then intent=(--last)
+else intent=(--title "$target")
+fi
+"$py" "$dir/fw_app.py" "${intent[@]}"

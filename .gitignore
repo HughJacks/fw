@@ -1,0 +1,12 @@
+# your writing and what fw keeps beside it
+freewrites.json
+freewrites.json.bak
+*.json.bak
+.freewrites.lock
+.fw-*
+images/
+# python and tests
+__pycache__/
+tests/.venv/
+.DS_Store
+PUBLISHING-NOTES.md
