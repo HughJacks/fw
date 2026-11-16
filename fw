@@ -20,6 +20,7 @@ dir="${0:A:h}"
 pidfile="$dir/.fw-timer.pid"
 store="$dir/fw_store.py"
 py="${FW_PYTHON:-python3}"
+[[ -z "$FW_PYTHON" && -x "$dir/.venv/bin/python" ]] && py="$dir/.venv/bin/python"  # fw's own Python, with loro (the store: fw_loro)
 
 stop_timer() {
   [[ -f "$pidfile" ]] || return

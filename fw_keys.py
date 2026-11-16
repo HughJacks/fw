@@ -46,6 +46,7 @@ KEYMAP = {
         "ctrl+c": "copy", "ctrl+x": "cut", "ctrl+v": "paste", "ctrl+shift+v": "paste_static",
         "ctrl+z": "undo", "ctrl+y": "redo",
         "ctrl+q": "quit",
+        "ctrl+[": "go_back", "ctrl+]": "go_forward",  # (Ctrl+[ apart from Esc only with the kitty protocol, which fw asks for)
         "ctrl+/": "palette", "alt+/": "palette",
         "esc": "escape",
         # the menu's commands (named by the method they run), where the menu would offer them
@@ -53,6 +54,7 @@ KEYMAP = {
         "ctrl+t": "pop_out", "ctrl+shift+t": "pop_out_open", "alt+t": "detach",
         "ctrl+o": "open_source",
         "ctrl+k": "link_entry", "ctrl+shift+k": "remove_link",
+        "ctrl+l": "toggle_lock",
         "ctrl+d": "delete_entry",
     },
     "mask": {
@@ -66,11 +68,22 @@ KEYMAP = {
         "up": "prev_field",
         "esc": "leave_field",
     },
+    "kinds": {  # the header's kinds line: the block's kinds as tokens, and a + at the end
+        "down": "next_field", "tab": "next_field", "up": "prev_field", "esc": "leave_field",
+        "left": "prev_kind", "right": "next_kind",
+        "enter": "confirm_kind", "ctrl+o": "open_kind",
+        "backspace": "remove_kind", "delete": "remove_kind",
+    },
+    "review": {  # a kind's maybe, open to be answered (from the kind's maybes line); arrows move, nothing types
+        "enter": "review_yes", "backspace": "review_no", "delete": "review_no",
+        "tab": "review_skip", "ctrl+z": "review_back", "ctrl+q": "review_stop",
+    },
     "picker": {
         "enter": "pick", "tab": "pick", "shift+enter": "pick_masked",
         "right": "show_blocks", "left": "hide_blocks",
         "esc": "cancel",
         "ctrl+d": "delete_entry",
+        "ctrl+g": "toggle_view",
     },
 }
 # not keys, but they arrive the same way
@@ -109,6 +122,8 @@ def char_key(c: str) -> str | None:
         return "tab"
     if c == "\x1f":
         return "ctrl+/"
+    if c == "\x1d":
+        return "ctrl+]"
     if "\x01" <= c <= "\x1a":
         return "ctrl+" + chr(ord(c) + 96)
     return c if c >= " " else None
@@ -216,8 +231,15 @@ SECTIONS = {
                "shows where ↓ or ↑ from that edge lands."),
     "mask": ("Masking mode (Create mask / Edit mask)", "No typing: the text stays as it is. Arrows move, into a box "
              "inside too, to mask that quote as seen through this one (anything its source hides is a locked …)."),
-    "header": ("The header", "Moving, deleting, pasting and typing edit the field, as in the text."),
-    "picker": ("Menus and search", "The `/` menu, Quote a block, and home. Typing filters; "
+    "header": ("The header", "Moving, deleting, pasting and typing edit the field, as in the text. "
+               "A kind's title is its name: changed as you leave it."),
+    "kinds": ("The kinds line", "In the header, above the title: what the block is, a token per kind "
+              "(a yes white on blue, a no \"not …\" muted), then a model's guesses, dim blue with a ?, "
+              "\"poem?\". Typing opens the kinds picker with it typed."),
+    "review": ("Reviewing a kind's maybes", "Enter on a kind's maybes line (in its header: the blocks a model "
+               "guesses might be one, from 50% up, likeliest first) opens each in turn, where it lives, the bar "
+               "saying \"poem? 93% · 3 of 12\". Arrows and the wheel move and scroll; nothing types."),
+    "picker": ("Menus and search", "The `/` menu, Quote a block, the kinds picker, and home. Typing filters; "
                "↑ ↓ choose."),
 }
 # what each action does, per context. An action listed for a context it
@@ -248,6 +270,8 @@ DOES = {
         "paste_static": "paste blocks copied whole as static copies: plain blocks, a quote as the text it showed",
         "undo": "undo a whole action, store included; after Open it, once nothing's left, steps back", "redo": "redo",
         "quit": "go home; after Open it, step back",
+        "go_back": "back: as ^Q (a step back along the Open it trail, or home), and what you left can be gone forward to again",
+        "go_forward": "forward again, to where you went back from (at the place you were); from home too; anything opened anew clears what's ahead",
         "palette": "the menu of actions on the block you're in, anywhere",
         "escape": "selects the block you're in whole (inside a quote too); again, the quote around it",
         "edit_mask": "Create mask / Edit mask, on the quote selected or the one you're in",
@@ -258,6 +282,7 @@ DOES = {
         "open_source": "Open it: the quote selected or the one you're in, or the link the cursor's on, as the pericope",
         "link_entry": "Link to a pericope: the selection (in one block) points to a pericope you pick, or a new one",
         "remove_link": "Remove link: the one the cursor's on (the text stays)",
+        "toggle_lock": "Lock / Unlock writing through: the quote selected or the one you're in (through a locked one, what writes says locked)",
         "delete_entry": "delete this pericope (asks first; quotes of it keep their text)",
     },
     "blocks": {
@@ -283,17 +308,27 @@ DOES = {
         "palette": "nothing (finish the mask first)",
     },
     "header": {"next_field": "the field below, or back to the text from the last one",
-               "open_field": "on backlinks: the list of the blocks pointing here, Enter opens one; elsewhere as next_field",
+               "open_field": "on backlinks: the list of the blocks pointing here, Enter opens one; on a kind's maybes: review them, one block at a time; elsewhere as next_field",
                "prev_field": "the field above", "leave_field": "back to the text",
                "paste": "paste its first line"},
-    "picker": {"pick": "run it / open it / quote it (a block inside a pericope: home opens the pericope at it; Quote a block makes it a pericope of its own, quoted here and where it was; a place that quotes a match: home opens it at the quote, Quote a block quotes the match)",
-               "pick_masked": "Quote a block, on a block inside a pericope: quote its pericope, masked to just that block",
+    "kinds": {"next_field": "the field below", "prev_field": "the field above", "leave_field": "back to the text",
+              "prev_kind": "the kind before", "next_kind": "the kind after, then the + at the end",
+              "confirm_kind": "on a guess: confirm it (it is one, a yes); on a kind: open it (^Q comes back); on the +: the kinds picker",
+              "open_kind": "on a kind or a guess: open it (^Q comes back); on the +: the kinds picker",
+              "remove_kind": "on a kind: take that answer back; on a guess: deny it (it isn't one, a no: \"not …\"); on the +: onto the last kind"},
+    "review": {"review_yes": "it is one (a yes), on to the next", "review_no": "it isn't (a no), on to the next",
+               "review_skip": "no answer, on to the next", "review_back": "back to the one before, its answer taken back",
+               "review_stop": "stop: back to the kind (each answer one ^Z there)"},
+    "picker": {"pick": "run it / open it / quote it / it is one, in the kinds picker (+ new kind: makes it; on home, a proposed kind: makes it and reviews its members) (a block inside a pericope: home opens the pericope at it; Quote a block makes it a pericope of its own, quoted here and where it was; a place that quotes a match: home opens it at the quote, Quote a block quotes the match)",
+               "pick_masked": "Quote a block, on a block inside a pericope: quote its pericope, masked to just that block; the kinds picker: it isn't one (a no)",
                "show_blocks": "home and Quote a block, on a pericope: list all the blocks inside it, under it",
                "hide_blocks": "home and Quote a block: hide them again (from the pericope or one of its blocks)",
                "cancel": "close (the `/` menu leaves what you typed, as text; home quits)",
                "backspace": "with nothing typed: closes the menu; in Quote a block, back to the menu",
                "quit": "home: quit",
-               "delete_entry": "home: delete the pericope selected (asks first; quotes of it keep their text)"},
+               "toggle_view": "home's garden: cards in a grid, or a list (a row each), and back",
+               "go_forward": "home: forward again, to the pericope you went back from",
+               "delete_entry": "home: delete the pericope selected (asks first; quotes of it keep their text); on a proposed kind's row (\"? a kind: …\"), dismiss it (asks first)"},
 }
 # keys that aren't bindings: typed characters with a meaning in one place, and the mouse
 NOTES = {
@@ -309,7 +344,7 @@ COMMANDS = ("Commands in the menu, shown only where they fit, each with its key:
             "Create mask / Edit mask (masking mode: brackets only, no typing; arrow into a box inside to mask "
             "it as seen through this quote) · Remove mask · Open it · Its top line… (Show / Hide its title, date, "
             "last update, word count; found by search too, and the menu stays open to toggle more) · "
-            "Turn into text · Turn into a quote (with a selection, just it, nested where it was) · Turn into a quote "
+            "Lock writing through / Unlock writing through (stays open) · Turn into text · Turn into a quote (with a selection, just it, nested where it was) · Turn into a quote "
             "and open it · Link to a pericope · Remove link. A command's key does nothing "
             "where the menu wouldn't offer it.")
 

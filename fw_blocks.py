@@ -125,6 +125,8 @@ class BlockPicking:
         if not (0 <= p.anchor < len(units) and 0 <= p.at < len(units)):
             self.picked = None  # the buffer changed under it
             return self.key_text(name, act)
+        if self.refuse(act):  # (through a locked quote: selecting and copying only)
+            return False
         if act == "escape" and self.stack:  # inside a quote: the quote around them, selected
             self.picked = None
             self.leave()

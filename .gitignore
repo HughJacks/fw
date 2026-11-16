@@ -1,5 +1,9 @@
 # your writing and what fw keeps beside it
 freewrites.json
+freewrites.loro
+.freewrites.*
+kind-*.json
+.venv/
 freewrites.json.bak
 *.json.bak
 .freewrites.lock

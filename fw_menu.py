@@ -21,7 +21,7 @@ from typing import NamedTuple
 
 import fw_store as store
 import fw_keys as keys
-from fw_picker import NEW, Picker, blocks_inside, new_label
+from fw_picker import NEW, Picker, blocks_inside, new_kind_label, new_label
 from fw_screen import draw_box, swidth
 from fw_state import Menu
 from fw_store import atom_id, is_atom, quote_line
@@ -39,7 +39,13 @@ class Command(NamedTuple):
 RUNS = {"mask": "edit_mask", "showall": "show_all", "open": "open_source",
         "detach": "detach", "popout": "pop_out", "popopen": "pop_out_open",
         "link": "link_entry", "unlink": "remove_link",
-        "paraphrase": "paraphrase_of", "unparaphrase": "not_paraphrase", "paraphrase_it": "paraphrase_it"}
+        "paraphrase": "paraphrase_of", "unparaphrase": "not_paraphrase", "paraphrase_it": "paraphrase_it",
+        "lock": "toggle_lock"}
+# what a lock refuses (fw_block.locked_by): commands that write in the block you're in, and those that
+# change the quote's own properties (refused only when that quote is itself inside a lock)
+WRITE_CMDS = {"quote", "image", "detach", "popout", "popopen", "link", "unlink",
+              "paraphrase_it", "paraphrase", "unparaphrase"}
+OWN_CMDS = {"mask", "showall", "group:topline", "lock"}
 
 
 def shortcut(cmd: Command) -> str:
@@ -68,7 +74,9 @@ class Commands:
         new one, quoted here."""
         refs = self.quote_refs()
         picker = Picker(self.library, refs, pinned=[(NEW, new_label)] if self.self_id else [],
-                        inside=self.quote_inside(refs))
+                        inside=self.quote_inside(refs), guesses=self.guesses(),
+                        applied=store.learned(store.load_guesses()))
+        picker.blue = self.ink.blue
         picker.sel = picker.first_result()
         def footer(k):
             if store.quoted(self.library.get(k)):
@@ -81,14 +89,15 @@ class Commands:
         picker.footer = footer
         self.palette = Menu("block", picker=picker)
 
-    def commands(self, slash: bool = False) -> list:
+    def commands(self, slash: bool = False, every: bool = False) -> list:
         """The menu's commands that fit where the cursor is, as Commands: the
         / menu's put a block in here (inserts), Ctrl+/'s act on the block
-        you're in (actions); none is in both."""
+        you're in (actions); none is in both. Those a lock refuses here are
+        left out (`every`: kept)."""
         line = self.lines[self.cy]
         q = self.quote_at(line)
         if slash:
-            return self.inserts(line)
+            return [c for c in self.inserts(line) if every or not self.lock_refuses(c)]
         cmds = []
         if self.stack or (q and self.enterable(self.cy)):
             here = q[1] if q else self.quote_at(self.stack[-1].lines[self.stack[-1].anchor])[1]
@@ -118,6 +127,12 @@ class Commands:
                 on = k in self.show_of(shows[1])
                 cmds.append(Command(f"show:{k}", f"{'Hide' if on else 'Show'} its {SHOW_NAMES[k]}",
                                     "in its top line", group="topline", stays=True))
+            if store.quote_lock(self.library.get(shows[1])):
+                cmds.append(Command("lock", "Unlock writing through", "what it shows can be changed here again",
+                                    stays=True))
+            else:
+                cmds.append(Command("lock", "Lock writing through", "what it shows can't be changed from here",
+                                    stays=True))
         if q:
             cmds.append(Command("detach", "Turn into text", "a plain copy, no longer live"))
         elif (line.strip() or self.selection()) and self.self_id and not self.vmode:
@@ -136,7 +151,15 @@ class Commands:
             cmds.append(Command("paraphrase", "Paraphrases…", "mark this block as a paraphrase of another"))
         if para:
             cmds.append(Command("unparaphrase", "Not a paraphrase", "your words stay, no longer pointing"))
-        return cmds
+        return [c for c in cmds if every or not self.lock_refuses(c)]
+
+    def lock_refuses(self, cmd: Command) -> bool:
+        """Whether a locked quote keeps `cmd` from running here: it writes in
+        the block you're in, through a lock; or it changes the quote's own
+        properties, and that quote is itself inside a lock."""
+        if cmd.name in OWN_CMDS or cmd.name.startswith("show:"):
+            return self.quote_locked()
+        return cmd.name in WRITE_CMDS and self.locked()
 
     def mark_target(self) -> str | None:
         """The block a paraphrase mark would go on, at the cursor: its block of
@@ -256,7 +279,10 @@ class Commands:
             if self.self_id and not self.medit:
                 self.ask_delete()
             return
-        if not self.medit and any(RUNS.get(c.name) == act for c in self.commands()):
+        offered = [] if self.medit else [c for c in self.commands(every=True) if RUNS.get(c.name) == act]
+        if offered and self.lock_refuses(offered[0]):
+            self.message = "locked"
+        elif offered:
             getattr(self, act)()
         else:
             self.message = "not here"
@@ -316,7 +342,9 @@ class Commands:
             return
         if p.picker is not None:
             done = p.picker.key(act)
-            if done == "back":
+            if done == "back" and p.stage == "kinds":
+                self.palette = None
+            elif done == "back":
                 self.open_menu(True)
             elif done == "cancel":
                 self.palette = None
@@ -324,6 +352,12 @@ class Commands:
                 self.palette = None
                 if done[1] != NEW:
                     self.set_mark(p.mark, p.picker.source(done[1]))
+            elif done and p.stage == "kinds":
+                if done[1] == NEW and not p.picker.query.strip():
+                    self.message = "type the new kind's name first"
+                    return
+                self.palette = None
+                self.answer_kind(None if done[1] == NEW else done[1], done[0] == "pick", p.picker.query)
             elif done and p.stage == "backlinks":
                 self.palette = None
                 self.follow_backlink(p.found[int(done[1])])
@@ -416,7 +450,8 @@ class Commands:
             picker = p.picker
             bh = picker.height(PALETTE_ROWS)
             y0 = cur_y + 1 if cur_y + 1 + bh <= h - 1 else max(cur_y - bh, 0)
-            prompt = {"link": "link › ", "backlinks": "backlinks › ", "paraphrase": "paraphrases › "}.get(p.stage, "quote › ")
+            prompt = {"link": "link › ", "backlinks": "backlinks › ", "paraphrase": "paraphrases › ",
+                      "kinds": "kinds › "}.get(p.stage, "quote › ")
             return picker.draw(scr, y0, x0, bw, PALETTE_ROWS, prompt)
         items = self.menu_items()
         rows = [(c.name, c.label, shortcut(c)) for c in items]
@@ -498,6 +533,23 @@ class Commands:
         self.base.update(h)
         self.step(record)
         self.refresh_library()
+
+    def toggle_lock(self) -> None:
+        """Lock writing through the quote (the one selected, else the one
+        you're in), or unlock it: one undo step."""
+        _, qid = self.quote_here()
+        on = not store.quote_lock(self.library.get(qid))
+        if self.dirty():
+            self.save()
+        try:
+            h, record = store.set_quote_lock(qid, on)
+        except store.StoreError as e:
+            self.message = str(e)
+            return
+        self.base.update(h)
+        self.step(record)
+        self.refresh_library()
+        self.message = "no writing through it now" if on else "writing through it again"
 
     def ask_delete(self) -> None:
         """Delete this entry: asked first (it can't be undone); confirm_key answers."""
@@ -741,9 +793,39 @@ class Commands:
             x = found[int(k)]
             where = self.library.get(x["home"], {}).get("title", "?")
             when = store.pretty_time(x["created"]) if x["created"] else "undated"
-            return f"{x['kind']} in {where}", when
+            return f"{store.BACKLINK_NAMES[x['kind']][0]} in {where}", when
         self.palette = Menu("backlinks", picker=Picker(self.library, [str(n) for n in range(len(found))], label=label),
                             found=found)
+
+    def open_kinds(self, typed: str = "") -> None:
+        """The kinds picker, from the kinds line: the kinds (blue), newest
+        first, filtered by what's typed (`typed`, to start with), and + new
+        kind, named with it. Enter: the block is one; Shift+Enter: it isn't."""
+        refs = sorted((k for k in store.kind_ids(self.library) if k != self.self_id), reverse=True)
+        picker = Picker(self.library, refs, pinned=[(NEW, new_kind_label)])
+        picker.blue = self.ink.blue
+        picker.footer = lambda k: "↵ make it, and it is one · ⇧↵ … it isn't" if k == NEW else "↵ it is one · ⇧↵ it isn't"
+        for ch in typed:
+            picker.key(ch)
+        picker.sel = picker.first_result()
+        self.palette = Menu("kinds", picker=picker)
+
+    def answer_kind(self, kind: str | None, answer: bool | None, name: str = "") -> None:
+        """Say what the open block is (store.set_kind): `kind` is one (True),
+        isn't (False) or no answer (None); `kind` None: a new kind called
+        `name`. One undo step, the kind made included. The kinds line's
+        cursor goes to its + (to add another)."""
+        if self.dirty():
+            self.save()
+        try:
+            _, record = store.set_kind(self.self_id, kind, answer, name)
+        except store.StoreError as e:
+            self.message = str(e)
+            return
+        self.step(record)
+        self.refresh_library()
+        if self.fedit is not None and answer is not None:
+            self.fedit.x = len(self.kind_chips(True)) - 1
 
     def follow_backlink(self, x: dict) -> None:
         """Open the entry backlink `x` is in, at it (on the trail, as Open it)."""

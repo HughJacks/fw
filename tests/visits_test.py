@@ -55,14 +55,14 @@ same("merging two copies (a sync): a union, each side's new visits counted",
 # --- migration v14 → v15
 fresh()
 d = json.load(open(os.environ["FW_DATA"]))
-check("the store is v15", d["schemaVersion"] == 15 == M.SCHEMA_VERSION, d["schemaVersion"])
+check("the store is v15 (or later)", d["schemaVersion"] == M.SCHEMA_VERSION >= 15, d["schemaVersion"])
 v14 = {**d, "schemaVersion": 14}
 up = M.upgrade(copy.deepcopy(v14))
 check("v14 → v15: marked to be saved, the blocks as they were (no visits yet)",
-      up["schemaVersion"] == 15 and up.get("upgraded") and up["blocks"] == d["blocks"] and not any("visits" in b for b in up["blocks"]))
+      up["schemaVersion"] == M.SCHEMA_VERSION and up.get("upgraded") and up["blocks"] == d["blocks"] and not any("visits" in b for b in up["blocks"]))
 json.dump(v14, open(os.environ["FW_DATA"], "w")); S.cmd_migrate(None)
 d2 = json.load(open(os.environ["FW_DATA"]))
-check("  migrate saves it: v15, same blocks", d2["schemaVersion"] == 15 and len(d2["blocks"]) == len(d["blocks"]))
+check("  migrate saves it: current, same blocks", d2["schemaVersion"] == M.SCHEMA_VERSION and len(d2["blocks"]) == len(d["blocks"]))
 spec = S.load_schema()["properties"]["visits"]
 check("the schema describes it, readOnly", spec["readOnly"] is True and set(spec["properties"]) == {"total", "first", "recent"})
 bad = S.validate({"total": 1, "first": M0, "recent": [[M0, "x"]]}, spec)
@@ -184,4 +184,13 @@ at(T0 + 10); tick(f)
 leave(f)
 same("an empty new pericope is still discarded", len(S.load_data()["blocks"]), n)
 
+# --- two machines (the store a Loro document): visits merge as a union
+base = blk(CH, "same"); base["visits"] = {"total": 1, "first": M0, "recent": [[M0, "o"]]}
+lap, mini = copy.deepcopy(base), copy.deepcopy(base)
+lap["visits"] = S.add_visits(lap["visits"], {M0 + 30: "c"}); mini["visits"] = S.add_visits(mini["visits"], {M0 + 60: "w"})
+same("merged: visits on both sides a union, both counted", F.loro_merge(base, lap, mini)["visits"],
+     {"total": 3, "first": M0, "recent": [[M0, "o"], [M0 + 30, "c"], [M0 + 60, "w"]]})
+edited = {**copy.deepcopy(mini), "content": "edited on the mini", "updated": "2026-11-01T10:00:00-04:00"}
+out = F.loro_merge(base, lap, edited)
+check("  an edit on one side kept, with both sides' visits", out["content"] == "edited on the mini" and len(out["visits"]["recent"]) == 3, out)
 F.report("VISITS")

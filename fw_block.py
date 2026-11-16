@@ -62,22 +62,64 @@ def index(data: dict) -> dict:
 #
 #   Text    "a string"
 #   Blocks  ["<id>", "<id>", …]                 its children, in order
-#   Quote   {"quote": "<id>", "mask": [ … ], "show": [ … ], "inner": {"<quote id>": [ … ]}}
+#   Quote   {"quote": "<id>", "mask": [ … ], "show": [ … ], "inner": {"<quote id>": [ … ]}, "lock": true}
 #                                               a live view of another block; `show`: which of
 #                                               its properties its box's top line shows; `inner`:
 #                                               masks of the quotes inside what it shows, seen
-#                                               through it (each only hides more)
+#                                               through it (each only hides more); `lock`: no
+#                                               writing through it (locked_by)
+#   Image   {"image": "<file>"}                 one picture
+#   Kind    {"kind": "<name>", "blocks": ["<id>", …]}
+#                                               what a block can be (a poem, a to-do): a short
+#                                               name, and a description made of child blocks,
+#                                               held as a Blocks block holds its children
 #
 # The functions below take a block apart by which of these it is (match).
 # A mask, as the code works with it, is anchors into the target's draft
 # (fw_lens); on disk it's per block (masks_out, masks_in).
 
 def children(b: dict | None) -> list:
-    """A Blocks block's children (ids), else none."""
+    """A Blocks block's children (ids), or a Kind's (its description), else none."""
     match b.get("content") if b else None:
-        case list(kids):
+        case list(kids) | {"kind": str(), "blocks": list(kids)}:
             return kids
     return []
+
+
+def kind_of(b: dict | None) -> str | None:
+    """A Kind block's name, else None."""
+    match b.get("content") if b else None:
+        case {"kind": str(name), "blocks": list()}:
+            return name
+    return None
+
+
+def block_type(b: dict | None) -> str:
+    """What block `b` is, by its content's case (the header's type, derived,
+    never stored): "text", "image", "kind", "quote", or "block" (it holds
+    blocks)."""
+    match b.get("content") if b else None:
+        case str():
+            return "text"
+        case {"image": str()}:
+            return "image"
+        case {"kind": str(), "blocks": list()}:
+            return "kind"
+        case {"quote": str()}:
+            return "quote"
+    return "block"
+
+
+def type_label(b: dict | None) -> str:
+    """Block `b`'s type as its header's top line shows it: a kind's says
+    which, "kind: poem"."""
+    return f"kind: {kind_of(b)}" if kind_of(b) is not None else block_type(b)
+
+
+def with_children(b: dict, kids: list) -> None:
+    """Give block `b` these children: a Kind keeps its name, anything else becomes Blocks."""
+    name = kind_of(b)
+    b["content"] = {"kind": name, "blocks": kids} if name is not None else kids
 
 
 def quoted(b: dict | None) -> tuple | None:
@@ -114,6 +156,26 @@ def quote_show(b: dict | None) -> list:
         case {"quote": str(), "show": list(show)}:
             return [k for k in SHOWABLE if k in show]
     return []
+
+
+def quote_lock(b: dict | None) -> bool:
+    """Whether Quote block `b` is locked: no writing through it (not, if it isn't a quote)."""
+    match b.get("content") if b else None:
+        case {"quote": str(), "lock": True}:
+            return True
+    return False
+
+
+def locked_by(blocks: dict, path: list) -> str | None:
+    """The quote that keeps you from writing at the end of `path`, the quote
+    blocks open from the pericope inward, outermost first (a place in the
+    pericope: []; inside the last of them: all of them): the outermost one
+    that's locked, else None, and you can write there. Everything shown
+    through a locked quote is locked too, at any depth; a locked quote
+    inside an unlocked one locks itself and what's under it. A quote's own
+    properties (its mask, top line, lock) are written in the block that
+    holds it: free when the path to it, without it, is."""
+    return next((q for q in path if quote_lock(blocks.get(q))), None)
 
 
 def quote_inner(b: dict | None) -> dict:
@@ -247,8 +309,8 @@ def own_text(blocks: dict, ref: str, seen: frozenset = frozenset()) -> str:
     match b.get("content", ""):
         case str(text):
             return text
-        case list(kids):
-            return "\n".join(own_text(blocks, k, seen | {ref}) for k in kids
+        case list() | {"kind": str(), "blocks": list()}:
+            return "\n".join(own_text(blocks, k, seen | {ref}) for k in children(b)
                              if not (quoted(blocks.get(k)) or image_of(blocks.get(k))))
     return ""
 
@@ -265,9 +327,9 @@ def block_items(blocks: dict, ref: str, seen: frozenset = frozenset(), inner: di
     match b.get("content", ""):
         case str(text):
             return [("text", text)]
-        case list(kids):
+        case list() | {"kind": str(), "blocks": list()}:
             out = []
-            for k in kids:
+            for k in children(b):
                 if quoted(blocks.get(k)):
                     out.append(seen_quote(blocks, k, inner))
                 elif image_of(blocks.get(k)):
@@ -328,8 +390,8 @@ def block_draft(blocks: dict, ref: str) -> str:
     match blocks[ref].get("content", ""):
         case str(text):
             return text
-        case list(kids):
-            return "\n".join(child_lines(blocks, kids))
+        case list() | {"kind": str(), "blocks": list()}:  # (a kind: its description's blocks)
+            return "\n".join(child_lines(blocks, children(blocks[ref])))
     return ""  # a quote is drafted where it's quoted, as its line
 
 
@@ -423,8 +485,9 @@ def backlinks(blocks: dict, ref: str) -> list:
     """The blocks pointing at `ref` itself, oldest first: each quote of it
     (masked or not: a masked quote of a block holding `ref` points at that
     block, not at `ref`) and each hyperlink to it, in a block some entry
-    reaches, and each block marked as a paraphrase of it. Each a dict: kind
-    ("quote", "masked quote", "link", "paraphrase"), `by` (the
+    reaches, each block marked as a paraphrase of it, and, for a kind, each
+    block you said is one. Each a dict: kind ("quote", "masked quote",
+    "link", "paraphrase", "kind": BACKLINK_NAMES says them), `by` (the
     pointing block), `home` and `at` (the entry it's in, and where in that
     entry's draft, as home_of), `created` (a quote's block's; a link's own,
     None before links were dated)."""
@@ -434,6 +497,7 @@ def backlinks(blocks: dict, ref: str) -> list:
         points = [("masked quote" if q[1] is not None else "quote", b.get("created"), 0)] if q and q[0] == ref else []
         points += [("link", link.get("created"), link["at"][0]) for link in links(b) if link["to"] == ref]
         points += [("paraphrase", b.get("created"), 0)] if paraphrases(b) == ref else []
+        points += [("kind", b.get("created"), 0)] if kinds_of(b).get(ref) is True else []
         if not points:
             continue
         home, start = home_of(blocks, i)
@@ -443,13 +507,17 @@ def backlinks(blocks: dict, ref: str) -> list:
     return sorted(out, key=lambda x: (x["created"] or "", x["by"]))
 
 
+BACKLINK_NAMES = {"quote": ("quote", "quotes"), "masked quote": ("masked quote", "masked quotes"),
+                  "link": ("link", "links"), "paraphrase": ("paraphrase", "paraphrases"),
+                  "kind": ("block of this kind", "blocks of this kind")}  # (one, more than one)
+
+
 def backlink_summary(found: list) -> str:
     """e.g. "3 · 1 quote, 1 masked quote, 1 link", or "none"."""
     if not found:
         return "none"
-    kinds = [k for k in ("quote", "masked quote", "link", "paraphrase") if any(x["kind"] == k for x in found)]
-    counts = [f"{sum(x['kind'] == k for x in found)} {k}{'s' if sum(x['kind'] == k for x in found) > 1 else ''}" for k in kinds]
-    return f"{len(found)} · " + ", ".join(counts)
+    counts = [(sum(x["kind"] == k for x in found), names) for k, names in BACKLINK_NAMES.items()]
+    return f"{len(found)} · " + ", ".join(f"{n} {names[n > 1]}" for n, names in counts if n)
 
 
 def families(blocks: dict) -> dict:
@@ -568,6 +636,12 @@ def with_show(b: dict, show: list) -> None:
     b["content"] = {**rest, "show": [k for k in SHOWABLE if k in show]} if show else rest
 
 
+def with_lock(b: dict, on: bool) -> None:
+    """Lock Quote block `b` (or unlock it: no `lock`)."""
+    rest = {k: v for k, v in b["content"].items() if k != "lock"}
+    b["content"] = {**rest, "lock": True} if on else rest
+
+
 def quote_items(blocks: dict, ref: str, mask: list | None, seen: frozenset = frozenset(),
                 inner: dict | None = None) -> list:
     """What a quote of `ref` shows: its items, or with a mask, the items of
@@ -613,16 +687,18 @@ def loose(blocks: dict, ref: str, holders: set | None = None) -> bool:
 
 
 def is_empty_untitled(blocks: dict, ref: str) -> bool:
-    """No text, no written title and no quotes or images: nothing worth keeping."""
+    """No text, no written title and no quotes or images: nothing worth
+    keeping (a kind always is: it has its name)."""
     b = blocks[ref]
-    return (not own_text(blocks, ref).strip() and not b.get("title")
+    return (kind_of(b) is None and not own_text(blocks, ref).strip() and not b.get("title")
             and not any(item[0] in ("quote", "image") for item in block_items(blocks, ref)))  # (one nested in a child too)
 
 
 def display_title(blocks: dict, ref: str) -> str | None:
-    """The written title, else one derived from the first line, else from
-    what else it holds ("picture", for a block with no text but a picture)."""
-    return (blocks[ref].get("title") or derive_title(own_text(blocks, ref))
+    """A kind's name (it's its title), else the written title, else one
+    derived from the first line, else from what else it holds ("picture",
+    for a block with no text but a picture)."""
+    return (kind_of(blocks[ref]) or blocks[ref].get("title") or derive_title(own_text(blocks, ref))
             or ("picture" if any(item[0] == "image" for item in block_items(blocks, ref)) else None))
 
 
@@ -756,3 +832,306 @@ def note_visits(pending: dict, records: dict) -> dict:
 def ended(live: dict, at: float) -> set:
     """The visits under way that have ended by `at`: VISIT_GAP without attention."""
     return {i for i, (_, last) in live.items() if at - last > VISIT_GAP}
+
+
+# --- the garden: what home shows first ------------------------------------------
+#
+# A small FSRS-style memory per block, read from its visits (never stored):
+# each visit is a review, graded by what happened in it (written in counts
+# most, a glance least). Stability S (days) grows most when a visit comes
+# after the block had started to fade; retrievability R = (1 + t/(9S))^-1 is
+# how well it's still in mind t days after the last visit. The garden puts
+# the recently active first, then what has dropped out of memory (R under
+# FADED_AT), the most rehearsed first, then the rest by last activity.
+
+RECENT_DAYS = 7      # active this recently: "recent"
+FADED_AT = 0.9       # R under this: dropped out of memory (FSRS's usual target retention)
+RESURFACE = 12       # at most this many resurfacing cards
+TOP = 10             # the first cards: recent and resurfacing taken in turn
+GRADE = {"w": 1.0, "c": 0.7, "q": 0.6, "o": 0.4}  # a visit's weight, by its strongest flag
+S_FIRST = 1.0        # stability (days) after the first visit or the writing
+
+
+def iso_minute(stamp: str | None) -> int | None:
+    """An ISO `created`/`updated` stamp as minutes since the epoch (None if unreadable)."""
+    try:
+        return int(datetime.fromisoformat(stamp).timestamp() // 60)
+    except (TypeError, ValueError):
+        return None
+
+
+def grade(flags: str) -> float:
+    return max((GRADE[f] for f in flags if f in GRADE), default=GRADE["o"])
+
+
+def retrievability(stability: float, days: float) -> float:
+    return (1 + max(days, 0) / (9 * stability)) ** -1
+
+
+def memory(b: dict | None, now_min: int) -> tuple[float, float]:
+    """(stability in days, retrievability now) of block `b`, replayed from its
+    visits (its `created` stands for the first if it has none)."""
+    rs = visits(b)
+    first = ((b or {}).get("visits") or {}).get("first")
+    reviews = [(m, f) for m, f in rs]
+    if first is not None and (not reviews or first < reviews[0][0]):
+        reviews.insert(0, (first, "o"))
+    if not reviews:
+        made = iso_minute((b or {}).get("created"))
+        reviews = [(made, "w")] if made is not None else []
+    if not reviews:
+        return S_FIRST, 0.0
+    s, last = S_FIRST, reviews[0][0]
+    for m, f in reviews[1:]:
+        r = retrievability(s, (m - last) / 1440)
+        s *= 1 + 26.9 * s ** -0.15 * (2.718281828 ** (1 - r) - 1) * grade(f)  # e^1.5·(11−5) ≈ 26.9
+        last = m
+    return s, retrievability(s, (now_min - last) / 1440)
+
+
+def last_active(b: dict | None) -> int | None:
+    """The latest minute block `b` was visited or changed."""
+    times = [t for t in (last_visit(b), iso_minute((b or {}).get("updated"))) if t is not None]
+    return max(times) if times else None
+
+
+def last_action(b: dict | None) -> tuple[str, int | None]:
+    """What last happened to `b` and when: ("written" | "read" | "opened" |
+    "seen in a quote" | "edited" | "made", minute)."""
+    rs, upd = visits(b), iso_minute((b or {}).get("updated"))
+    if rs and (upd is None or rs[-1][0] >= upd - 10):
+        f = rs[-1][1]
+        return ("written" if "w" in f else "read" if "c" in f else "seen in a quote" if "q" in f
+                else "opened"), rs[-1][0]
+    if upd is not None and upd > (iso_minute((b or {}).get("created")) or upd) + 1:
+        return "edited", upd
+    return "made", iso_minute((b or {}).get("created"))
+
+
+def garden(blocks: dict, refs: list, now_min: int) -> list[tuple[str, str]]:
+    """`refs` (entries) in the garden's order, each with why it's there:
+    "recent", "resurfacing" or "" (the rest). The first TOP mix the two, in
+    turn (a recent one, a resurfacing one, …; the other's when one runs out),
+    so a busy week doesn't push resurfacing off the first screen; then the
+    rest of each, then the others by last activity."""
+    def b(i):
+        return blocks[i].get("block", blocks[i])
+    act = {i: last_active(b(i)) or 0 for i in refs}
+    recent = sorted((i for i in refs if now_min - act[i] <= RECENT_DAYS * 1440), key=lambda i: -act[i])
+    mem = {i: memory(b(i), now_min) for i in refs if i not in set(recent)}
+    total = lambda i: ((b(i).get("visits") or {}).get("total") or 0)
+    faded = sorted((i for i, (s, r) in mem.items() if r < FADED_AT),
+                   key=lambda i: -(1 - mem[i][1]) * (1 + total(i)) * mem[i][0] ** 0.5)[:RESURFACE]
+    rest = sorted((i for i in refs if i not in set(recent) | set(faded)), key=lambda i: -act[i])
+    r, f = [(i, "recent") for i in recent], [(i, "resurfacing") for i in faded]
+    top = [x for pair in zip(r, f) for x in pair] + r[len(f):] + f[len(r):]
+    return top[:TOP] + [x for x in r + f if x not in top[:TOP]] + [(i, "") for i in rest]
+
+
+def ago(minute: int | None, now_min: int) -> str:
+    """'just now', '5m ago', '3h ago', '4d ago', '2mo ago', '1y ago'."""
+    if minute is None:
+        return ""
+    d = max(now_min - minute, 0)
+    for size, unit in ((525600, "y"), (43200, "mo"), (1440, "d"), (60, "h"), (1, "m")):
+        if d >= size:
+            return f"{d // size}{unit} ago"
+    return "just now"
+
+
+# --- kinds: what a block is (schema v16) ---------------------------------------
+#
+# A kind is a block (content Kind: {"kind": name, "blocks": its description}),
+# a top-level pericope. A block says what it is in `kinds`: {kind id: True |
+# False}, only the answers you gave (yes, it's a poem; no, it isn't a letter).
+# A model's guesses (a model outside fw writes its file beside the store)
+# are kept apart, never stored: `guessed` keeps those that count, and they
+# meet your answers in merge_kinds, where yours win.
+
+GUESS_AT = 0.9  # a model's guess counts (shown, found) from this p(yes) up; a learned kind's is applied
+MAYBE_AT = 0.5  # and from this one up it's a maybe, to review from the kind (maybes)
+
+def kinds_of(b: dict | None) -> dict:
+    """The answers given for block `b` (a store block or a library entry): {kind id: bool}."""
+    b = b.get("block", b) if b else None
+    return dict(b.get("kinds") or {}) if b else {}
+
+
+def with_kinds(b: dict, answers: dict) -> None:
+    """Give block `b` these answers (none: no `kinds`)."""
+    if answers:
+        b["kinds"] = dict(answers)
+    else:
+        b.pop("kinds", None)
+
+
+def merge_kinds(answers: dict, guesses: dict | None = None) -> dict:
+    """What a block is, all told: a model's guesses ({kind id: p}, as
+    `guessed` gives them; a bool counts as 1 or 0), each at GUESS_AT or over
+    a yes, under the answers given, which always win."""
+    return {**{k: True for k, p in (guesses or {}).items() if p >= GUESS_AT}, **answers}
+
+
+def guessed(data, blocks: dict, at: float = GUESS_AT) -> dict:
+    """The guesses that count, {block id: {kind id: p}}, each block's kinds
+    oldest first, out of a model's (`data`, kind-guesses.json as read:
+    {guesses: {kind id: {block id: [p, kind's updated, block's updated]}}})
+    and the blocks as they are now (the store's or the editor's library):
+    only kinds that still exist, about blocks that do, that the block has no
+    answer about, still current (neither the kind nor the block changed
+    since: both `updated` as the guess has them), and p at `at` (GUESS_AT)
+    or over. Anything malformed counts for nothing."""
+    block = lambda i: (lambda b: b.get("block", b) if isinstance(b, dict) else None)(blocks.get(i))
+    per_kind = data.get("guesses") if isinstance(data, dict) else None
+    out = {}
+    for kid in sorted(per_kind) if isinstance(per_kind, dict) else []:
+        k, said = block(kid), per_kind[kid]
+        if kind_of(k) is None or not isinstance(said, dict):
+            continue
+        for bid, g in said.items():
+            b = block(bid)
+            match g:
+                case [int() | float() as p, str() as ku, str() as bu] if (
+                        b is not None and p >= at and kid not in kinds_of(b)
+                        and ku == k.get("updated") and bu == b.get("updated")):
+                    out.setdefault(bid, {})[kid] = p
+    return out
+
+
+def learned(data) -> set:
+    """The kinds a model learned from the answers given (kind-guesses.json's
+    `sources`: {kind id: {source: "learned", …}}): their guesses that count
+    (`guessed`) are applied, drawn as a kind with a mark ("note·"), not asked
+    as "note?"; still never stored. Anything malformed: none."""
+    sources = data.get("sources") if isinstance(data, dict) else None
+    return {k for k, v in sources.items() if isinstance(v, dict) and v.get("source") == "learned"} if isinstance(sources, dict) else set()
+
+
+def is_applied(blocks: dict, bid: str, kid: str, learned_kinds) -> bool:
+    """A guess that counts (`guessed`) about block `bid` is applied, not
+    asked: a learned kind's (`learned_kinds`, as `learned` gives them), or
+    any about a block inside a pericope. Only a pericope's own kinds are
+    reviewed; a block turned into a pericope of its own is asked again."""
+    b = blocks.get(bid)
+    b = b.get("block", b) if isinstance(b, dict) else None
+    return kid in learned_kinds or not (b or {}).get("entry")
+
+
+def maybes(data, blocks: dict, kid: str) -> list:
+    """Kind `kid`'s maybes, to review: the pericopes a model guesses are one,
+    unanswered and current (`guessed`, from MAYBE_AT up, so the unsure ones
+    too), [(block id, p)], the likeliest first (then the oldest). Not blocks
+    inside a pericope (theirs are applied or dropped: `is_applied`), nor a
+    learned kind's guesses from GUESS_AT up (applied too)."""
+    top = GUESS_AT if kid in learned(data) else 2
+    entry = lambda i: (lambda b: isinstance(b, dict) and b.get("block", b).get("entry"))(blocks.get(i))
+    found = [(i, g[kid]) for i, g in guessed(data, blocks, MAYBE_AT).items()
+             if kid in g and i != kid and g[kid] < top and entry(i)]
+    return sorted(found, key=lambda x: (-x[1], x[0]))
+
+
+PROPOSE_AT = 5  # a kind a model proposes is offered while this many of its pericopes are still uncovered
+
+
+def kind_cover(blocks: dict, data) -> set:
+    """The pericopes some kind covers: a yes said, or a guess applied
+    (`is_applied`; `data`: kind-guesses.json as read)."""
+    blk = lambda b: b.get("block", b)
+    out = {i for i, b in blocks.items() if True in kinds_of(blk(b)).values()}
+    auto = learned(data)
+    return out | {i for i, g in guessed(data, blocks).items() if any(is_applied(blocks, i, k, auto) for k in g)}
+
+
+def open_proposals(data, blocks: dict, dismissed, covered: set) -> list:
+    """The kinds a model proposes (kind-proposals.json, written beside the store by a model outside fw; `data`: {proposals:
+    [{id, name, description, members, typical}]}) still worth offering, as
+    given, each one's members now only the pericopes still here that no kind
+    covers (`covered`, kind_cover's). Dropped: fewer than PROPOSE_AT left,
+    a kind of that name now, or dismissed (kind-dismissed.json, `dismissed`:
+    {dismissed: [{name, members}]}: the same name, case aside, or half the
+    members or more in common). Anything malformed counts for nothing."""
+    blk = lambda i: (lambda b: b.get("block", b) if isinstance(b, dict) else None)(blocks.get(i))
+    said = dismissed.get("dismissed") if isinstance(dismissed, dict) else None
+    said = [d for d in said if isinstance(d, dict)] if isinstance(said, list) else []
+    def alike(d, name, members):
+        theirs, ours = set(d.get("members") or []), set(members)
+        return same_name(str(d.get("name") or ""), name) or len(theirs & ours) * 2 >= max(len(theirs | ours), 1)
+    out = []
+    for p in (data.get("proposals") if isinstance(data, dict) else None) or []:
+        match p:
+            case {"name": str(name), "members": list(members)} if tidy_name(name):
+                pass
+            case _:
+                continue
+        here = [m for m in members if isinstance(m, str) and (blk(m) or {}).get("entry") and m not in covered]
+        if len(here) < PROPOSE_AT or kind_named(blocks, name) is not None or any(alike(d, name, members) for d in said):
+            continue
+        out.append({**p, "name": tidy_name(name), "members": here,
+                    "typical": [t for t in p.get("typical") or [] if isinstance(t, str) and blk(t) is not None],
+                    "description": str(p.get("description") or "")})
+    return out
+
+
+def merge_answers(a: dict, b: dict, base: dict | None = None) -> dict:
+    """Two copies of a block's answers made one (when syncing two stores), kind by kind:
+    what one side changed since `base` (the copy both came from) is kept,
+    and where both changed it differently, `a`'s (the side kept)."""
+    base = base or {}
+    out = {}
+    for k in [*a, *(k for k in b if k not in a), *(k for k in base if k not in a and k not in b)]:
+        x, y, z = a.get(k), b.get(k), base.get(k)
+        v = x if x == y or y == z else y if x == z else x
+        if v is not None:
+            out[k] = v
+    return out
+
+
+def kind_ids(blocks: dict) -> list:
+    """The kinds (the blocks whose content is a Kind), oldest first. Works
+    on the store's blocks or the editor's library alike."""
+    return sorted(i for i, b in blocks.items() if kind_of(b.get("block", b)) is not None)
+
+
+def tidy_name(name: str) -> str:
+    """A kind's name as it's kept: its spacing tidied."""
+    return " ".join(name.split())
+
+
+def same_name(a: str, b: str) -> bool:
+    """Two kinds' names are the same one: case and spacing aside."""
+    return tidy_name(a).casefold() == tidy_name(b).casefold()
+
+
+def kind_named(blocks: dict, name: str) -> str | None:
+    """The kind called `name` (case and spacing aside), else None."""
+    return next((i for i in kind_ids(blocks) if same_name(kind_of(blocks[i].get("block", blocks[i])), name)), None)
+
+
+def of_kind(blocks: dict, kid: str, guesses: dict | None = None) -> list:
+    """The blocks that are kind `kid` (by merge_kinds: your answers, over a
+    model's guesses, {block id: {kind id: p}} as `guessed` gives them), oldest first."""
+    guesses = guesses or {}
+    return sorted(i for i, b in blocks.items() if merge_kinds(kinds_of(b), guesses.get(i)).get(kid) is True)
+
+
+NOT = "not "  # in the header's kinds: "poem, not letter"
+
+
+def parse_kinds(text: str) -> list:
+    """The header's kinds field -> [(name, yes)], in order, each name once
+    (the last word on it wins): commas apart, "not " before a no."""
+    out = {}
+    for part in text.split(","):
+        name = " ".join(part.split())
+        yes = not name.casefold().startswith(NOT)
+        name = name if yes else " ".join(name[len(NOT):].split())
+        if name:
+            out = {k: v for k, v in out.items() if not same_name(k, name)} | {name: yes}
+    return list(out.items())
+
+
+def kinds_text(blocks: dict, b: dict | None) -> str:
+    """Block `b`'s answers as the header shows them: "poem, not letter"
+    (kinds that are gone left out)."""
+    name_of = lambda i: kind_of(blocks[i].get("block", blocks[i])) if i in blocks else None
+    return ", ".join(("" if yes else NOT) + name_of(k) for k, yes in kinds_of(b).items() if name_of(k))

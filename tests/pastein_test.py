@@ -23,7 +23,7 @@ def kids(i, b=None):
     return [("quote", S.quoted(b[k])[0]) if S.quoted(b[k]) else kids(k, b) if S.children(b[k]) else b[k]["content"]
             for k in S.children(b[i])]
 def text_with_links(b, i): return [(b[k]["content"], b[k].get("links", [])) for k in S.subtree(b, i) if isinstance(b[k]["content"], str)]
-def open_(title, rows=30): return F.fw(title, rows=rows, cols=60, env=ENV)
+def open_(title, rows=32): return F.fw(title, rows=rows, cols=60, env=ENV)
 def copy_src():
     t = open_("src")   # at the end of "pasted two"
     t.key(ESC, SUP, COPY); t.key(Q, ESC); t.done()

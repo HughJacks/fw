@@ -29,8 +29,8 @@ check("a link made now carries its date", all(l.get("created") for l in B()[L3][
 
 t = F.fw("target", rows=30)
 check("the header shows them", "backlinks" in t.text() and "3 · 1 quote, 1 masked quote, 1 link" in t.text(), t.text())
-t.key(UP, UP)   # (the end of "second part") up into the title, up again to backlinks
-t.key(UP)
+t.key(UP, UP)   # (the end of "second part") up into the title, up again to kinds, and to backlinks
+t.key(UP, UP)
 t.key(ENTER)
 check("Enter on it lists them: kind, where, when", "link in linker" in t.text() and "quote in plain quoter" in t.text()
       and "masked quote in masked quoter" in t.text() and "undated" in t.text(), t.text())

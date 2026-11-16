@@ -11,6 +11,7 @@ handle on to a more general one (masking and view to quote, quote to text):
     "view"     inside a masked quote: typing goes
                through its mask                    `vmode`: a View
     "blocks"   blocks selected whole (fw_blocks)  `picked`: a Picked
+    "review"   a kind's maybe, open to be answered `review`: a Review
     "quote"    inside a quote: typing edits it
     "text"     writing in the entry
 
@@ -57,7 +58,7 @@ class FieldEdit:
     it, and its text as typed, which can be empty (a derived title shows
     again only once you leave it empty)."""
     index: int                 # which field (into Editor.editable)
-    x: int                     # the cursor's column in it
+    x: int                     # the cursor's column in it (on the kinds line: which token, len for the +)
     text: str                  # what's in the field now
     start: str                 # what it showed when you came in (a derived title, or what's written)
     was: str                   # its value when you came in ("" for a derived one)
@@ -81,16 +82,17 @@ class Masking:
 @dataclass
 class Menu:
     """The / menu ("menu"): commands to pick from (stage "command"), the
-    entry to quote (stage "block") or to link to (stage "link"), with its
-    Picker, or a picture's web address, typed (stage "url", in `query`)."""
-    stage: str                 # "command", "block", "link", "url", "backlinks" or "paraphrase"
+    entry to quote (stage "block") or to link to (stage "link"), or a kind
+    (stage "kinds", from the header's kinds line), with its Picker, or a
+    picture's web address, typed (stage "url", in `query`)."""
+    stage: str                 # "command", "block", "link", "url", "backlinks", "paraphrase" or "kinds"
     query: str = ""
     sel: int = 0
     commands: list = field(default_factory=list)  # fw_menu.Command, as they fit where the cursor is
     slash: bool = False        # opened by typing / (closing it types what was typed)
     group: str | None = None   # the submenu it's in
     used: bool = False         # a command ran and it stayed open: closing it types nothing
-    picker: object = None      # stage "block", "link" or "backlinks": the fw_picker.Picker
+    picker: object = None      # stage "block", "link", "backlinks" or "kinds": the fw_picker.Picker
     mark: str | None = None    # stage "paraphrase": the block to mark as a paraphrase of the one picked
     found: list = field(default_factory=list)  # stage "backlinks": fw_block.backlinks, its rows' keys indexes into it
     span: tuple | None = None  # stage "link": (the text block, its text, [start, end]) to link
@@ -110,9 +112,35 @@ class Picked:
 
 
 @dataclass
+class Review:
+    """Going through a kind's maybes (fw_block.maybes), one block at a time:
+    begun on the kind's maybes line, each block opened in turn by fw_app,
+    its editor in mode "review" (Enter it is one, Backspace it isn't, Tab
+    skip, ^Z back, ^Q stop); then back to the kind."""
+    kind: str                  # the kind
+    queue: list                # [(block id, p)] still to see, the one open first
+    total: int                 # how many there were
+    done: list = field(default_factory=list)  # [(block id, p, True | False | None (skipped), set_kind's undo record or None)], in order
+    stop: bool = False         # ^Q: back to the kind, the rest left
+
+
+@dataclass
 class Visits:
     """Not a mode: what the editor notes of the visits it sees, in every mode
     (fw_block.attend; written by Editor.flush_visits)."""
     live: dict = field(default_factory=dict)     # the visits under way: {block id: (minute it began, last attention, s)}
     pending: dict = field(default_factory=dict)  # not yet in the store: {block id: {minute: flags}}
     here: tuple | None = None                    # the block the cursor's in: (id, since, counted yet?, it and its containers)
+
+
+@dataclass
+class Home:
+    """Home between visits (fw_app.home), so coming back to it, after a delete
+    there or from a pericope, finds it as it was left: the view, what was
+    typed, which card or row was selected, grid or list."""
+    search: bool = False       # the search showing (else the garden)
+    query: str = ""            # what was typed in it
+    sel: int | None = None     # the garden's selected card (None: the first pericope's)
+    picked: int | None = None  # the search's selected row
+    grid: bool = True          # the garden as cards, or a list (Ctrl+G)
+    forward: list = field(default_factory=list)  # [(entry, its draft offset)] gone back from, the newest last: Ctrl+] opens them again

@@ -96,9 +96,10 @@ def put(scr, y: int, x: int, text: str, attr: int = 0) -> None:
 
 
 def draw_box(scr, y0: int, x0: int, bw: int, prompt: str, note: str, rows: list, sel: int,
-             first: int, footer: str = "") -> tuple[int, int]:
+             first: int, footer: str = "", tint=None) -> tuple[int, int]:
     """A search box: the prompt line, then `rows` of (key, left, right[,
     dim]) from `first` on, `sel` highlighted, then a dim `footer` line if there is one.
+    `tint` (key -> attr, or None) colours a row (a kind's, blue).
     Returns where the cursor goes."""
     inner = bw - 4
     put(scr, y0, x0, "┌" + "─" * (bw - 2) + "┐", curses.A_DIM)
@@ -110,7 +111,8 @@ def draw_box(scr, y0: int, x0: int, bw: int, prompt: str, note: str, rows: list,
         text = left[:max(inner - len(right) - 2, 1)].ljust(max(inner - len(right), 1)) + right
         put(scr, y0 + 2 + n, x0, "│ ", curses.A_DIM)
         put(scr, y0 + 2 + n, x0 + 2, text[:inner].ljust(inner),
-            (curses.A_REVERSE if first + n == sel else 0) | (curses.A_DIM if dim and dim[0] else 0))
+            (curses.A_REVERSE if first + n == sel else 0) | (curses.A_DIM if dim and dim[0] else 0)
+            | ((tint(rows[n][0]) or 0) if tint else 0))
         put(scr, y0 + 2 + n, x0 + 2 + inner, " │", curses.A_DIM)
     if not rows:
         put(scr, y0 + 2, x0, "│ " + "no matches".ljust(inner) + " │", curses.A_DIM)
@@ -130,11 +132,15 @@ class Ink(NamedTuple):
     ghost: int = curses.A_UNDERLINE   # white underline: where one more arrow press lands
     soft: int = curses.A_DIM          # a quote's box at rest: muted red
     faint: int = curses.A_DIM         # a block of text's box: a quiet grey
+    blue: int = curses.A_BOLD         # a kind's box while bright, its name in a search
+    blue_tag: int = curses.A_BOLD     # white on blue: a kind's number, bright
+    blue_soft: int = curses.A_DIM     # a kind's box at rest: muted blue
+    blue_guess: int = curses.A_DIM    # a model's guess on the kinds line: dim blue
 
 
 def setup(scr) -> Ink:
-    """Terminal modes for the editor; returns what it draws with (quiet greys
-    and a muted red where there are 256 colours)."""
+    """Terminal modes for the editor; returns what it draws with (quiet greys,
+    a muted red and a muted blue where there are 256 colours)."""
     curses.raw()   # so ^S, ^Q, ^Z reach us instead of the terminal
     curses.nonl()  # keep Enter as \r, so a pasted \r\n is one break
     scr.keypad(True)
@@ -149,9 +155,14 @@ def setup(scr) -> Ink:
         many = curses.COLORS >= 256
         curses.init_pair(4, 95 if many else curses.COLOR_RED, -1)
         curses.init_pair(5, 239 if many else curses.COLOR_WHITE, -1)
+        curses.init_pair(6, 75 if many else curses.COLOR_BLUE, -1)  # a kind: blue, as a quote is red
+        curses.init_pair(7, curses.COLOR_WHITE, 25 if many else curses.COLOR_BLUE)
+        curses.init_pair(8, 60 if many else curses.COLOR_BLUE, -1)
         quiet = 0 if many else curses.A_DIM
         return Ink(curses.color_pair(1), curses.color_pair(2) | curses.A_BOLD, curses.color_pair(3) | curses.A_UNDERLINE,
-                   curses.color_pair(4) | quiet, curses.color_pair(5) | quiet)
+                   curses.color_pair(4) | quiet, curses.color_pair(5) | quiet,
+                   curses.color_pair(6), curses.color_pair(7) | curses.A_BOLD, curses.color_pair(8) | quiet,
+                   curses.color_pair(6) | curses.A_DIM)
     except curses.error:  # no colours: bold, underlined and dim
         return Ink()
 

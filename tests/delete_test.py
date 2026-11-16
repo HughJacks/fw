@@ -41,7 +41,7 @@ f.key("\x04")   # Ctrl+D on home: the entry selected
 check("home: Ctrl+D asks before deleting the entry selected", "delete 'Alpha'?" in f.text(), f.text())
 f.key("n")
 check("  any key but y keeps it", A in S.entry_ids(S.load_data()) and "kept" in f.text(), f.text())
-f.key("alpha", "\x04", "y")
+f.key("\x04", "y")   # (home as it was: the search still says alpha)
 check("  y deletes it: gone from the list, its quote plain text", A not in S.entry_ids(S.load_data()) and "deleted 'Alpha'" in f.text() and B()[QA]["content"] == "alpha body, all of it", f.text())
 f.key(UP, "\x04")   # up on "+ new entry": nothing to delete
 check("  on the new-entry row it does nothing", "delete '" not in f.text(), f.text())

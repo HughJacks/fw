@@ -12,9 +12,17 @@ no room left for its box is unboxed, a dim · before its first line (`dots`).
 `frames` says which quotes' boxes each row is in, `walls` every box it's in.
 Masking draws through fw_mask_ui (rows of kind "mask").
 
+A quote of a kind (what a block can be: a poem) is boxed blue, not red,
+muted at rest and bright while selected or edited in, "kind: poem" on its
+top line (`kind_boxes`).
+
 An image (a block that is one picture) has a box like a quote's, faint at
 rest, with blank rows inside it that the terminal draws the picture over
 after curses has drawn the screen (`pictures`; Editor.show_pictures).
+
+A locked quote (no writing through it, fw_block.locked_by) has a ⊘ first on
+its top line (LOCK_MARK), and what shows through it is drawn dim, at every
+depth: the text of the quotes inside it, and its buffer while you're in it.
 
 A hyperlink (a span of a block of text pointing at an entry) is drawn red
 and underlined, with an ↗ after it that isn't in the text: rows wrap, and
@@ -37,6 +45,7 @@ THIN, HEAVY = "┌┐└┘─│", "┏┓┗┛━┃"  # a box; a selected qu
 ARROW = "↗"  # after a hyperlink
 SHOW = {ELLIPSIS: "…", CLOSE: "›", OPEN: "‹"}  # a mask's marks, as they're drawn
 EDGES = ("top", "bottom")
+LOCK_MARK = "⊘"  # first on a locked quote's top line (one column wide)
 PICTURE_ROWS = 16  # the most rows a picture takes (its width shrinks to keep its shape)
 
 
@@ -279,6 +288,7 @@ class Layout:
         self.unit_rows = []  # [first row, last row] of each block of the buffer being edited (fw_blocks), in order
         self.pictures = []  # (first row, columns, rows, file name) of every picture's place
         self.image_boxes = set()  # the spans that are images' boxes, not quotes
+        self.kind_boxes = set()  # the spans that are quotes of kinds: blue
         self.emit(0, 0, [self.open_ids()[0]])
         self.spans.sort(key=lambda span: span[2])
         self.frames = [[] for _ in self.rows]  # each row's quotes, outermost first (indexes into spans)
@@ -323,6 +333,7 @@ class Layout:
         if active:
             self.spans_now = spans  # (the cursor's column and clicks count the arrows)
         anchor = None if active else f.anchor
+        dim = self.locked(level)  # shown through a locked quote: dim
         width = self.inner()
         masking = self.medit is not None and level >= self.medit.depth  # inside the quote being masked
         key = self.medit.keys[level - self.medit.depth] if masking else None
@@ -361,12 +372,13 @@ class Layout:
                 self.rows += drawn_rows(own, self.image_rows(image.group(1), qd, len(self.rows)))
             elif m and li == anchor:  # the quote open below: its block laid out inside its box
                 first = len(self.rows)
-                label = " · ".join(x for x in (self.quote_label(m.group(1), self.show_of(m.group(2))),
-                                               self.para_label(m.group(1))) if x)
+                label = self.top_label(m.group(1), self.show_of(m.group(2)), m.group(2))
                 self.rows.append(Row(None, 0, 0, edge(qd, "top", label), qd))
                 self.emit(level + 1, qd, path + [m.group(1)])
                 self.rows.append(Row(None, 0, 0, edge(qd, "bottom"), qd))
                 self.spans.append((first, len(self.rows) - 1, qd))
+                if self.kind_label(m.group(1)):
+                    self.kind_boxes.add(self.spans[-1])
             elif m and masking and key + (m.group(2),) in self.medit.flow["segs"]:
                 # as it's being masked: all its text, hidden parts dim, the brackets in it
                 self.rows += drawn_rows(own, self.masking_rows(key + (m.group(2),), path, qd, len(self.rows)))
@@ -375,21 +387,27 @@ class Layout:
                 if mask == [] and level > 0:  # a quote inside that shows nothing: no box, a …
                     self.rows.append(Row(own, 0, 0, Drawn(depth, ELLIPSIS, "text"), depth))
                 else:
-                    self.rows += drawn_rows(own, self.quote_rows(target, path, qd, len(self.rows), mask, show, qinner))
+                    self.rows += drawn_rows(own, self.quote_rows(target, path, qd, len(self.rows), mask, show, qinner,
+                                                                 m.group(2), dim))
             elif active:
                 self.rows += [Row(li, s, e, None, depth) for s, e in wrap_links(line, width, link_ends(spans[li]))]
             elif masking:  # the text around the quote the cursor's gone into, as it's being masked
                 self.rows += drawn_rows(None, drawn(depth, line, width, "mask", self.stack[level].meta[li][0]))
             elif spans[li]:
                 text, codes = linked(line, spans[li])
-                self.rows += drawn_rows(None, drawn(depth, text, width, "text", codes))
+                self.rows += drawn_rows(None, drawn(depth, text, width, "note" if dim else "text", codes))
             else:
-                self.rows += drawn_rows(None, drawn(depth, line, width))
+                self.rows += drawn_rows(None, drawn(depth, line, width, "note" if dim else "text"))
             if active and li == len(lines) - 1:
                 self.active_end = len(self.rows) - 1
             self.close_boxes(opened, p.closes, self.rows, lambda d: Row(None, 0, 0, d, depth))
         if active and self.unit_rows:
             self.unit_rows[-1][1] = len(self.rows) - 1
+
+    def kind_label(self, ref) -> str:
+        """A kind's top line, "kind: <its name>"; "" for a block that isn't one."""
+        name = store.kind_of(self.library.get(ref, {}).get("block")) if ref else None
+        return f"kind: {name}" if name is not None else ""
 
     def para_label(self, ref) -> str:
         """A paraphrase's top line, "≈ <its source's title>"; "" for a block that isn't one."""
@@ -486,11 +504,15 @@ class Layout:
                     spans.append((s, e, link["to"], link))
         return j, text, spans
 
-    def quote_rows(self, ref: str, path: list, depth: int, base: int, mask=None, show=(), inner=None) -> list:
-        """What a quote of block `ref` shows, `depth` boxes in, as Drawn rows:
+    def quote_rows(self, ref: str, path: list, depth: int, base: int, mask=None, show=(), inner=None,
+                   qid=None, dim: bool = False) -> list:
+        """What quote `qid` of block `ref` shows, `depth` boxes in, as Drawn rows:
         its blocks boxed as an open one's are (box_plan), in its box (its top
-        line showing the properties in `show`); `base` is the row it starts
-        on. A block already on `path` (a cycle) or past MAX_DEPTH gets a one-line stand-in."""
+        line showing the properties in `show`, and the lock if it's locked);
+        `base` is the row it starts on; its text dim if it or a quote around
+        it (`dim`) is locked. A block already on `path` (a cycle) or past
+        MAX_DEPTH gets a one-line stand-in."""
+        dim = dim or store.quote_lock(self.library.get(qid))
         entry = self.library.get(ref)
         if entry is None:
             body = [Drawn(depth, f"missing block {ref}", "note")]
@@ -499,14 +521,16 @@ class Layout:
         elif depth > MAX_DEPTH:  # no room for its box: a line in the box around it
             return [Drawn(depth, f"⋯ {entry['title']}", "note")]
         else:
-            body = self.quote_body(ref, path, depth, base + 1, mask, inner) or [Drawn(depth, "(empty)", "note")]
-        label = " · ".join(x for x in (self.quote_label(ref, show), self.para_label(ref)) if x)  # (a quote of a paraphrase says so)
+            body = self.quote_body(ref, path, depth, base + 1, mask, inner, dim) or [Drawn(depth, "(empty)", "note")]
+        label = self.top_label(ref, show, qid)
         rows = [edge(depth, "top", label), *body, edge(depth, "bottom")]
         self.spans.append((base, base + len(rows) - 1, depth))
+        if self.kind_label(ref):
+            self.kind_boxes.add(self.spans[-1])
         return rows
 
-    def quote_body(self, ref: str, path: list, depth: int, base: int, mask, inner) -> list:
-        """The rows inside a quote of `ref`'s box (from row `base`)."""
+    def quote_body(self, ref: str, path: list, depth: int, base: int, mask, inner, dim: bool = False) -> list:
+        """The rows inside a quote of `ref`'s box (from row `base`), its text dim if `dim` (locked)."""
         lines, bids, nest, quotes = self.quote_lines(ref, mask, inner)
         paths = paths_of(lines, bids, nest)
         plan = box_plan(bids, paths, depth, many_blocks(bids), [line == ELLIPSIS for line in lines])
@@ -528,9 +552,10 @@ class Layout:
                 case ("quote", _, [], _, _):  # a quote inside that shows nothing: no box, a …
                     body += [lone] if body[-1:] != [lone] else []
                 case ("quote", target, qmask, qshow, qinner):
-                    body += self.quote_rows(target, path + [ref], p.depth, base + len(body), qmask, qshow, qinner)
+                    body += self.quote_rows(target, path + [ref], p.depth, base + len(body), qmask, qshow, qinner,
+                                            (self.quote_at(line) or (None, None))[1], dim)
                 case None if not (line == ELLIPSIS and body[-1:] == [lone]):
-                    body += drawn(depth, line, width)
+                    body += drawn(depth, line, width, "note" if dim else "text")
             self.close_boxes(opened, p.closes, body, base=base)
         return body
 
@@ -589,6 +614,18 @@ class Layout:
             except OSError:
                 return None
         return self.picture_px[name]
+
+    def top_label(self, ref: str, show, qid=None) -> str:
+        """A quote's top line: ⊘ if quote `qid` is locked, then what its
+        source `ref` is (a kind, a paraphrase) and the properties in `show`."""
+        return self.lock_label(qid, " · ".join(
+            x for x in (self.kind_label(ref), self.quote_label(ref, show), self.para_label(ref)) if x))
+
+    def lock_label(self, qid, label: str) -> str:
+        """Quote `qid`'s top line `label`, with ⊘ first if it's locked."""
+        if store.quote_lock(self.library.get(qid)):
+            return f"{LOCK_MARK} {label}" if label else LOCK_MARK
+        return label
 
     def quote_label(self, ref: str, show) -> str:
         """What a quote of `ref` shows in its top line: the properties in `show`."""
@@ -697,6 +734,7 @@ class Layout:
         here = self.first_row[self.cy] if self.first_row and not self.medit else -1
         self.para_hot = {n for n in self.para_boxes if self.plains[n][0] <= here <= self.plains[n][1]}
         x = text_column(self.gutter)
+        dim = curses.A_DIM if self.locked() else 0  # the buffer, through a locked quote
         for y in range(self.text_h):
             i = self.scroll + y
             if i >= len(self.rows):
@@ -708,6 +746,9 @@ class Layout:
                           or i in lit)
                 if self.qdepth[i] and self.is_image_box(self.frames[i][-1]):  # an image's: as a block of text's
                     attr = curses.A_REVERSE if self.frames[i][-1] in hot else curses.A_DIM
+                elif self.qdepth[i] and self.is_kind_box(self.frames[i][-1]):  # a kind's: white on blue, else muted blue
+                    attr = (self.ink.blue_tag if self.frames[i][-1] in hot else self.ink.blue_soft) | (
+                        curses.A_REVERSE if picked else 0)
                 else:
                     attr = ((self.ink.tag if self.frames[i][-1] in hot else self.ink.soft) if self.qdepth[i]
                             else curses.A_DIM) | (curses.A_REVERSE if picked else 0)
@@ -741,7 +782,7 @@ class Layout:
                 inside, ends = link_columns(spans), link_ends(spans)
                 cells = []
                 for c in cols:
-                    attr = self.char_attr(line[c], c - row.start in picked, red)
+                    attr = self.char_attr(line[c], c - row.start in picked, red) | dim
                     cells.append((line[c], attr | self.link_attr if c in inside else attr))
                     if c + 1 in ends:
                         cells.append((ends[c + 1], self.link_attr))
@@ -750,6 +791,10 @@ class Layout:
     def is_image_box(self, n: int) -> bool:
         """Span `n` is an image's box, not a quote's."""
         return self.spans[n] in self.image_boxes
+
+    def is_kind_box(self, n: int) -> bool:
+        """Span `n` is a quote of a kind: blue."""
+        return self.spans[n] in self.kind_boxes
 
     def char_attr(self, ch: str, picked: bool, red: int) -> int:
         """A buffer character's attr: selected reversed, a mask's mark red (a … dim
@@ -765,13 +810,15 @@ class Layout:
         """Row `i`'s box sides, outermost first, or the top or bottom of its
         innermost box, a column a side: a block of text's faint (bright while
         selected whole, in `lit`), a quote's muted, bright red while selected or
-        edited in, an image's faint, bright while selected; and heavy at the end
+        edited in (a kind's blue, likewise), an image's faint, bright while
+        selected; and heavy at the end
         of the selected one you're on."""
         d = self.rows[i].drawn
         para = lambda n: self.ink.red | curses.A_BOLD if n in self.para_hot or n in lit else self.ink.soft
         boxes = [para(n) if kind == "plain" and n in self.para_boxes
                  else (curses.A_BOLD if n in lit else self.ink.faint) if kind == "plain"
                  else (curses.A_BOLD if n in hot else self.ink.faint) if self.is_image_box(n)
+                 else (self.ink.blue | curses.A_BOLD if n in hot else self.ink.blue_soft) if self.is_kind_box(n)
                  else (self.ink.red | curses.A_BOLD if n in hot else self.ink.soft) for _, kind, n in self.walls[i]]
         boxes = boxes or [self.ink.faint]
         right = self.cols - 2

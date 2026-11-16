@@ -148,7 +148,20 @@ class Term:
 
 def editor(*args, cols=60, rows=12, env=None):
     """The editor on a draft file: editor("t/f.txt", "--meta", "t/f.meta.json")."""
-    return Term(["python3", ED, *args], cols, rows, env)
+    return Term([os.environ.get("FW_PYTHON", "python3"), ED, *args], cols, rows, env)
 def fw(*args, cols=70, rows=16, env=None, home=f"{DEV}/fw"):
     """fw itself (zsh fw ARGS), on the store in $FW_DATA."""
     return Term(["zsh", home, *args], cols, rows, env)
+
+
+def loro_merge(base: dict, laptop: dict, mini: dict) -> dict:
+    """Block `base` in two machines' documents (fw_loro; the mini's a copy of
+    the laptop's), changed on each to `laptop` and `mini`, then merged: the
+    block as the merged document says it."""
+    import fw_loro as L
+    store = lambda b: {"schemaVersion": 17, "blocks": [b]}
+    a = L.load(None, 1); L.write(a, store(base))
+    b = L.load(L.snapshot(a), 2)
+    L.write(a, store(laptop)); L.write(b, store(mini))
+    L.merge(a, L.snapshot(b))
+    return L.to_data(a)["blocks"][0]

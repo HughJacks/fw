@@ -12,7 +12,7 @@
 # never touched. The suites drive fw in a pseudo-terminal through fwtest.py,
 # which waits on what fw reports ($FW_SYNC) instead of sleeping; the screen
 # is read with pyte (in tests/.venv; if it's missing: python3 -m venv
-# tests/.venv && tests/.venv/bin/pip install pyte==0.8.2). A suite prints one
+# tests/.venv && tests/.venv/bin/pip install pyte==0.8.2 loro==1.17.1). A suite prints one
 # line per check ("ok" or "FAIL") and ends with "<NAME> OK" or
 # "<NAME> FAILURES". This prints a line per suite, the failed checks under
 # it, and a summary; it exits 1 if anything failed.
@@ -21,7 +21,8 @@ zmodload zsh/datetime zsh/parameter
 here="${0:A:h}"
 app="${here:h}"
 py="$here/.venv/bin/python"
-[[ -x "$py" ]] || { print -u2 "no $py: python3 -m venv $here/.venv && $here/.venv/bin/pip install pyte==0.8.2"; exit 1; }
+[[ -x "$py" ]] || { print -u2 "no $py: python3 -m venv $here/.venv && $here/.venv/bin/pip install pyte==0.8.2 loro==1.17.1"; exit 1; }
+export FW_PYTHON="$py"  # what the suites run fw and the editor with: the store needs loro (pip install loro==1.17.1 here too)
 jobs_at_once="${FW_TEST_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 
 root="$(mktemp -d)"

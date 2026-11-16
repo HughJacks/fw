@@ -12,6 +12,12 @@ With --meta, a header above the text shows the entry's metadata: read-only
 fields on one dim line, then one editable line per editable field (fw_store
 writes the file from the schema and reads the edits back). Press Up on the
 first line of text to move into the header; Down, Enter, Tab or Esc returns.
+The header's top line says what the block is made of (fw_block.type_label:
+text, image, quote, block, or "kind: <name>", boxed blue). The kinds line
+shows what it is as tokens, and a model's guesses dim (store.guessed: Enter
+confirms one, Backspace denies it); the kinds picker adds one (store.set_kind),
+each change one undo step. A kind's title field is its name: changed as you
+leave it (store.rename_kind).
 
 Keys: every key is in fw_keys.py (KEYS.md lists them, generated from it).
 
@@ -57,12 +63,12 @@ import fw_image
 import fw_keys as keys
 import fw_store as store
 from fw_blocks import BlockPicking
-from fw_layout import THIN, Layout, box_edge, is_edge, link_ends, text_column
+from fw_layout import THIN, Layout, box_edge, fit, is_edge, link_ends, text_column
 from fw_mask_ui import MaskEditing
 from fw_menu import RUNS, Commands
 from fw_screen import (SEEN, WHEEL_DOWN, Ink, cwidth, keyboard_modes, put, ready, setup, swidth,
                        word_left, word_right)
-from fw_state import FieldEdit, Frame, View, Visits
+from fw_state import FieldEdit, Frame, Review, View, Visits
 from fw_store import (BLOCK_RE, IMAGE_RE, MAX_DEPTH, QUOTE_RE, atom_draft, atom_id, block_draft, block_line,  # same rules the store uses
                       chain, derive_title, format_draft, image_line, is_atom, parse_draft, parse_nest, quote_line)
 
@@ -83,6 +89,8 @@ HEADER_TOP = 2  # the header's first editable field's row: below its box's top a
 # dim stand-ins for empty editable fields, recomputed as you type
 PLACEHOLDERS = {"title": lambda lines: derive_title("\n".join(l for l in lines if not is_atom(l)))}
 HELP = "⇧↵ line break  / menu  ^Q quit  ^Z undo "
+REVIEW_HELP = "↵ yes  ⌫ no  ⇥ skip  ^Z back  ^Q stop "  # (reviewing a kind's maybes)
+REVIEW_MOVES = {"left", "right", "up", "down", "word_left", "word_right", "home", "end", "page_up", "page_down"}
 # a masked quote's marks, as the editor holds them, and as they're drawn:
 # a hidden stretch, and the two ends of the one laid open (anchors)
 ELLIPSIS, CLOSE, OPEN = store.ELLIPSIS, store.CLOSE, store.OPEN
@@ -100,7 +108,9 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
                     self.meta = json.load(fh)
             except (FileNotFoundError, json.JSONDecodeError):
                 pass
-        self.editable = [f for f in self.meta["fields"] if f.get("editable")]
+        self.editable = sorted((f for f in self.meta["fields"] if f.get("editable")),
+                               key=lambda f: f.get("key") != "kinds")  # (kinds above the title: Up from the text reaches the title first)
+        self.fedit = None       # the header field being edited: a FieldEdit
         if self.meta.get("id") and self.meta["fields"]:  # (with a header to show it in; worked out from the store, not saved: fw_block.backlinks)
             self.editable.insert(0, {"key": "backlinks", "value": "", "derived": True})  # (above the title: Up reaches the title first)
         self.found = (None, [])
@@ -121,6 +131,8 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         self.library = {}       # id -> {title, words, blocks}, from the store
         self.store_mtime = None
         self.refresh_library()
+        if self.editable and self.editable[0].get("key") == "backlinks" and self.kind_name() is not None:
+            self.editable.insert(1, {"key": "maybes", "value": "", "derived": True})  # (a kind's: the blocks a model guesses might be one, to review)
         self.palette = None     # the / menu while open: a Menu
         self.ink = Ink()        # what it draws with (fw_screen.setup, once curses starts)
         self.can_draw_pictures = pictures_here()
@@ -131,7 +143,6 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         self.screen_size = None  # the window's (rows, columns) last frame
         self.resized_at = 0.0   # when it last changed (pictures wait for it to settle)
         self.saved_meta = self.meta_values()
-        self.fedit = None       # the header field being edited: a FieldEdit
         try:
             with open(path, encoding="utf-8") as fh:
                 text = fh.read()
@@ -170,6 +181,8 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         self.confirming = None  # a question asked (y answers it): "delete"
         self.deleted = None     # the entry was deleted: how many quotes of it kept their text
         self.opening = None     # Open it: (the quote's target, where in its draft or None), for fw_app to step into
+        self.forward = False    # Ctrl+]: forward again, to where Ctrl+[ (or ^Q) went back from, for fw_app
+        self.review = None      # a kind's maybes being reviewed (fw_state.Review): on the kind's editor as it begins, then on each maybe's ("review")
         self.made = None        # + new entry: (its id, undo depth), until coming back from it (came_back)
         self.trail = []         # titles of the entries stepped in from, outermost first (shown in the bar)
         self.refused = False    # the store refused the last save: retry it every RETRY_MS
@@ -179,7 +192,9 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
     @property
     def mode(self) -> str:
         """The mode the editor is in (fw_state): "menu", "header", "masking",
-        "view", "quote" or "text"; keys go to its key_<mode>."""
+        "view", "quote", "text" or "review"; keys go to its key_<mode>."""
+        if self.review is not None:
+            return "review"
         if self.palette is not None:
             return "menu"
         if self.fedit is not None:
@@ -228,6 +243,32 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
     def open_ids(self) -> list:
         """The entry, then each quote opened inside it, down to the one being edited."""
         return [f.id for f in self.stack] + [self.cur_id]
+
+    def open_quotes(self, level: int | None = None) -> list:
+        """The quote blocks open from the pericope inward, outermost first (down
+        to stack level `level`; all of them: around the cursor)."""
+        return [(self.quote_at(f.lines[f.anchor]) or (None, None))[1] for f in self.stack[:level]]
+
+    def locked(self, level: int | None = None) -> bool:
+        """Whether writing here (at stack level `level`) would go through a
+        locked quote (fw_block.locked_by)."""
+        return store.locked_by(self.library, self.open_quotes(level)) is not None
+
+    def quote_locked(self) -> bool:
+        """Whether the quote the menu acts on (quote_here: the one selected,
+        else the one you're in) is itself inside a lock: its own mask, top
+        line and lock are written where it's held."""
+        on = self.quote_at(self.lines[self.cy])
+        return self.locked(None if on else len(self.stack) - 1)
+
+    def refuse(self, act) -> bool:
+        """An action that writes (typing, Enter, Backspace, cut, paste, …),
+        here, through a locked quote: refused, the bar says so. Whether it was."""
+        writes = act is not None and (len(act) == 1 or act in WRITES)
+        if writes and self.locked():
+            self.message = "locked"
+            return True
+        return False
 
     def root_lines(self) -> list:
         return self.stack[0].lines if self.stack else self.lines
@@ -298,7 +339,7 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
             self.load_text(block_draft(self.library, ref))
             self.saved = self.snapshot()
         self.base[ref] = store.content_hash(self.library, ref)
-        self.undo, self.redo = self.history.get((ref, self.vmode and qid), ([], []))
+        self.undo, self.redo = self.history.get(self.history_key(), ([], []))
         self.cy, self.cx = (len(self.lines) - 1, len(self.lines[-1])) if at_end else (0, 0)
         self.anchor = None
         self.last_edit = None
@@ -313,7 +354,7 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
             self.exit_mask()
         if self.dirty():
             self.save()
-        self.history[(self.cur_id, self.vmode and self.vmode.qid)] = (self.undo, self.redo)
+        self.history[self.history_key()] = (self.undo, self.redo)
         f = self.stack.pop()
         self.cur_id, self.lines, self.bids, self.saved = f.id, f.lines, f.bids, f.saved
         self.vmode, self.nest = f.vmode, f.nest
@@ -324,6 +365,12 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         self.stale = True
         self.refresh_library()
         self.follow_store()
+
+    def history_key(self) -> tuple:
+        """Whose undo the open quote's buffer has: its block's, as it's shown
+        (a masked quote's view has its own), and a locked one its own too,
+        so no step written before can be undone through the lock."""
+        return self.cur_id, self.vmode and self.vmode.qid, self.locked()
 
     def load_view(self, qid: str, mask: list, opened, clear: bool = True) -> None:
         """Make the buffer the view of masked quote `qid` (of cur_id), with
@@ -828,7 +875,11 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         if not stack:
             self.message = "nothing to undo" if undoing else "nothing to redo"
             return
-        lines, bids, cy, cx, extra = stack.pop()
+        lines, bids, cy, cx, extra = stack[-1]
+        if self.locked() and not self.medit and extra["store"] is None and (lines, bids) != (self.lines, self.bids):
+            self.message = "locked"  # (an edit of the text, through the lock)
+            return
+        stack.pop()
         inverse = None
         if extra["store"] is not None:
             if self.dirty():
@@ -1250,7 +1301,8 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
             self.nest.pop(k, None)
 
     def meta_values(self) -> list[str]:
-        return [f.get("value", "") for f in self.editable]
+        """The header fields saved with the text (not those the store applies apart, as kinds)."""
+        return [f.get("value", "") for f in self.editable if f.get("key") not in store.APPLIED_APART]
 
     def dirty(self) -> bool:
         return (self.lines, self.bids) != self.saved or (not self.stack and self.meta_values() != self.saved_meta)
@@ -1317,7 +1369,12 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         if HEADER_TOP <= my < HEADER_TOP + len(self.editable):  # an editable header line
             while self.stack:
                 self.leave()
+            self.apply_field()
             self.enter_field(my - HEADER_TOP)
+            if self.on_kinds():  # the token clicked, else the +
+                chips = self.kind_chips(True)
+                self.fedit.x = next((n for n, c in enumerate(chips) if c[0] <= mx < c[0] + swidth(c[1])), len(chips) - 1)
+                return
             v = self.fedit.text
             col, x = 0, 0
             while col < len(v) and x + cwidth(v[col]) <= mx - self.value_x:
@@ -1325,6 +1382,7 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
                 col += 1
             self.fedit.x = col
         elif self.top <= my < self.top + self.text_h:
+            self.apply_field()
             self.fedit = None
             self.anchor = None
             self.last_edit = None
@@ -1345,6 +1403,9 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         f, e = self.editable[self.fedit.index], self.fedit
         v = e.text
         if act == "open_field":
+            if f.get("key") == "maybes":
+                self.start_review()
+                return
             if f.get("derived"):
                 self.open_backlinks()
                 return
@@ -1352,6 +1413,7 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         if f.get("derived") and act not in ("next_field", "leave_field", "prev_field"):
             return  # (worked out, not written: nothing to type)
         if act in ("next_field", "leave_field"):
+            self.apply_field()
             if act == "next_field" and e.index < len(self.editable) - 1:
                 self.enter_field(e.index + 1)
             else:
@@ -1359,6 +1421,7 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
             return
         if act == "prev_field":
             if e.index > 0:
+                self.apply_field()
                 self.enter_field(e.index - 1)
             return
         if act == "select_all":
@@ -1391,13 +1454,175 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         elif act is not None and len(act) == 1:
             v, e.x = v[:e.x] + act + v[e.x:], e.x + 1
         e.text = v
-        f["value"] = e.was if v == e.start else v  # left as it was (a derived title stays derived); emptied, derived again
+        if not self.naming(f):  # (a kind's name is applied as you leave it: apply_field)
+            f["value"] = e.was if v == e.start else v  # left as it was (a derived title stays derived); emptied, derived again
+
+    def apply_field(self) -> None:
+        """Leaving the field being edited: a kind's title, changed, is its
+        new name (store.rename_kind), an undo step of its own; refused (empty,
+        or another kind's), the bar says why and the name stays."""
+        e = self.fedit
+        if e is None or not self.naming(self.editable[e.index]) or store.tidy_name(e.text) == self.kind_name():
+            return
+        if self.dirty():
+            self.save()
+        try:
+            record = store.rename_kind(self.self_id, e.text)
+        except store.StoreError as err:
+            self.message = str(err)
+            return
+        self.step(record)
+        self.refresh_library()
+
+    def naming(self, f: dict) -> bool:
+        """Field `f` is a kind's title: its name."""
+        return f.get("key") == "title" and self.kind_name() is not None
+
+    def on_kinds(self) -> bool:
+        """The cursor's on the kinds line."""
+        return self.fedit is not None and self.editable[self.fedit.index].get("key") == "kinds"
 
     def enter_field(self, i: int) -> None:
         """Into header field `i`, the cursor at its end: what it shows (a
-        derived title too) is the text to edit."""
+        derived title too) is the text to edit; on the kinds line, its +."""
         f = self.editable[i]
-        self.fedit = FieldEdit(i, len(self.shown(f)), self.shown(f), self.shown(f), f.get("value") or "")
+        if f.get("key") == "kinds":
+            self.fedit = FieldEdit(i, len(self.kind_chips(True)) - 1, "", "", "")
+            return
+        was = self.kind_name() if self.naming(f) else f.get("value") or ""
+        self.fedit = FieldEdit(i, len(self.shown(f)), self.shown(f), self.shown(f), was)
+
+    def kind_chips(self, editing: bool) -> list:
+        """The kinds line as drawn, from value_x: (column, text, attr, kind
+        id) per token: each answer, in order (a yes white on blue, a no muted
+        blue, "not …"), then a model's guesses that count (guesses()): a
+        learned kind's applied, white on blue with a mark, "poem·", any other
+        dim blue, "poem?"; then, while you're on it (`editing`), a + to add one
+        (its id None)."""
+        b = self.library.get(self.self_id, {}).get("block")
+        chips = [(f" {'' if yes else 'not '}{self.library[k]['title']} ", self.ink.blue_tag if yes else self.ink.blue_soft, k)
+                 for k, yes in store.kinds_of(b).items() if store.kind_of(self.library.get(k, {}).get("block")) is not None]
+        auto = store.learned(store.load_guesses())  # (an applied guess: like a yes, marked ·)
+        chips += [(f" {self.library[k]['title']}· ", self.ink.blue_tag, k) if store.is_applied(self.library, self.self_id, k, auto) else
+                  (f" {self.library[k]['title']}? ", self.ink.blue_guess, k) for k in self.guesses().get(self.self_id, {})]
+        chips += [(" + ", curses.A_DIM, None)] if editing else []
+        out, x = [], self.value_x
+        for text, attr, k in chips:
+            out.append((x, text, attr, k))
+            x += swidth(text) + 1
+        return out
+
+    def guesses(self) -> dict:
+        """A model's guesses at kinds that count, {block id: {kind id: p}}
+        (store.guessed: unanswered, current, likely), from the file beside
+        the store, read again when it changes."""
+        return store.guessed(store.load_guesses(), self.library)
+
+    def kinds_key(self, act: str | None) -> None:
+        """One action (bound in the "kinds" context) on the kinds line: move
+        between its tokens, take an answer back, confirm or deny a guess,
+        open a kind, or the kinds picker (on the +, or by typing)."""
+        e, chips = self.fedit, self.kind_chips(True)
+        e.x = min(e.x, len(chips) - 1)
+        on = chips[e.x][3]
+        guess = on is not None and on not in store.kinds_of(self.library.get(self.self_id))
+        if act in ("next_field", "prev_field", "leave_field"):
+            self.edit_field(act)
+        elif act in ("prev_kind", "next_kind", "home", "end"):
+            e.x = {"prev_kind": max(e.x - 1, 0), "next_kind": min(e.x + 1, len(chips) - 1),
+                   "home": 0, "end": len(chips) - 1}[act]
+        elif act in ("confirm_kind", "remove_kind") and guess:  # an answer made of it: yes, or no
+            self.answer_kind(on, act == "confirm_kind")
+            e.x = next((n for n, c in enumerate(self.kind_chips(True)) if c[3] == on), e.x)  # (onto what it became)
+        elif act == "remove_kind":
+            if on is None:
+                e.x = max(e.x - 1, 0)  # (on the +: onto the last kind)
+            else:
+                self.answer_kind(on, None)
+        elif act in ("open_kind", "confirm_kind") and on is None:
+            self.open_kinds()
+        elif act in ("open_kind", "confirm_kind"):
+            if self.dirty():
+                self.save()
+            self.fedit = None
+            self.opening = (on, None)  # (on the trail, as Open it: ^Q comes back)
+        elif act in ("undo", "redo"):
+            self.restore(act == "undo")
+        elif act is not None and len(act) == 1 and act.isprintable():
+            self.open_kinds(act)
+
+    def maybes(self) -> list:
+        """The open kind's maybes (fw_block.maybes): [(block id, p)], the likeliest first."""
+        return store.maybes(store.load_guesses(), self.library, self.self_id)
+
+    def start_review(self) -> None:
+        """From the kind's maybes line: go through them, one block at a time
+        (fw_app opens each; this kind waits on the trail, as for Open it)."""
+        found = self.maybes()
+        if not found:
+            self.message = "no maybes: the model has no open guesses at this kind"
+            return
+        if self.dirty():
+            self.save()
+        self.fedit = None
+        self.review = Review(self.self_id, found, len(found))
+
+    def key_review(self, name: str, act) -> bool:
+        """A maybe, open to be answered: Enter it is one, Backspace it isn't,
+        Tab skip it (each on to the next: the editor closes, fw_app opens
+        it), ^Z back to the one before, ^Q stop. Arrows move; nothing types."""
+        rv, act = self.review, keys.bind(name, "review")
+        bid, p = rv.queue[0]
+        if act in ("review_yes", "review_no"):
+            try:
+                _, record = store.set_kind(bid, rv.kind, act == "review_yes")
+            except store.StoreError as e:
+                self.message = str(e)
+                return False
+            rv.done.append((bid, p, act == "review_yes", record))
+            rv.queue.pop(0)
+        elif act == "review_skip":
+            rv.done.append((bid, p, None, None))
+            rv.queue.pop(0)
+        elif act == "review_back":
+            if not rv.done:
+                self.message = "this is the first"
+                return False
+            back, bp, _, record = rv.done[-1]
+            if record is not None:
+                try:
+                    store.restore(record)
+                except (store.StoreError, OSError, ValueError) as e:
+                    self.message = str(e)
+                    return False
+            rv.done.pop()
+            rv.queue.insert(0, (back, bp))
+        elif act == "review_stop":
+            rv.stop = True
+        elif act in REVIEW_MOVES and not (act == "up" and self.at_top() and not self.stack):
+            self.picked = None  # (the maybe was selected whole: moving lets it go)
+            self.key_quote(name, act) if self.stack else self.key_text(name, act)
+            return False
+        else:
+            if act is not None:
+                self.message = "↵ it is one  ⌫ it isn't  ⇥ skip"
+            return False
+        if self.dirty():
+            self.save()
+        return True
+
+    def reviewed(self, rv: Review) -> None:
+        """Back on the kind from reviewing its maybes: each answer that stands
+        an undo step here, and the bar says how it went."""
+        for _, _, answer, record in rv.done:
+            if record is not None:
+                self.step(record)
+        yes = sum(a is True for _, _, a, _ in rv.done)
+        no = sum(a is False for _, _, a, _ in rv.done)
+        skipped = sum(a is None for _, _, a, _ in rv.done)
+        self.message = (f"reviewed: {yes} yes, {no} no" + (f", {skipped} skipped" if skipped else "")
+                        + (f" · {len(rv.queue)} left" if rv.queue else ""))
+        self.stale = True
 
     def backlinks(self) -> list:
         """The blocks pointing at the open entry (fw_block.backlinks), worked
@@ -1409,14 +1634,23 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
 
     def hint(self, f: dict) -> str:
         """What an empty field stands in with, e.g. the title derived from the text."""
+        if f.get("key") == "maybes":
+            n, data = len(self.maybes()), store.load_guesses()
+            auto = sum(self.self_id in g and store.is_applied(self.library, i, self.self_id, store.learned(data))
+                       for i, g in store.guessed(data, self.library).items())
+            return (f"{n} · ↵ review them" if n else "none") + (f" · {auto} applied" if auto else "")
         if f.get("derived"):
             return store.backlink_summary(self.backlinks())
         return (PLACEHOLDERS[f["key"]](self.root_lines()) if f["key"] in PLACEHOLDERS else f.get("placeholder")) or ""
 
     def shown(self, f: dict) -> str:
         """A field's text as you edit it: what's written, else what's derived,
-        so a derived title can be edited like a written one."""
-        return f.get("value") or self.hint(f)
+        so a derived title can be edited like a written one; a kind's title, its name."""
+        return self.kind_name() if self.naming(f) else f.get("value") or self.hint(f)
+
+    def kind_name(self) -> str | None:
+        """The open block's name, when it's a kind."""
+        return store.kind_of(self.library.get(self.self_id, {}).get("block"))
 
     def draw_header(self, scr, w: int) -> int:
         """Draw the metadata header; returns how many rows it used."""
@@ -1441,9 +1675,16 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         put(scr, 1, x, info[:room], curses.A_DIM)
         for i, f in enumerate(self.editable, start=HEADER_TOP):
             put(scr, i, x, f["key"], curses.A_DIM)
-            value = f.get("value", "")
+            value = self.kind_name() if self.naming(f) else f.get("value", "")
             e = self.fedit if self.fedit is not None and self.fedit.index == i - HEADER_TOP else None
-            if e is not None:  # being edited: its text as typed (empty stays empty), the selection reversed
+            if f["key"] == "kinds":  # tokens, the one the cursor's on reversed
+                chips = self.kind_chips(e is not None)
+                for n, (cx, text, attr, _) in enumerate(chips):
+                    if cx + swidth(text) <= x + room:
+                        put(scr, i, cx, text, attr | (curses.A_REVERSE if e is not None and n == min(e.x, len(chips) - 1) else 0))
+                if not chips:
+                    put(scr, i, self.value_x, "(none)", curses.A_DIM)
+            elif e is not None:  # being edited: its text as typed (empty stays empty), the selection reversed
                 text = e.text[:max(x + room - self.value_x, 0)]
                 a, b = sorted((e.anchor, e.x)) if e.anchor is not None else (0, 0)
                 derived = e.text == e.start and not e.was
@@ -1456,12 +1697,16 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
                 put(scr, i, self.value_x, (self.hint(f) or "(none)")[:max(x + room - self.value_x, 0)], curses.A_DIM)
         rows = len(self.editable) + HEADER_TOP + 1
         lx, rx = self.gutter, self.cols - 2
+        name = self.kind_name()  # a kind's header: blue, muted, bright while you're in it
+        ink = (self.ink.blue | curses.A_BOLD if self.fedit is not None else self.ink.blue_soft) if name else self.ink.faint
         put(scr, 0, 0, "H".rjust(self.gutter - 1), curses.A_DIM)  # in the gutter, as a block's number
-        put(scr, 0, lx, box_edge(rx - lx + 1, "top", False), self.ink.faint)
+        put(scr, 0, lx, box_edge(rx - lx + 1, "top", False), ink)
+        if rx - lx - 4 > 1:  # its type on top: text, image, quote, block, "kind: poem"
+            put(scr, 0, lx + 2, f" {fit(store.type_label(self.library.get(self.self_id, {}).get('block')), rx - lx - 4)} ", ink)
         for y in range(1, rows - 1):
-            put(scr, y, lx, THIN[5], self.ink.faint)
-            put(scr, y, rx, THIN[5], self.ink.faint)
-        put(scr, rows - 1, lx, box_edge(rx - lx + 1, "bottom", False), self.ink.faint)
+            put(scr, y, lx, THIN[5], ink)
+            put(scr, y, rx, THIN[5], ink)
+        put(scr, rows - 1, lx, box_edge(rx - lx + 1, "bottom", False), ink)
         return rows
 
     # --- screen -------------------------------------------------------
@@ -1502,6 +1747,10 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
             where = f"{self.cy + 1}:{self.cx + 1}"
         crumbs = "".join(f"  {t} ›" for t in self.trail)
         left = f" fw{crumbs}  {where}"
+        if self.review is not None:  # a kind's maybe: which kind, how likely, how far along
+            rv = self.review
+            p = rv.queue[0][1]  # (None: a proposed kind's member, no p)
+            left = f" fw{crumbs}  {self.library.get(rv.kind, {}).get('title', 'kind')}?{'' if p is None else f' {round(p * 100)}%'} · {len(rv.done) + 1} of {rv.total}"
         if self.message:
             left += "  " + self.message
         ref, m = None, None  # the quote the cursor is on, else the one it's editing inside
@@ -1514,7 +1763,7 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         if link:  # on a hyperlink: the entry it points at
             ref = link[2]
         tag = f" {'↗ ' if link else ''}{self.library.get(ref, {}).get('title', 'missing block')} " if ref else ""
-        help = HELP.replace("^Q quit", "^Q back") if self.trail else HELP
+        help = REVIEW_HELP if self.review is not None else HELP.replace("^Q quit", "^Q back") if self.trail else HELP
         hint = help if len(left) + 2 + len(tag) + len(help) < w else ""  # the quote's title wins
         bar = left + " " * max(w - len(left) - len(hint), 1) + hint
         put(scr, h - 1, 0, bar[:w - 1].ljust(w - 1), curses.A_REVERSE)
@@ -1523,7 +1772,8 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
 
         if self.fedit is not None:
             y = HEADER_TOP + self.fedit.index
-            x = self.value_x + swidth(self.fedit.text[:self.fedit.x])
+            chips = self.kind_chips(True) if self.on_kinds() else None  # (the kinds line: at the token)
+            x = chips[min(self.fedit.x, len(chips) - 1)][0] if chips else self.value_x + swidth(self.fedit.text[:self.fedit.x])
             if self.palette is not None:  # (the backlinks list, under the header)
                 y, x = self.draw_palette(scr, h, w, y, x)
         else:
@@ -1645,10 +1895,15 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         """A bracketed paste has ended: a picture file's path (what a terminal
         pastes for a file dropped on it) becomes an image block here; anything
         else is typed in, key by key, as a paste is."""
+        if self.review is not None:  # (reviewing: nothing types, and a pasted Enter mustn't answer)
+            self.pasting, self.pasted = False, []
+            return
         text = "".join(n if len(n) == 1 else "" for n, _ in self.pasted)
         path = fw_image.dropped_path(text) if self.mode in ("text", "quote") and self.self_id else None
         if path and os.path.isfile(os.path.expanduser(path)):
-            self.pasting = False
+            self.pasting, self.pasted = False, []
+            if self.refuse("paste"):
+                return
             self.insert_image(lambda: store.add_image(path))
             return
         for name, act in self.pasted:
@@ -1725,6 +1980,11 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
             self.save()
         return True
 
+    def where(self) -> int | None:
+        """The cursor as an offset in the draft (to come back to it: Ctrl+]),
+        or None inside a quote (the pericope's start, then)."""
+        return None if self.stack else self.draft_offsets()[self.cy] + self.cx
+
     def key_menu(self, name: str, act) -> bool:
         if act == "quit":
             return self.quit()
@@ -1733,9 +1993,13 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
 
     def key_header(self, name: str, act) -> bool:
         if act == "quit":
+            self.apply_field()
             return self.quit()
+        if self.on_kinds():
+            self.kinds_key(keys.bind(name, "kinds"))
+            return self.opening is not None
         self.edit_field(keys.bind(name, "header"))
-        return False
+        return self.review is not None  # (a kind's maybes, to review: fw_app opens the first)
 
     def key_masking(self, name: str, act) -> bool:
         if self.mask_key(name):
@@ -1778,7 +2042,7 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
                 self.anchor = None
                 self.enter_field(len(self.editable) - 1)
                 return False
-        if act == "/" and self.slash_opens():
+        if act == "/" and not self.locked() and self.slash_opens():
             self.open_menu(True)
             return False
         if act == "palette":
@@ -1787,6 +2051,8 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         if act in COMMAND_KEYS:
             self.command_key(act)
             return self.opening is not None
+        if self.refuse(act):
+            return False
         selecting = act in SELECTING
         if selecting:
             act = SELECTING[act]
@@ -1815,7 +2081,10 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
             before = len(self.stack)
             getattr(self, act)()
             self.mask_flow(act, before)
-        elif act == "quit":
+        elif act in ("quit", "go_back"):  # (Ctrl+[ as ^Q: fw_app keeps where you were, for Ctrl+])
+            return self.quit()
+        elif act == "go_forward":
+            self.forward = True
             return self.quit()
         elif act == "undo":
             if not self.undo and self.trail and not self.stack:
@@ -1852,6 +2121,9 @@ EDITS = {"newline", "line_break", "nest_in", "backspace", "delete", "delete_word
          "select_all", "copy", "cut", "paste", "paste_static"}
 # actions that put text in, as typing does (so they replace a selection)
 TYPING = ("newline", "line_break", "nest_in", "paste", "paste_static", "tab")
+# actions that write in the block you're in (a typed character too): refused through a lock
+WRITES = {"newline", "line_break", "nest_in", "backspace", "delete", "delete_word",
+          "cut", "paste", "paste_static", "tab"}
 # Shift + a move: extend the selection
 SELECTING = {"select_" + m: m for m in MOVES}
 COMMAND_KEYS = set(RUNS.values()) | {"delete_entry"}  # keys that run a menu command (fw_menu.command_key)

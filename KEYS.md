@@ -46,6 +46,8 @@ Arrows stop on a quote, selected whole, on the way in and out; one more press go
 | `ctrl+z` | `undo` | undo a whole action, store included; after Open it, once nothing's left, steps back |
 | `ctrl+y` | `redo` | redo |
 | `ctrl+q` | `quit` | go home; after Open it, step back |
+| `ctrl+[` | `go_back` | back: as ^Q (a step back along the Open it trail, or home), and what you left can be gone forward to again |
+| `ctrl+]` | `go_forward` | forward again, to where you went back from (at the place you were); from home too; anything opened anew clears what's ahead |
 | `ctrl+/`, `alt+/` | `palette` | the menu of actions on the block you're in, anywhere |
 | `esc` | `escape` | selects the block you're in whole (inside a quote too); again, the quote around it |
 | `ctrl+e` | `edit_mask` | Create mask / Edit mask, on the quote selected or the one you're in |
@@ -56,6 +58,7 @@ Arrows stop on a quote, selected whole, on the way in and out; one more press go
 | `ctrl+o` | `open_source` | Open it: the quote selected or the one you're in, or the link the cursor's on, as the pericope |
 | `ctrl+k` | `link_entry` | Link to a pericope: the selection (in one block) points to a pericope you pick, or a new one |
 | `ctrl+shift+k` | `remove_link` | Remove link: the one the cursor's on (the text stays) |
+| `ctrl+l` | `toggle_lock` | Lock / Unlock writing through: the quote selected or the one you're in (through a locked one, what writes says locked) |
 | `ctrl+d` | `delete_entry` | delete this pericope (asks first; quotes of it keep their text) |
 | a character | | types it |
 | `/` at a line's start or after a space | | the menu of blocks to put in (mid-text, nested there) |
@@ -104,29 +107,58 @@ No typing: the text stays as it is. Arrows move, into a box inside too, to mask 
 
 ## The header
 
-Moving, deleting, pasting and typing edit the field, as in the text.
+Moving, deleting, pasting and typing edit the field, as in the text. A kind's title is its name: changed as you leave it.
 
 | keys | action | does |
 |---|---|---|
 | `down`, `tab` | `next_field` | the field below, or back to the text from the last one |
-| `enter` | `open_field` | on backlinks: the list of the blocks pointing here, Enter opens one; elsewhere as next_field |
+| `enter` | `open_field` | on backlinks: the list of the blocks pointing here, Enter opens one; on a kind's maybes: review them, one block at a time; elsewhere as next_field |
 | `up` | `prev_field` | the field above |
 | `esc` | `leave_field` | back to the text |
 | `ctrl+v` | `paste` | paste its first line |
 
-## Menus and search
+## The kinds line
 
-The `/` menu, Quote a block, and home. Typing filters; ↑ ↓ choose.
+In the header, above the title: what the block is, a token per kind (a yes white on blue, a no "not …" muted), then a model's guesses, dim blue with a ?, "poem?". Typing opens the kinds picker with it typed.
 
 | keys | action | does |
 |---|---|---|
-| `enter`, `tab` | `pick` | run it / open it / quote it (a block inside a pericope: home opens the pericope at it; Quote a block makes it a pericope of its own, quoted here and where it was; a place that quotes a match: home opens it at the quote, Quote a block quotes the match) |
-| `shift+enter` | `pick_masked` | Quote a block, on a block inside a pericope: quote its pericope, masked to just that block |
+| `down`, `tab` | `next_field` | the field below |
+| `up` | `prev_field` | the field above |
+| `esc` | `leave_field` | back to the text |
+| `left` | `prev_kind` | the kind before |
+| `right` | `next_kind` | the kind after, then the + at the end |
+| `enter` | `confirm_kind` | on a guess: confirm it (it is one, a yes); on a kind: open it (^Q comes back); on the +: the kinds picker |
+| `ctrl+o` | `open_kind` | on a kind or a guess: open it (^Q comes back); on the +: the kinds picker |
+| `backspace`, `delete` | `remove_kind` | on a kind: take that answer back; on a guess: deny it (it isn't one, a no: "not …"); on the +: onto the last kind |
+
+## Reviewing a kind's maybes
+
+Enter on a kind's maybes line (in its header: the blocks a model guesses might be one, from 50% up, likeliest first) opens each in turn, where it lives, the bar saying "poem? 93% · 3 of 12". Arrows and the wheel move and scroll; nothing types.
+
+| keys | action | does |
+|---|---|---|
+| `enter` | `review_yes` | it is one (a yes), on to the next |
+| `backspace`, `delete` | `review_no` | it isn't (a no), on to the next |
+| `tab` | `review_skip` | no answer, on to the next |
+| `ctrl+z` | `review_back` | back to the one before, its answer taken back |
+| `ctrl+q` | `review_stop` | stop: back to the kind (each answer one ^Z there) |
+
+## Menus and search
+
+The `/` menu, Quote a block, the kinds picker, and home. Typing filters; ↑ ↓ choose.
+
+| keys | action | does |
+|---|---|---|
+| `enter`, `tab` | `pick` | run it / open it / quote it / it is one, in the kinds picker (+ new kind: makes it; on home, a proposed kind: makes it and reviews its members) (a block inside a pericope: home opens the pericope at it; Quote a block makes it a pericope of its own, quoted here and where it was; a place that quotes a match: home opens it at the quote, Quote a block quotes the match) |
+| `shift+enter` | `pick_masked` | Quote a block, on a block inside a pericope: quote its pericope, masked to just that block; the kinds picker: it isn't one (a no) |
 | `right` | `show_blocks` | home and Quote a block, on a pericope: list all the blocks inside it, under it |
 | `left` | `hide_blocks` | home and Quote a block: hide them again (from the pericope or one of its blocks) |
 | `esc` | `cancel` | close (the `/` menu leaves what you typed, as text; home quits) |
-| `ctrl+d` | `delete_entry` | home: delete the pericope selected (asks first; quotes of it keep their text) |
+| `ctrl+d` | `delete_entry` | home: delete the pericope selected (asks first; quotes of it keep their text); on a proposed kind's row ("? a kind: …"), dismiss it (asks first) |
+| `ctrl+g` | `toggle_view` | home's garden: cards in a grid, or a list (a row each), and back |
 | `backspace`, `shift+backspace` | `backspace` | with nothing typed: closes the menu; in Quote a block, back to the menu |
 | `ctrl+q` | `quit` | home: quit |
+| `ctrl+]` | `go_forward` | home: forward again, to the pericope you went back from |
 
-Commands in the menu, shown only where they fit, each with its key: Quote a block · Create mask / Edit mask (masking mode: brackets only, no typing; arrow into a box inside to mask it as seen through this quote) · Remove mask · Open it · Its top line… (Show / Hide its title, date, last update, word count; found by search too, and the menu stays open to toggle more) · Turn into text · Turn into a quote (with a selection, just it, nested where it was) · Turn into a quote and open it · Link to a pericope · Remove link. A command's key does nothing where the menu wouldn't offer it.
+Commands in the menu, shown only where they fit, each with its key: Quote a block · Create mask / Edit mask (masking mode: brackets only, no typing; arrow into a box inside to mask it as seen through this quote) · Remove mask · Open it · Its top line… (Show / Hide its title, date, last update, word count; found by search too, and the menu stays open to toggle more) · Lock writing through / Unlock writing through (stays open) · Turn into text · Turn into a quote (with a selection, just it, nested where it was) · Turn into a quote and open it · Link to a pericope · Remove link. A command's key does nothing where the menu wouldn't offer it.

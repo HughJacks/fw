@@ -92,8 +92,8 @@ F.write_store([blk(HOST, [CH, QB, C2], "host"), blk(CH, SENT), blk(QB, {"quote":
                blk(BOWL, [CB], "Bowling"), blk(CB, "bowling notes")], [HOST, BOWL])
 t = F.fw("host", rows=24)
 click = lambda x, y: "\x1b[M" + chr(32) + chr(33 + x) + chr(33 + y) + "\x1b[M" + chr(35) + chr(33 + x) + chr(33 + y)
-t.key(click(6 + 14, 5), *[SEL] * 5, CTRL_K, "bowl", ENTER); t.settle()   # "alley", by a click before it
-t.key(click(8, 8))   # into the quote's text
+t.key(click(6 + 14, 6), *[SEL] * 5, CTRL_K, "bowl", ENTER); t.settle()   # "alley", by a click before it
+t.key(click(8, 9))   # into the quote's text
 check("inside a quote, the entry's own links still show", "Bowling" in bar(t) and "bowling notes" in t.text() and "alley↗" in t.text(),
       (bar(t), t.text()))
 t.key(Q, ESC); t.done()

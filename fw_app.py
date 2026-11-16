@@ -21,6 +21,7 @@ stepped out of waits on a trail, undo and all, and ^Q steps back to it.
 from pathlib import Path
 
 import curses
+from datetime import datetime
 import os
 import signal
 import sys
@@ -29,7 +30,8 @@ import fw_edit as edit
 import fw_screen as screen
 import fw_keys as keys
 import fw_store as store
-from fw_picker import NEW, Picker, blocks_inside, new_label
+from fw_picker import NEW, PROPOSE, Garden, Picker, blocks_inside, new_label
+from fw_state import Home, Review
 
 
 def editor(tmp: str, line: int, attrs: screen.Ink) -> edit.Editor:
@@ -49,11 +51,56 @@ def finish(ref: str, tmp: str) -> str:
     return notes[-1] if notes else f"saved · {title}" if title else ""
 
 
-def write(scr, attrs: screen.Ink, target: tuple) -> str:
+def next_maybe(rv, attrs: screen.Ink, trail: list):
+    """A review's next maybe (fw_state.Review: pericopes only), opened, its
+    editor reviewing: (ref, draft, editor), or None when none is left. One
+    that's gone or in no pericope is passed over (counted as skipped)."""
+    while rv.queue and not rv.stop:
+        bid, p = rv.queue[0]
+        blocks = store.index(store.load_data())
+        home, at = store.home_of(blocks, bid) if bid in blocks else (None, 0)
+        try:
+            if home is None:
+                raise store.StoreError("gone")
+            ref, tmp, _ = store.stage(home)
+        except store.StoreError:
+            rv.done.append((bid, p, None, None))
+            rv.queue.pop(0)
+            continue
+        line, col = store.draft_place(Path(tmp).read_text(encoding="utf-8"), at)
+        ed = editor(tmp, line + 1, attrs)  # at the block, as Open it does
+        ed.cx = min(col, len(ed.lines[ed.cy]))
+        ed.review = rv
+        ed.trail = [e.library.get(r, {}).get("title", "untitled") for r, _, e in trail]
+        return ref, tmp, ed
+    return None
+
+
+def write(scr, attrs: screen.Ink, target: tuple, forward: list | None = None) -> str:
     """Open `target` in the editor until it's quit; returns a note for home.
-    target: ("new", title or None) | ("open", id) | ("title", title) | ("last", None).
-    ("open", id) of a block inside an entry opens that entry, at the block."""
+    target: ("new", title or None) | ("open", id) | ("title", title) | ("last", None)
+    | ("propose", a proposal: the kind made, then its members reviewed).
+    ("open", id) of a block inside an entry opens that entry, at the block.
+    | ("forward", None): the last of `forward` ([(entry, draft offset)], what
+    Ctrl+[ or ^Q went back from, the newest last), opened again where it was.
+    Going back adds to `forward`; Ctrl+] in the editor steps into its last, as
+    Open it does; anything opened anew (from home, or Open it) clears it."""
+    forward = forward if forward is not None else []
     kind, arg = target
+    review, again = None, None
+    if kind == "forward":
+        if not forward:
+            return "nothing to go forward to"
+        (arg, again), kind = forward.pop(), "open"
+    else:
+        forward.clear()  # opened anew: nothing ahead any more
+    if kind == "propose":  # a kind a model proposes, taken: made, then its members to review, the kind waiting
+        try:
+            kid = store.kind_from_proposal(arg)
+        except store.StoreError as e:
+            return str(e)
+        review = Review(kid, [(m, None) for m in arg["members"]], len(arg["members"]))
+        kind, arg = "open", kid
     if kind in ("title", "last"):
         ref = store.find_entry(store.load_data(), title=arg, last=kind == "last")
         kind, arg = ("open", ref) if ref else ("new", arg)
@@ -64,6 +111,8 @@ def write(scr, attrs: screen.Ink, target: tuple) -> str:
             arg, at = store.home_of(blocks, arg)
             if arg is None:
                 return "it's in no pericope"
+        if again is not None and arg in blocks:
+            at = again  # where it was left
     try:
         ref, tmp, line = store.stage(arg if kind == "open" else None, arg if kind == "new" else None,
                                      append=kind == "open" and at is None)
@@ -78,6 +127,13 @@ def write(scr, attrs: screen.Ink, target: tuple) -> str:
     if kind == "open" and at is None:
         ed.cx = len(ed.lines[ed.cy])  # at the end of what's there
     trail = []  # (ref, draft, editor) of each entry stepped in from, outermost first
+    if review is not None:
+        trail.append((ref, tmp, ed))
+        nxt = next_maybe(review, attrs, trail)
+        if nxt is None:
+            trail.pop()
+        else:
+            ref, tmp, ed = nxt
     while True:
         try:
             edit.loop(scr, ed)
@@ -102,7 +158,16 @@ def write(scr, attrs: screen.Ink, target: tuple) -> str:
             ed.came_back(gone)
             ed.visit_open()
             continue
+        ahead = ed.forward  # Ctrl+]: into the last place gone back from, as Open it steps in
+        if ahead:
+            ed.forward = False
+            if not forward:
+                ed.message = "nothing to go forward to"
+                continue
+            ed.opening = forward.pop()
         if ed.opening:
+            if not ahead:
+                forward.clear()  # opened anew: nothing ahead any more
             src, at = ed.opening
             ed.opening = None
             try:
@@ -117,7 +182,35 @@ def write(scr, attrs: screen.Ink, target: tuple) -> str:
             ed.cx = min(col, len(ed.lines[ed.cy]))
             ed.trail = [e.library.get(r, {}).get("title", "untitled") for r, _, e in trail]
             continue
+        rv = ed.review
+        if rv is not None and rv.kind == ref:  # a kind's maybes, to review: the kind waits on the trail
+            ed.review = None
+            trail.append((ref, tmp, ed))
+            nxt = next_maybe(rv, attrs, trail)
+            if nxt is None:
+                ref, tmp, ed = trail.pop()
+                ed.message = "none of them is still where it was"
+                continue
+            ref, tmp, ed = nxt
+            continue
+        if rv is not None:  # a maybe answered (or skipped, or back, or stop): the next, else back to the kind
+            finish(ref, tmp)
+            nxt = next_maybe(rv, attrs, trail)
+            if nxt is not None:
+                ref, tmp, ed = nxt
+                continue
+            left = ref
+            ref, tmp, ed = trail.pop()
+            ed.refresh_library()
+            ed.follow_store()
+            ed.came_back(left)
+            ed.reviewed(rv)
+            ed.visit_open()
+            continue
+        where = ed.where()
         note = finish(ref, tmp)
+        if ref in store.index(store.load_data()):  # (not discarded, left empty): Ctrl+] comes back to it
+            forward.append((ref, where))
         if not trail:
             return note
         left = ref
@@ -129,16 +222,28 @@ def write(scr, attrs: screen.Ink, target: tuple) -> str:
         ed.visit_open()
 
 
-def home(scr, message: str):
+def home(scr, message: str, attrs: screen.Ink = screen.Ink(), spot: Home | None = None):
     """The home screen; returns the next target, ("home", note) after a
-    delete there (home again), or None to quit."""
+    delete there (home again), or None to quit. `spot` (fw_state.Home): as
+    it was left, kept as it's left again (the view, what was typed, the
+    selection: the same place after a delete, or coming back)."""
+    spot = spot if spot is not None else Home()
     library = store.build_library(store.load_data())
     refs = sorted((r for r, e in library.items() if e["entry"]), reverse=True)  # newest first
-    picker = Picker(library, refs, pinned=[(NEW, new_label)], inside=blocks_inside(library, refs))
-    picker.sel = 1 if refs else 0  # the newest entry: usually the one just closed
+    guesses = store.load_guesses()
+    offer = next(iter(store.open_proposals(store.load_proposals(), library, store.load_dismissed(),
+                                           store.kind_cover(library, guesses))), None)  # one at a time
+    pinned = [(NEW, new_label)] + ([(PROPOSE, lambda q: f"? a kind: {offer['name']} · {len(offer['members'])} alike", True)]
+                                   if offer else [])
+    picker = Picker(library, refs, pinned=pinned, inside=blocks_inside(library, refs),
+                    guesses=store.guessed(guesses, library), applied=store.learned(guesses))
+    picker.blue = attrs.blue
+    picker.sel = len(pinned) if refs else 0  # the newest entry: usually the one just closed
     def footer(k):
         if k == NEW:
             return ""
+        if k == PROPOSE:
+            return "↵ make it a kind, then say which of them are · ^D dismiss it"
         if store.quoted(library.get(k)):
             return "↵ open it there, at the quote"
         if not library[k]["entry"]:
@@ -146,9 +251,24 @@ def home(scr, message: str):
         return "↵ open it" + (" · ← hide its blocks" if k in picker.shown else
                               " · → its blocks" if picker.inside.get(k) else "")
     picker.footer = footer
+    garden = home_garden(library, refs, pinned, offer)
+    garden.kinds, garden.blue, garden.grid = picker.kinds, attrs.blue, spot.grid
+    view = garden  # home starts as the garden; typing hands over to the search
+    if spot.sel is not None and garden.cards:
+        garden.sel = min(spot.sel, len(garden.cards) - 1)
+    if spot.search:
+        view, picker.query = picker, spot.query
+        rows = len(picker.rows())
+        picker.sel = min(spot.picked, rows - 1) if spot.picked is not None and rows else picker.first_result()
+        picker.moved = True
+    def left(target):
+        """`target`, home kept as it is (spot) for coming back."""
+        spot.search, spot.query, spot.grid = view is picker, picker.query if view is picker else "", garden.grid
+        spot.sel, spot.picked = garden.sel, picker.sel if view is picker else None
+        return target
     prev_cr = False
     while True:
-        draw_home(scr, picker, len(refs), message)
+        draw_home(scr, view, len(refs), message)
         screen.ready(scr)
         scr.timeout(-1)
         try:
@@ -160,21 +280,83 @@ def home(scr, message: str):
         act = keys.bind(keys.decode(scr, key, prev_cr), "picker")
         prev_cr = key == "\r"
         if act == "delete_entry":
-            row = picker.rows()[picker.sel] if picker.rows() else None
+            row = ((garden.selected(),) if view is garden and garden.selected() else
+                   picker.rows()[picker.sel] if view is picker and picker.rows() else None)
+            if row and row[0] == PROPOSE:
+                return left(("home", ask_dismiss(scr, view, len(refs), offer)))
             if row and row[0] in refs:  # (a pericope: not a block inside one)
-                return ("home", ask_delete(scr, picker, len(refs), row[0], library))
+                return left(("home", ask_delete(scr, view, len(refs), row[0], library)))
             message = "^D deletes a pericope; this is a block inside one" if row and row[0] != NEW else message
             continue
         if act in ("quit", "mouse") or key == curses.KEY_RESIZE:
             if act == "quit":
                 return None
             continue
-        done = picker.key(act)
+        if act == "go_forward":
+            if spot.forward:
+                return left(("forward", None))
+            message = "nothing to go forward to"
+            continue
+        if view is garden:
+            done = garden.key(act)
+            if isinstance(done, tuple) and done[0] == "search":
+                view, picker.query = picker, done[1]
+                picker.sel, picker.moved = picker.first_result(), False
+                done = None
+        else:
+            done = picker.key(act)
+            if done == "back":  # Backspace with nothing typed: the garden again
+                view, done = garden, None
         message = ""
         if done == "cancel":
             return None
         if isinstance(done, tuple):
-            return ("new", picker.query or None) if done[1] == NEW else ("open", done[1])
+            if done[1] == PROPOSE:
+                return left(("propose", offer))
+            typed = picker.query if view is picker else ""
+            return left(("new", typed or None) if done[1] == NEW else ("open", done[1]))
+
+
+def home_garden(library: dict, refs: list, pinned: list, offer: dict | None = None) -> Garden:
+    """The garden over the entries: fw_block.garden's order, a card's text
+    from the library, as of now; a proposed kind (`offer`) a dim card after
+    "+ new pericope", saying what Enter and ^D do (the garden has no footer)."""
+    blocks = {i: e["block"] for i, e in library.items()}
+    now = int(store.clock() // 60)
+    def info(i):
+        b = blocks[i]
+        made = store.iso_minute(b.get("created"))
+        changed = store.iso_minute(b.get("updated"))
+        mmdd = lambda m: datetime.fromtimestamp(m * 60).strftime("%b %-d") if m is not None else "?"
+        dates = f"made {mmdd(made)}" + (f" · changed {mmdd(changed)}" if changed and made and changed - made > 1 else "")
+        what, when = store.last_action(b)
+        return library[i]["title"], dates, f"{what} {store.ago(when, now)}".strip(), store.full_text(blocks, i)
+    cards = [(k, f"a kind: {offer['name']}" if k == PROPOSE else label("")) for k, label, *_ in pinned]
+    notes = {PROPOSE: [f"{len(offer['members'])} pericopes alike, no kind yet", "↵ make it a kind, then say",
+                       "  which of them are one", "^D dismiss it"]} if offer else {}
+    g = Garden(store.garden(blocks, refs, now), info, pinned=cards, notes=notes, faint={PROPOSE})
+    if offer:
+        g.why[PROPOSE] = "proposed"
+    return g
+
+
+def ask_dismiss(scr, picker, count: int, offer: dict) -> str:
+    """Home: the proposed kind `offer` dismissed, once asked (y): never offered again."""
+    draw_home(scr, picker, count, f"dismiss the kind '{offer['name']}'? y dismisses it for good · any other key keeps it")
+    screen.ready(scr)
+    scr.timeout(-1)
+    try:
+        key = scr.get_wch()
+        screen.SEEN["keys"] += 1
+    except curses.error:
+        return "kept"
+    if key != "y":
+        return "kept"
+    try:
+        store.dismiss_proposal(offer)
+    except OSError as e:
+        return str(e)
+    return f"dismissed the kind '{offer['name']}'"
 
 
 def ask_delete(scr, picker, count: int, ref: str, library: dict) -> str:
@@ -204,7 +386,9 @@ def draw_home(scr, picker, count: int, message: str) -> None:
     max_rows = max(h - 6, 1)
     y, x = picker.draw(scr, 1, 1, max(w - 2, 20), max_rows, "open › ")
     left = f" fw  {message}" if message else " fw"
-    hint = "⏎ open  ↑↓ move  ^D delete  esc quit "
+    hint = (f"⏎ open  ←↑↓→ move  type to search  ^G {'list' if picker.grid else 'grid'}  ^D delete  esc quit "
+            if isinstance(picker, Garden)
+            else "⏎ open  ↑↓ move  ⌫ garden  ^D delete  esc quit ")
     bar = left + " " * max(w - len(left) - len(hint), 1) + (hint if len(left) + len(hint) < w else "")
     screen.put(scr, h - 1, 0, bar[:w - 1].ljust(w - 1), curses.A_REVERSE)
     try:
@@ -216,13 +400,13 @@ def draw_home(scr, picker, count: int, message: str) -> None:
 def app(scr, target) -> None:
     attrs = screen.setup(scr)
     with screen.keyboard_modes():
-        message = ""
+        message, spot = "", Home()  # (home as it was left, and the places gone back from)
         while True:
             while target is None or target[0] == "home":  # home, again after a delete there
-                target = home(scr, target[1] if target else message)
+                target = home(scr, target[1] if target else message, attrs, spot)
                 if target is None:
                     return
-            message, target = write(scr, attrs, target), None
+            message, target = write(scr, attrs, target, spot.forward), None
 
 
 def main(argv: list[str]) -> None:

@@ -50,7 +50,7 @@ check("no conflict: the draft is saved", "my new words" in S.own_text(store(), A
 # --- 3 in the real editor
 def session():
     _, tmp, line = S.stage(A, append=True)
-    return tmp, Term(["python3", f"{DEV}/fw_edit.py", tmp, f"+{line}", "--meta", tmp[:-4] + ".meta.json"])
+    return tmp, Term([os.environ.get("FW_PYTHON", "python3"), f"{DEV}/fw_edit.py", tmp, f"+{line}", "--meta", tmp[:-4] + ".meta.json"])
 def end(tmp):
     try:
         return 0, " ".join(S.finish(A, tmp))

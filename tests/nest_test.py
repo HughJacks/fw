@@ -43,7 +43,7 @@ t = F.fw("host", rows=24)
 check("reopened, the container is still one box with the quote inside", t.text().count("1 ┌") == 1 and "│┌─" in t.text(), t.text())
 t.key(Q, ESC); t.done()
 
-o = F.fw("other", rows=24)
+o = F.fw("other", rows=26)
 check("a quote of the entry shows the container's text with its quote inside", "I went to the alley and" in o.text() and "lanes were waxed" in o.text(), o.text())
 o.key(Q, ESC); o.done()
 

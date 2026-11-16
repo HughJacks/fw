@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "fw/schema/block.schema.json",
   "title": "Block",
-  "description": "One block, the only kind of thing fw stores. An entry is a block too: the store keeps every block side by side in the `blocks` array of freewrites.json, and a top-level one (an entry) marks itself with `entry`; a child has no mark, its parent lists it. Fields marked readOnly are managed by fw; the rest (except content, which is the editor body) are editable fields in the editor header.",
+  "description": "One block, the only kind of thing fw stores. An entry is a block too: the store keeps every block side by side in the `blocks` array of freewrites.json, and a top-level one (an entry) marks itself with `entry`; a child has no mark, its parent lists it. Fields marked readOnly are managed by fw; the rest (except content, which is the editor body) are editable fields in the editor header (`kinds` shown by name, and applied when you leave its field).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -33,7 +33,7 @@
       "readOnly": true
     },
     "content": {
-      "description": "What the block is, one of four shapes: Text (a string, may contain newlines); Blocks (its children, by id, in order); Quote (a live view of another block, `quote` naming it; an optional `mask` of anchors into that block's text, in open/close pairs, shows only what's between them, the rest as …; an optional `show` lists which of its properties the quote's top line shows; an optional `inner` masks the quotes inside it, seen through it); or Image (one picture: `image` names its file in the `images` folder beside the store, named by a hash of its bytes). An entry with nothing written is empty Blocks.",
+      "description": "What the block is, one of five shapes: Text (a string, may contain newlines); Blocks (its children, by id, in order); Quote (a live view of another block, `quote` naming it; an optional `mask` of anchors into that block's text, in open/close pairs, shows only what's between them, the rest as …; an optional `show` lists which of its properties the quote's top line shows; an optional `inner` masks the quotes inside it, seen through it; an optional `lock` keeps anyone writing through it); or Image (one picture: `image` names its file in the `images` folder beside the store, named by a hash of its bytes); or Kind (what a block can be, as a poem or a to-do: `kind` its short name, `blocks` its description, child blocks held as Blocks holds them; a kind is always an entry). An entry with nothing written is empty Blocks.",
       "default": [],
       "oneOf": [
         {
@@ -102,6 +102,11 @@
                   }
                 }
               }
+            },
+            "lock": {
+              "description": "No writing through this quote: what it shows (and everything shown through it, at any depth) can be read, selected, copied and opened, but not changed from here. It belongs to this quote, not its source: other quotes of it, and its source opened, stay writable. Its own mask, top line and lock stay its holder's to change. Absent: unlocked. Managed by fw: Lock writing through / Unlock writing through.",
+              "type": "boolean",
+              "const": true
             }
           }
         },
@@ -117,6 +122,30 @@
               "description": "The picture's file in the images folder: a hash of its bytes, then its format.",
               "type": "string",
               "pattern": "^[0-9a-f]{16}\\.(png|jpg|gif|webp)$"
+            }
+          }
+        },
+        {
+          "title": "Kind",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "blocks"
+          ],
+          "properties": {
+            "kind": {
+              "description": "Its name, short (`poem`, `to-do`): unique among kinds, case aside; what the header's kinds field and the search know it by.",
+              "type": "string",
+              "pattern": "\\S"
+            },
+            "blocks": {
+              "description": "Its description: its children, by id, in order, as a Blocks block's.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9]{8}T[0-9]{6}-[0-9a-f]{4}$"
+              }
             }
           }
         }
@@ -180,6 +209,13 @@
       "type": "string",
       "pattern": "^[0-9]{8}T[0-9]{6}-[0-9a-f]{4}$",
       "readOnly": true
+    },
+    "kinds": {
+      "description": "What the block is, as you said: each kind (a Kind block, by id) it is (true) or isn't (false); only your answers (a model's guesses are worked out apart, never stored). A block can be several kinds. Just a pointer: it keeps nothing alive, and deleting a kind drops it here. Written in the header's kinds field by name (\"poem, not letter\"; a new name makes a new kind).",
+      "type": "object",
+      "additionalProperties": {
+        "type": "boolean"
+      }
     },
     "visits": {
       "description": "When the block was visited: stretches of attention on it, each ending after 10 minutes without any. Kept by fw, never an edit (it doesn't change `updated`, nor make the block count as changed). `recent` holds the last 10, oldest first, each [the minute it began (minutes since the epoch), flags]: o it was the pericope opened (home, `fw <title>`, Open it, back along the trail), c the cursor stayed in it (a few seconds, or typing), w something was written in it, q it happened through a quote. A visit to a block counts for each block it's part of, up to its entry (as `updated` does; not through quotes). `total` counts every visit, `first` is the minute of the first. Absent until its first visit (blocks from before schema v15 have none).",

@@ -14,7 +14,7 @@ from datetime import datetime
 from fw_block import word_count
 from fw_draft import new_id, now_local, trim_edges
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 17
 
 
 class BadStore(ValueError):
@@ -98,12 +98,13 @@ def nothing(data: dict) -> None:
     """A new optional field nothing has yet, or a change only to how it's
     written: v6 (`show` on a quote), v8 (`inner`), v9 (`links`), v11 (masks
     written per block; in memory they stay anchors), v12 (an Image block), v13 (a link's `created`), v14 (`paraphrases`), v15 (`visits`:
-    blocks from before have none)."""
+    blocks from before have none), v16 (a Kind block, and `kinds` on any
+    block: none yet), v17 (`lock` on a quote: none locked yet)."""
 
 
 STEPS = [(2, v2), (3, v3), (4, v4), (5, v5), (6, nothing), (7, v7), (8, nothing),
          (9, nothing), (10, v10), (11, nothing), (12, nothing), (13, nothing), (14, nothing),
-         (15, nothing)]
+         (15, nothing), (16, nothing), (17, nothing)]
 assert STEPS[-1][0] == SCHEMA_VERSION
 
 

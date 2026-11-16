@@ -19,7 +19,7 @@ def run(initial, keys, args=(), cols=40, rows=10, sig=None, raw=False):
         if os.path.exists(path): os.remove(path)
     else:
         open(path, "w").write(initial)
-    t = F.Term([sys.executable, ED, path, *args], cols, rows, env={
+    t = F.Term([os.environ.get("FW_PYTHON", sys.executable), ED, path, *args], cols, rows, env={
         "PATH": os.path.abspath("fakebin") + ":/usr/local/bin",  # never touch the real clipboard
         "CLIP": os.path.abspath("t/clip.txt"),
         "FW_DATA": os.environ.get("FW_DATA", os.path.abspath("t/store.json"))})  # never the real store

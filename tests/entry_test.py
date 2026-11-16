@@ -30,7 +30,7 @@ d = S.load_data(); d["blocks"].append({**blk("20261021T230000-ee00", []), "entry
 S.cmd_migrate(None)
 check("an empty untitled entry is removed on migrate", "20261021T230000-ee00" not in B())
 
-d = raw(); d["blocks"][0]["entry"] = False; json.dump(d, open("t/entry.json", "w"))
+d = raw(); next(b for b in d["blocks"] if "entry" not in b)["entry"] = False; json.dump(d, open("t/entry.json", "w"))  # (a child: an entry marked false would just be erased as unreachable)
 try:
     S.cmd_migrate(None); bad = False
 except SystemExit:

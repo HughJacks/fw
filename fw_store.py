@@ -5,14 +5,15 @@ Everything is a block. All blocks live side by side in one JSON file
 (freewrites.json), shaped as:
 
     {
-      "schemaVersion": 15,
+      "schemaVersion": 16,
       "blocks":  [ <Block>, <Block>, ... ]
     }
 
 The shape of one <Block> is defined by schema/block.schema.json, which is
-the source of truth. A block's content is one of four shapes: Text, Blocks
-(its children, by id), Quote (a live view of another block, maybe masked) or
-Image (one picture, a file in the `images` folder beside the store).
+the source of truth. A block's content is one of five shapes: Text, Blocks
+(its children, by id), Quote (a live view of another block, maybe masked),
+Image (one picture, a file in the `images` folder beside the store) or Kind
+(what a block can be: a name and a description, its children).
 An entry is a top-level block, marked `"entry": true`; a child has no mark
 (its parent lists it). Deleting a block from its parent only unlinks it; a
 block no entry reaches any more is erased on the next save. `migrate` is run on every `fw` invocation:
@@ -57,13 +58,18 @@ from fw_lens import *  # noqa: F401,F403
 from fw_block import *  # noqa: F401,F403
 from fw_migrate import SCHEMA_VERSION, BadStore, upgrade
 import fw_image
+import fw_loro
 
 HERE = Path(__file__).resolve().parent
 DATA_PATH = Path(os.environ.get("FW_DATA") or HERE / "freewrites.json")  # FW_DATA: e.g. a test store
 LOCK_PATH = DATA_PATH.with_name(".freewrites.lock")
+LORO_PATH = DATA_PATH.with_suffix(".loro")  # the store itself: a Loro document (fw_loro); the .json beside it is a copy for reading
+MIRROR_PATH = DATA_PATH.with_name(".freewrites.mirror")  # the hash of the .json as last written from the document
+PEER_PATH = DATA_PATH.with_name(".freewrites.peer")  # this machine's peer id in the document (made once)
 CLIP_PATH = DATA_PATH.with_name(".fw-clip.json")  # the rich clipboard (save_clip)
 IMAGES_PATH = DATA_PATH.with_name("images")  # the pictures of Image blocks, named by what's in them (add_image)
 THUMBS_PATH = DATA_PATH.with_name(".fw-thumbs")  # smaller copies of them to draw (picture_bytes); can go any time
+GUESSES_PATH = DATA_PATH.with_name("kind-guesses.json")  # a model's guesses at kinds (written beside the store by a model outside fw)
 MAX_DOWNLOAD = 50_000_000  # the biggest picture fetch_image takes
 SCHEMA_PATH = HERE / "schema" / "block.schema.json"
 
@@ -74,12 +80,44 @@ def load_schema() -> dict:
     return json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
+def peer() -> int:
+    """This machine's peer id in the document: made once, kept beside the store."""
+    try:
+        return int(PEER_PATH.read_text())
+    except (OSError, ValueError):
+        n = int.from_bytes(os.urandom(8), "big") >> 1
+        PEER_PATH.write_text(str(n))
+        return n
+
+
+def json_changed() -> bool:
+    """The .json was written by something else since the document last wrote it
+    (an older tool, a test): what it says is taken in as edits."""
+    if not DATA_PATH.exists():
+        return False
+    try:
+        mirror = MIRROR_PATH.read_text().strip()
+    except OSError:
+        mirror = ""
+    return hashlib.sha256(DATA_PATH.read_bytes()).hexdigest() != mirror
+
+
+def on_disk() -> dict | None:
+    """The store as it is on disk (masks per block, any schema): the document,
+    unless the .json has been changed beside it; None if there's none yet."""
+    if LORO_PATH.exists() and not json_changed():
+        return fw_loro.to_data(fw_loro.load(LORO_PATH.read_bytes(), peer()))
+    if DATA_PATH.exists():
+        return json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    return None
+
+
 def load_data() -> dict:
     """The store, read and brought up to date in memory (fw_migrate), its
     masks as anchors for the lens (masks_in)."""
-    if not DATA_PATH.exists():
+    data = on_disk()
+    if data is None:
         return {"schemaVersion": SCHEMA_VERSION, "blocks": []}
-    data = json.loads(DATA_PATH.read_text(encoding="utf-8"))
     if data.get("schemaVersion", SCHEMA_VERSION) >= 11 and isinstance(data.get("blocks"), list):
         data["blocks"] = masks_in(data["blocks"])  # per block on disk, anchors for the lens
     try:
@@ -88,29 +126,165 @@ def load_data() -> dict:
         die(str(e))
 
 
-def save_data(data: dict) -> None:
-    upgrading = data.pop("upgraded", False)
-    rebased = data.pop("rebased", set())
-    data["schemaVersion"] = SCHEMA_VERSION
-    old = DATA_PATH.read_text(encoding="utf-8") if DATA_PATH.exists() else None
-    stamp_updated(data, [] if upgrading or old is None else on_disk_read(json.loads(old)), rebased)
-    text = json.dumps({**data, "blocks": masks_out(data["blocks"])}, ensure_ascii=False, indent=2) + "\n"
-    if old is not None:
-        bak = DATA_PATH.with_suffix(".json.bak")
-        bak.write_text(old, encoding="utf-8")
-        os.chmod(bak, 0o600)
-    fd, tmp = tempfile.mkstemp(dir=HERE, prefix=".freewrites.", suffix=".tmp")
+def write_file(path: Path, data: bytes) -> None:
+    """`data` into `path` whole or not at all (a temp file, then a rename), private."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".freewrites.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
         os.chmod(tmp, 0o600)
-        os.replace(tmp, DATA_PATH)
+        os.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+
+
+def save_doc(doc) -> str:
+    """The document to disk, and the .json copy of what it says; returns that copy."""
+    write_file(LORO_PATH, fw_loro.snapshot(doc))
+    text = json.dumps(fw_loro.to_data(doc), ensure_ascii=False, indent=2) + "\n"
+    write_file(DATA_PATH, text.encode("utf-8"))
+    MIRROR_PATH.write_text(hashlib.sha256(text.encode("utf-8")).hexdigest())
+    return text
+
+
+def save_data(data: dict) -> None:
+    """The store written: the document edited to say `data` (fw_loro.write,
+    the fewest edits), then saved with its .json copy (the old .json kept as .bak)."""
+    upgrading = data.pop("upgraded", False)
+    rebased = data.pop("rebased", set())
+    data["schemaVersion"] = SCHEMA_VERSION
+    old = on_disk()
+    stamp_updated(data, [] if upgrading or old is None else on_disk_read(old), rebased)
+    doc = fw_loro.load(LORO_PATH.read_bytes() if LORO_PATH.exists() else None, peer())
+    fw_loro.name_peer(doc, os.uname().nodename)
+    if DATA_PATH.exists():
+        bak = DATA_PATH.with_suffix(".json.bak")
+        bak.write_bytes(DATA_PATH.read_bytes())
+        os.chmod(bak, 0o600)
+    fw_loro.write(doc, {**data, "blocks": masks_out(data["blocks"])})
+    save_doc(doc)
+
+
+def merge_file(path: str) -> str:
+    """Another machine's copy of the store (its .loro) merged into this one,
+    then tidied as every write is (what no entry reaches erased, words
+    recounted, a block listed twice kept once), validated, and saved. The same
+    on both machines, in either order: they end up the same."""
+    with store_lock():
+        doc = fw_loro.load(LORO_PATH.read_bytes() if LORO_PATH.exists() else None, peer())
+        if json_changed() and DATA_PATH.exists():  # the .json changed beside the document: its edits first
+            mine = load_data()
+            mine.pop("upgraded", None)
+            mine.pop("rebased", None)
+            fw_loro.write(doc, {**mine, "blocks": masks_out(mine["blocks"])})
+        before = fw_loro.to_data(doc)
+        fw_loro.merge(doc, Path(path).read_bytes())
+        data = fw_loro.to_data(doc)
+        data["blocks"] = masks_in(data["blocks"])
+        data = upgrade(data)
+        listed_once(data)
+        collect(data, clip_holds())
+        sync_words(data)
+        errs = invalid(data, load_schema())
+        if errs:
+            raise StoreError("the merged store is invalid, nothing saved: " + "; ".join(errs))
+        data.pop("upgraded", None)
+        data.pop("rebased", None)
+        fw_loro.write(doc, {**data, "blocks": masks_out(data["blocks"])})
+        save_doc(doc)
+        after = {b["id"]: b for b in fw_loro.to_data(doc)["blocks"]}
+        was = {b["id"]: b for b in before["blocks"]}
+        new = sum(i not in was for i in after)
+        changed = sum(i in was and after[i] != was[i] for i in after)
+        gone = sum(i not in after for i in was)
+        return f"+{new} new, ~{changed} changed, -{gone} removed blocks"
+
+
+def listed_once(data: dict) -> None:
+    """After a merge, a block two containers list (moved on both machines) stays
+    in the first of them by id, the same choice on every machine."""
+    seen = set()
+    for b in sorted(data["blocks"], key=lambda b: b["id"]):
+        kids = children(b)
+        if kids and any(k in seen for k in kids):
+            with_children(b, [k for k in kids if k not in seen])
+        seen.update(kids)
+
+
+_guesses = (None, {})  # (the file's mtime and size, what it held) as last read
+PROPOSALS_PATH = DATA_PATH.with_name("kind-proposals.json")  # the kinds a model proposes (written beside the store by a model outside fw)
+DISMISSED_PATH = DATA_PATH.with_name("kind-dismissed.json")  # the proposals dismissed here: {dismissed: [{name, members, at}]}
+
+
+def read_json_beside(path) -> dict:
+    """A JSON object kept beside the store, as read; {} when there's none or it can't be read."""
+    try:
+        got = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def load_proposals() -> dict:
+    """kind-proposals.json beside the store, as read (fw_block.open_proposals keeps those still open)."""
+    return read_json_beside(PROPOSALS_PATH)
+
+
+def load_dismissed() -> dict:
+    """kind-dismissed.json beside the store: the proposals dismissed."""
+    return read_json_beside(DISMISSED_PATH)
+
+
+def dismiss_proposal(p: dict) -> None:
+    """Proposal `p` dismissed: kept in kind-dismissed.json (by name and
+    members), so it isn't offered again. A fact of yours, kept beside
+    the store rather than in it."""
+    said = load_dismissed().get("dismissed")
+    said = said if isinstance(said, list) else []
+    entry = {"name": p.get("name"), "members": list(p.get("members") or []), "at": now_local().isoformat(timespec="seconds")}
+    fd, tmp = tempfile.mkstemp(dir=DISMISSED_PATH.parent, prefix=".kind-dismissed.", suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({"dismissed": said + [entry]}, fh, indent=1, ensure_ascii=False)
+    os.replace(tmp, DISMISSED_PATH)
+
+
+def kind_from_proposal(p: dict) -> str:
+    """A kind made from proposal `p` (fw_block.open_proposals'): a pericope
+    named as proposed, its description a block of the drafted sentence and
+    live quotes of the typical members still here. Refused when a kind
+    has that name already. Returns the kind's id."""
+    def change(data, blocks):
+        name = tidy_name(p.get("name") or "")
+        if not name:
+            raise StoreError("a kind needs a name")
+        if kind_named(blocks, name) is not None:
+            raise StoreError(f"there's a kind called {name} already")
+        parts = ([add_block(data, blocks, new_id(blocks), p["description"])["id"]] if p.get("description") else [])
+        parts += [add_block(data, blocks, new_id(blocks), {"quote": t})["id"] for t in p.get("typical") or [] if t in blocks]
+        return add_block(data, blocks, new_id(blocks), {"kind": name, "blocks": parts}, entry=True)["id"]
+    return transact(change)
+
+
+def load_guesses() -> dict:
+    """kind-guesses.json beside the store, as read (fw_block.guessed keeps
+    the guesses in it that count); {} when there's none or it can't be read.
+    Read again only when the file changes, so it's cheap to ask often."""
+    global _guesses
+    try:
+        st = GUESSES_PATH.stat()
+    except OSError:
+        return {}
+    if _guesses[0] != (st.st_mtime_ns, st.st_size):
+        try:
+            got = json.loads(GUESSES_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            got = {}
+        _guesses = ((st.st_mtime_ns, st.st_size), got if isinstance(got, dict) else {})
+    return _guesses[1]
 
 
 def on_disk_read(old: dict) -> list:
@@ -273,7 +447,7 @@ def stamp_updated(data: dict, old_blocks: list, rebased: set = frozenset()) -> N
     def changed(i):
         o, b = old[i], blocks[i]
         if i in rebased and quoted(o) and quoted(b) and quoted(o)[0] == quoted(b)[0]:
-            return quote_show(o) != quote_show(b)  # only the anchors moved, unless its line changed too
+            return (quote_show(o), quote_lock(o)) != (quote_show(b), quote_lock(b))  # only the anchors moved, unless its line changed too
         return (o.get("title"), o.get("content")) != (b.get("title"), b.get("content"))
     now = now_local().isoformat(timespec="seconds")
     todo, seen = [i for i in blocks if i in old and not kept(i) and changed(i)], set()
@@ -322,7 +496,7 @@ def set_content(data: dict, blocks: dict, b: dict, items: list) -> None:
         else:
             add_block(data, blocks, bid, text)
         kids.append(bid)
-    b["content"] = kids
+    with_children(b, kids)  # (a kind stays one: its description is these)
 
 
 def new_block(bid: str, content, title=None, entry=False, links=()) -> dict:
@@ -547,16 +721,18 @@ def cmd_migrate(_args) -> None:
             print(f"  - {f}", file=sys.stderr)
         sys.exit(1)
 
-    if changed or json.dumps(data, sort_keys=True) != before or not DATA_PATH.exists():
-        save_data(data)
+    if changed or json.dumps(data, sort_keys=True) != before or not DATA_PATH.exists() or not LORO_PATH.exists() or json_changed():
+        save_data(data)  # (also the first time, making the document from the .json, and after the .json was changed beside it)
 
 
 def find_entry(data: dict, title: str | None = None, last: bool = False) -> str | None:
-    """The id of the newest entry with this written title, or of the newest entry."""
+    """The id of the newest entry with this written title (or a kind of this
+    name, case aside), or of the newest entry."""
     entries = sorted_entries(data)
     if last:
         return entries[-1]["id"] if entries else None
-    return next((fw["id"] for fw in reversed(entries) if title and fw.get("title") == title), None)
+    named = lambda fw: fw.get("title") == title or kind_of(fw) is not None and same_name(kind_of(fw), title)
+    return next((fw["id"] for fw in reversed(entries) if title and named(fw)), None)
 
 
 def meta_path(tmp: str) -> Path:
@@ -603,11 +779,12 @@ def _write_tmp(content: str, fw: dict, schema: dict, blocks: dict) -> str:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(content)
     editable = editable_keys(schema)
-    fields = [{"key": k, "value": minute_iso(last_visit(fw)) if k == "visits" else "" if fw.get(k) is None else str(fw[k]),
+    shown = {"visits": lambda: minute_iso(last_visit(fw)), "kinds": lambda: kinds_text(blocks, fw)}  # (not as stored)
+    fields = [{"key": k, "value": shown[k]() if k in shown else "" if fw.get(k) is None else str(fw[k]),
                "editable": k in editable} for k in schema.get("properties", {}) if k != "content"]
     for f in fields:
-        if f["key"] == "title":
-            f["placeholder"] = derive_title(own_text(blocks, fw["id"]))  # shown when no title is written
+        if f["key"] == "title":  # shown when no title is written
+            f["placeholder"] = kind_of(fw) or derive_title(own_text(blocks, fw["id"]))
     # pid: the fw session that owns this draft (fw_app runs as its child)
     meta_path(tmp).write_text(json.dumps({"id": fw["id"], "pid": os.getppid(), "fields": fields,
                                           "base": content_hash(blocks, fw["id"]), "synced": draft_digest(content)},
@@ -661,16 +838,21 @@ def _stage(ref, title, append) -> tuple[str, str, int]:
     return fw["id"], tmp, len(parse_draft(content)[0])  # the editor's line numbers leave out marker lines
 
 
+APPLIED_APART = {"kinds"}  # header fields the editor applies itself (set_kind, from the kinds line), not on every save
+
+
 def _apply_header(fw: dict, fields: list[dict], data: dict, schema: dict) -> list[str]:
-    """Copy the editable header fields from the editor's sidecar into `fw`.
-    Returns notes about edits that were refused."""
+    """Copy the editable header fields from the editor's sidecar into `fw`
+    (but those APPLIED_APART). Returns notes about edits that were refused."""
     props = schema.get("properties", {})
     editable = editable_keys(schema)
     notes = []
     for field in fields:
         key = field.get("key")
-        if key not in editable or not field.get("editable"):
+        if key not in editable or not field.get("editable") or key in APPLIED_APART:
             continue  # only fields editable both now and when the session opened
+        if key == "title" and kind_of(fw) is not None:
+            continue  # (a kind's title field is its name: the editor renames it, rename_kind)
         value = str(field.get("value", "")).strip()
         if value == "" and _type_ok(None, props[key].get("type", "string")):
             value = None
@@ -904,6 +1086,8 @@ def delete_entry(eid: str) -> int:
             with_links(b, [link for link in links(b) if link["to"] not in gone])  # a link to it goes with it
             if b.get("paraphrases") in gone and b.get("id") not in gone:
                 b.pop("paraphrases")  # (and a paraphrase of it is just your words)
+            if any(k in gone for k in kinds_of(b)):
+                with_kinds(b, {k: v for k, v in kinds_of(b).items() if k not in gone})  # (a kind gone: no answers about it)
         blocks[eid].pop("entry")  # (erased with what it holds once the change is tidied)
         return kept
     return transact(change)
@@ -950,6 +1134,20 @@ def set_quote_show(qid: str, show: list) -> tuple[dict, dict]:
     return hashes(data, *parents(index(data), qid)), undo
 
 
+def set_quote_lock(qid: str, on: bool) -> tuple[dict, dict]:
+    """Lock quote `qid` (no writing through it; fw_block.locked_by), or
+    unlock it. Returns (new content hashes of the blocks holding it, a record
+    that undoes it with restore)."""
+    def change(data, blocks):
+        quote_of(blocks, qid)
+        undo = {"blocks": {qid: copy.deepcopy(blocks[qid])}}
+        with_lock(blocks[qid], on)
+        return undo
+    undo = transact(change)
+    data = load_data()
+    return hashes(data, *parents(index(data), qid)), undo
+
+
 def detach(qid: str) -> tuple[str, dict, dict]:
     """Turn quote `qid` into text: a plain copy of what it shows, with no tie
     to where it came from. Returns (that text, new hashes of its holders, a
@@ -975,6 +1173,8 @@ def pop_out(ref: str) -> tuple[str, dict, dict]:
         b = blocks.get(ref)
         if b is None or quoted(b):
             raise StoreError("that's a quote already" if b else "that block is gone")
+        if kind_of(b) is not None:
+            raise StoreError("a kind is a pericope of its own already")
         undo = {"blocks": {ref: copy.deepcopy(b)}}
         moved = new_id(blocks)
         with_links(add_block(data, blocks, moved, copy.deepcopy(b["content"])), links(b))
@@ -982,6 +1182,8 @@ def pop_out(ref: str) -> tuple[str, dict, dict]:
         if "paraphrases" in b:  # (a quote can't carry it: it goes with what it marks)
             blocks[moved]["paraphrases"] = b.pop("paraphrases")
         with_visits(blocks[moved], b.pop("visits", None))  # (likewise: they were visits to what it held)
+        with_kinds(blocks[moved], kinds_of(b))  # (and what it is: it's what it holds that's a poem)
+        b.pop("kinds", None)
         entry = add_block(data, blocks, new_id(blocks), [moved], entry=True)
         b["content"] = {"quote": entry["id"]}
         undo["blocks"].update({moved: None, entry["id"]: None})
@@ -1030,6 +1232,87 @@ def set_paraphrase(ref: str, source: str | None) -> dict:
             b.pop("paraphrases", None)
         else:
             b["paraphrases"] = source
+        return undo
+    return transact(change)
+
+
+def _kind_called(data: dict, blocks: dict, name: str, undo: dict) -> str:
+    """The kind called `name` (case and spacing aside), else a new one made
+    with that name, as a pericope of its own (as "+ new pericope" makes one),
+    noted in `undo` so taking it back takes the kind too."""
+    kid = kind_named(blocks, name)
+    if kid is None:
+        if not tidy_name(name):
+            raise StoreError("a kind needs a name")
+        kid = add_block(data, blocks, new_id(blocks), {"kind": tidy_name(name), "blocks": []}, entry=True)["id"]
+        undo["blocks"][kid] = None
+    return kid
+
+
+def set_kinds(ref: str, text: str) -> dict:
+    """What block `ref` is, said as text (`text`, fw_block.parse_kinds: "poem,
+    not letter"; as a script says it): each name an existing kind's (case aside),
+    or a new kind (_kind_called); the answers it doesn't name go. Returns a
+    record that undoes it with restore (the new kinds gone too)."""
+    def change(data, blocks):
+        b = blocks.get(ref)
+        if b is None:
+            raise StoreError("that block isn't saved yet: write something first")
+        undo, answers = {"blocks": {ref: copy.deepcopy(b)}}, {}
+        for name, yes in parse_kinds(text):
+            kid = _kind_called(data, blocks, name, undo)
+            if kid == ref:
+                raise StoreError(f"a kind can't be a kind of itself: {name}")
+            answers[kid] = yes
+        with_kinds(b, answers)
+        return undo
+    return transact(change)
+
+
+def set_kind(ref: str, kind: str | None, answer: bool | None, name: str = "") -> tuple[str, dict]:
+    """One answer about block `ref`: it is kind `kind` (True), it isn't
+    (False), or no answer (None). With `kind` None, the kind called `name`,
+    made if there's none (the kinds picker's "+ new kind"). Not an edit.
+    Returns (the kind, a record that undoes it with restore, the kind made
+    gone too)."""
+    def change(data, blocks):
+        b = blocks.get(ref)
+        if b is None:
+            raise StoreError("that block isn't saved yet: write something first")
+        undo = {"blocks": {ref: copy.deepcopy(b)}}
+        kid = kind if kind is not None else _kind_called(data, blocks, name, undo)
+        if kind_of(blocks.get(kid)) is None:
+            raise StoreError("that kind is gone")
+        if kid == ref:
+            raise StoreError("a kind can't be a kind of itself")
+        answers = kinds_of(b)
+        if answer is None:
+            answers.pop(kid, None)
+        else:
+            answers[kid] = answer  # (an answer changed keeps its place)
+        with_kinds(b, answers)
+        return kid, undo
+    return transact(change)
+
+
+def rename_kind(ref: str, name: str) -> dict:
+    """Kind `ref` called `name` from now on (its spacing tidied): refused
+    empty, or when another kind has that name (case aside). Whatever shows
+    the name reads it from the kind, so it follows. Returns a record that
+    undoes it with restore."""
+    name = tidy_name(name)
+    def change(data, blocks):
+        b = blocks.get(ref)
+        if kind_of(b) is None:
+            raise StoreError("only a kind has a name to change")
+        if not name:
+            raise StoreError("a kind needs a name")
+        other = kind_named(blocks, name)
+        if other not in (None, ref):
+            raise StoreError(f"there's a kind called {kind_of(blocks[other])} already")
+        undo = {"blocks": {ref: copy.deepcopy(b)}}
+        b["content"] = {**b["content"], "kind": name}
+        b["title"] = None  # (its name is its title)
         return undo
     return transact(change)
 
@@ -1232,8 +1515,16 @@ def main(argv=None) -> None:
 
     sub.add_parser("migrate")
     sub.add_parser("list")
+    m = sub.add_parser("merge", help="merge another machine's freewrites.loro into this store")
+    m.add_argument("file")
 
     args = p.parse_args(argv)
+    if args.cmd == "merge":
+        try:
+            print(merge_file(args.file))
+        except StoreError as e:
+            die(str(e))
+        return
     handler = {"migrate": cmd_migrate, "list": cmd_list}[args.cmd]
     if args.cmd == "migrate":  # it writes the store (the editor's writes lock themselves)
         with store_lock():

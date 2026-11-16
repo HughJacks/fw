@@ -273,6 +273,9 @@ class MaskEditing:
         """Masking mode on a quote: the one the cursor's on, else the one being
         edited (masks are stored on the quote where masking starts). `at`: where
         to start in its text (else the cursor)."""
+        if self.quote_locked():  # (a quote shown through a lock: its mask is its source's)
+            self.message = "locked"
+            return
         if self.on_atom() and self.enterable(self.cy):
             self.enter(self.cy)
             self.arrive()
@@ -423,7 +426,7 @@ class MaskEditing:
         in its box, its blocks boxed as they are at rest; `base` is the row it starts on."""
         seg = self.medit.flow["segs"][key]
         text, meta = render(self.medit.flow, self.medit.mask, key)
-        rows = [edge(depth, "top", self.quote_label(seg["target"], self.show_of(seg["qid"])))]
+        rows = [edge(depth, "top", self.lock_label(seg["qid"], self.quote_label(seg["target"], self.show_of(seg["qid"]))))]
         (lines, bids), nest = parse_draft(text), parse_nest(text)
         opened = []
         for line, m, p in zip(lines, meta, box_plan(bids, paths_of(lines, bids, nest), depth, many_blocks(bids))):

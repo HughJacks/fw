@@ -8,7 +8,7 @@ def entry(i, title, text): return {"id": i, "title": title, "content": [{"type":
 def fresh(*entries): json.dump({"schemaVersion": 3, "freewrites": list(entries)}, open("t/store.json", "w"))
 def meta(path, i): json.dump({"id": i, "fields": [{"key": "title", "value": "", "editable": True}]}, open(path, "w"))
 def stored(i): return S.own_text(S.index(S.load_data()), i)
-ED = ["python3", f"{DEV}/fw_edit.py"]
+ED = [os.environ.get("FW_PYTHON", "python3"), f"{DEV}/fw_edit.py"]
 
 # 1. autosave goes straight into the store (killed without any chance to save on exit)
 fresh(entry(SELF, "mine", ""))
