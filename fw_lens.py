@@ -29,7 +29,7 @@ def pieces(draft: str, mask: list) -> tuple[list, list]:
     """The draft cut at the anchors: hidden pieces H0…Hn around shown ones S1…Sn.
     A block any of whose text shows keeps its marker line (`kept_apart`), so
     hidden text never runs two blocks together."""
-    cuts = [0, *kept_apart(draft, mask), len(draft)]
+    cuts = [0, *kept_apart(draft, shown_only(mask)), len(draft)]
     parts = [draft[a:b] for a, b in zip(cuts, cuts[1:])]
     return parts[0::2], parts[1::2]
 
@@ -105,19 +105,22 @@ def snap(draft: str, pos: int, opening: bool) -> int:
     return snap(draft, start - 1, False) if start > 0 else 0
 
 
-def normalize(draft: str, mask: list | None) -> list | None:
+def normalize(draft: str, mask: list | None, keep_empty: bool = False) -> list | None:
     """A well-formed mask: anchors in text and in order; ranges with nothing
     to read dropped, and ranges with nothing to read between them merged.
-    None when it shows everything; [] when it shows nothing."""
+    None when it shows everything; [] when it shows nothing. With
+    `keep_empty`, a range left with nothing to read stays as an empty place
+    where its text was (`with_empties`)."""
     if mask is None or len(mask) % 2:
         return None
     m = []
     for n, pos in enumerate(mask):
         pos = snap(draft, int(pos), n % 2 == 0)
         m.append(max(pos, m[-1]) if m else pos)
-    merged = []
+    merged, places = [], []
     for a, b in zip(m[0::2], m[1::2]):
         if not has_text(draft[a:b]):
+            places.append(a)
             continue
         if merged and not has_text(draft[merged[-1][1]:a]):
             merged[-1][1] = b
@@ -125,7 +128,38 @@ def normalize(draft: str, mask: list | None) -> list | None:
             merged.append([a, b])
     if len(merged) == 1 and not has_text(draft[:merged[0][0]]) and not has_text(draft[merged[0][1]:]):
         return None
-    return [x for pair in merged for x in pair]
+    out = [x for pair in merged for x in pair]
+    return with_empties(out, places) if keep_empty else out
+
+
+# --- empty places: where a shown range's text was all deleted -------------------
+# A range whose text is all deleted isn't dropped: it stays as an empty range,
+# [p, p], where the text was, so text typed there (or put back by an undo)
+# shows again, as ranges grow. Nothing draws it and nothing but the writes
+# that move masks see it: `quoted` gives everything else `shown_only`.
+
+def shown_only(mask: list | None) -> list | None:
+    """`mask` without its empty places (one in its on-disk shape, per block, as it is)."""
+    if not isinstance(mask, list):
+        return mask
+    return [x for a, b in zip(mask[0::2], mask[1::2]) if a < b for x in (a, b)]
+
+
+def empties(mask: list | None) -> list:
+    """Where `mask`'s empty places are."""
+    if not isinstance(mask, list):
+        return []
+    return [a for a, b in zip((mask or [])[0::2], (mask or [])[1::2]) if a == b]
+
+
+def with_empties(mask: list | None, places: list) -> list | None:
+    """`mask` with empty places at `places`, except those in or at the edge
+    of a shown range (typing there grows it already). None stays None."""
+    if mask is None:
+        return None
+    spans = spans_of(shown_only(mask))
+    kept = sorted({t for t in places if not any(a <= t <= b for a, b in spans)})
+    return [x for a, b in sorted(spans + [[t, t] for t in kept]) for x in (a, b)]
 
 
 def holes(draft: str, mask: list) -> list:

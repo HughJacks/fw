@@ -111,10 +111,8 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         self.editable = sorted((f for f in self.meta["fields"] if f.get("editable")),
                                key=lambda f: f.get("key") != "kinds")  # (kinds above the title: Up from the text reaches the title first)
         self.fedit = None       # the header field being edited: a FieldEdit
-        if self.meta.get("id") and self.meta["fields"]:  # (with a header to show it in; worked out from the store, not saved: fw_block.backlinks)
-            self.editable.insert(0, {"key": "backlinks", "value": "", "derived": True})  # (above the title: Up reaches the title first)
-        self.found = (None, [])
-        self.peeking = set()  # the paraphrases whose source shows inside them (Show its source), this session  # (store mtime, backlinks of the open entry) as last worked out
+        self.found = (None, [])  # (store mtime, backlinks of the open entry) as last worked out
+        self.peeking = set()  # the paraphrases whose source shows inside them (Show its source), this session
         self.self_id = self.meta.get("id")  # the stored entry this session edits, if any
         # editing inside quotes: self.lines etc. are always the block being
         # edited (cur_id); the blocks it's quoted from wait on the stack
@@ -130,10 +128,13 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         self.unit_side = None
         self.library = {}       # id -> {title, words, blocks}, from the store
         self.store_mtime = None
+        self.gone = False       # the entry was deleted elsewhere (another session, another machine): fw_app takes us out
+        self.here_as = None     # its title, as last seen in the store (to say what was deleted)
         self.refresh_library()
-        if self.editable and self.editable[0].get("key") == "backlinks" and self.kind_name() is not None:
-            self.editable.insert(1, {"key": "maybes", "value": "", "derived": True})  # (a kind's: the blocks a model guesses might be one, to review)
+        if self.meta.get("id") and self.meta["fields"] and self.kind_name() is not None:
+            self.editable.insert(self.has_backlinks_line(), {"key": "maybes", "value": "", "derived": True})  # (a kind's: the blocks a model guesses might be one, to review)
         self.palette = None     # the / menu while open: a Menu
+        self.asker = None       # the search service, asked what's near what's typed in a search over blocks (fw_meaning; made when first needed)
         self.ink = Ink()        # what it draws with (fw_screen.setup, once curses starts)
         self.can_draw_pictures = pictures_here()
         self.picture_px = {}    # each picture's size in pixels, by file name (read once)
@@ -186,6 +187,7 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         self.made = None        # + new entry: (its id, undo depth), until coming back from it (came_back)
         self.trail = []         # titles of the entries stepped in from, outermost first (shown in the bar)
         self.refused = False    # the store refused the last save: retry it every RETRY_MS
+        self.restoring = False  # an undo or redo is saving: the masks it moves are its own (masks_moved)
         self.visits = Visits()  # the visits seen here, until they're written (fw_state)
         self.visit_open()
 
@@ -890,7 +892,8 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
                 stack.append((lines, bids, cy, cx, extra))
                 self.message = str(e)
                 return
-        (self.redo if undoing else self.undo).append(self.undo_entry(inverse))
+        back = self.undo_entry(inverse)
+        (self.redo if undoing else self.undo).append(back)
         self.lines, self.bids, self.cy, self.cx = lines, bids, cy, cx
         self.nest = dict(extra["nest"])
         self.vmode = copy.deepcopy(extra["mode"][0])
@@ -903,11 +906,33 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         gone = {q: b for q, b in extra["quotes"].items() if q in shown and q not in self.library}
         if gone:  # quotes deleted since: back as they were, until the buffer's saved
             store.restore({"blocks": gone}, tidy=False)
-        if inverse is not None or gone:
+        masks = extra.get("masks")
+        if masks and not self.medit:  # the text saved as it was, then the masks it moved as they were
+            back[4]["masks"] = self.put_masks_back(masks)
+        if inverse is not None or gone or masks:
             self.after_store_change()
         self.anchor = self.picked = None
         self.last_edit = None
         self.stale = True
+
+    def put_masks_back(self, masks: dict) -> dict:
+        """Undoing (or redoing) an edit that moved quotes' masks: the buffer,
+        just put back, saved now, then those quotes as they were before the
+        edit (`masks`: copies). Returns them as they were before this, for the
+        step back the other way."""
+        try:
+            now = store.index(store.load_data())
+            was = {i: copy.deepcopy(now[i]) for i in masks if i in now}
+            self.restoring = True
+            try:
+                self.save()
+            finally:
+                self.restoring = False
+            store.restore({"blocks": {i: b for i, b in masks.items() if i in now}}, tidy=False)
+        except (store.StoreError, OSError, ValueError) as e:
+            self.message = str(e)
+            return {}
+        return was
 
     # --- selection and clipboard ---------------------------------------
     def selection(self):
@@ -1064,6 +1089,41 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         self.refresh_library()
         self.stale = True
 
+    def pictures_out(self, ref: str) -> None:
+        """The save took the pictures this buffer held out to be pericopes
+        (store.pictures_apart: a paste, a copy, anything that put one here):
+        each one's line becomes the quote that took its place."""
+        if not any(IMAGE_RE.fullmatch(line) for line in self.lines):
+            return
+        self.refresh_library()
+        lib = self.library
+        for n, line in enumerate(self.lines):
+            pic = atom_id(line) if IMAGE_RE.fullmatch(line) else None
+            if not (pic and lib.get(pic, {}).get("entry")):
+                continue
+            holder = self.outer(n) or ref
+            shown = {atom_id(l) for l in self.lines}
+            qid = next((k for k in store.children(lib.get(holder, {}).get("block"))
+                        if store.quoted(lib.get(k, {}).get("block")) == (pic, None) and k not in shown), None)
+            if qid is None:
+                continue
+            if self.outer(n):
+                self.nest[qid] = self.outer(n)
+            self.nest.pop(pic, None)
+            self.lines[n] = quote_line(pic, qid)
+        self.stale = True
+
+    def masks_moved(self, moved: dict) -> None:
+        """Quotes elsewhere whose masks the save just moved along with the
+        text (`moved`: each as it was before): kept with the last undo step,
+        the earliest copy of each, so undoing the edit puts them back as they
+        were once the text is back (`restore`), not as the edit back moves
+        them. Not while an undo or redo is saving: it has its own."""
+        if moved and self.undo and not self.restoring:
+            kept = self.undo[-1][4].setdefault("masks", {})
+            for i, b in moved.items():
+                kept.setdefault(i, b)
+
     def join_step(self, record: dict) -> None:
         """What `record` puts back in the store, undone with the last step
         (what that step's edit made the store do), else a step of its own."""
@@ -1078,6 +1138,8 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         their blocks' current text. Returns True when it reloaded."""
         if not self.self_id:
             return False
+        if self.here_as is None and self.self_id in self.library:  # (as opened)
+            self.here_as = self.library[self.self_id].get("title") or "untitled"
         try:
             mtime = store.DATA_PATH.stat().st_mtime_ns
             if mtime == self.store_mtime:
@@ -1087,7 +1149,32 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
             return False
         self.store_mtime = mtime
         self.stale = True
+        if self.self_id in self.library:
+            self.here_as = self.library[self.self_id].get("title") or "untitled"
+        elif self.here_as is not None:
+            self.gone = True  # it was here, and isn't any more
+        self.backlinks_line()
         return True
+
+    def has_backlinks_line(self) -> bool:
+        return bool(self.editable) and self.editable[0].get("key") == "backlinks"
+
+    def backlinks_line(self) -> None:
+        """The header's backlinks line, first, only while something points at
+        the open entry (a header to show it in; worked out from the store,
+        not saved: fw_block.backlinks). Not taken away while you're on it."""
+        if not (self.meta.get("id") and self.meta["fields"]):
+            return
+        want, there = bool(self.backlinks()), self.has_backlinks_line()
+        if want == there or (there and self.fedit is not None and self.fedit.index == 0):
+            return
+        if want:
+            self.editable.insert(0, {"key": "backlinks", "value": "", "derived": True})  # (above the title: Up reaches the title first)
+        else:
+            self.editable.pop(0)
+        if self.fedit is not None:
+            self.fedit.index += 1 if want else -1
+        self.stale = True
 
     def resync_view(self) -> None:
         """After a save through the lens: if the stored view's shape changed
@@ -1337,14 +1424,18 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
                 self.save_mask()
                 return [], True
             if self.vmode and ref == self.cur_id:  # a masked quote: through the lens
-                self.base.update(store.commit_view(self.vmode.qid, self.draft(), self.vmode.opened,
-                                                   base=self.base.get(ref), seen=self.view_mask()))
+                hashes, moved = store.commit_view(self.vmode.qid, self.draft(), self.vmode.opened,
+                                                  base=self.base.get(ref), seen=self.view_mask())
+                self.base.update(hashes)
+                self.masks_moved(moved)
                 self.refresh_library()
                 self.resync_view()
                 return [], True
-            notes, self.base[ref], record = store.commit(ref, self.draft(), fields, base=self.base.get(ref))
+            notes, self.base[ref], record, moved = store.commit(ref, self.draft(), fields, base=self.base.get(ref))
             if record:  # blocks taken out, quoted elsewhere: their quotes became text; undo puts them back
                 self.join_step(record)
+            self.masks_moved(moved)
+            self.pictures_out(ref)
         except store.StoreError as e:
             return [str(e)], False
         except (OSError, ValueError) as e:
@@ -1641,6 +1732,8 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
             return (f"{n} · ↵ review them" if n else "none") + (f" · {auto} applied" if auto else "")
         if f.get("derived"):
             return store.backlink_summary(self.backlinks())
+        if f["key"] == "title" and store.image_of(self.library.get(self.self_id, {}).get("block")):
+            return self.library[self.self_id]["title"]  # (a picture: the title a model gave it, else "picture")
         return (PLACEHOLDERS[f["key"]](self.root_lines()) if f["key"] in PLACEHOLDERS else f.get("placeholder")) or ""
 
     def shown(self, f: dict) -> str:
@@ -1672,6 +1765,7 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         # in a box like a block of text's, its text at the column all text starts at
         x, room = self.text_x(0), self.inner()
         self.value_x = x + max((len(f["key"]) for f in self.editable), default=0) + 2
+        self.value_x = max(self.value_x, x + len("backlinks") + 2)  # (as wide with or without its backlinks line: nothing shifts when one comes)
         put(scr, 1, x, info[:room], curses.A_DIM)
         for i, f in enumerate(self.editable, start=HEADER_TOP):
             put(scr, i, x, f["key"], curses.A_DIM)
@@ -1913,11 +2007,11 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         self.pasting, self.pasted = False, []
 
     def insert_image(self, add) -> None:
-        """A picture as an image block at the cursor (room_here: in a block's
-        text, nested there; after the quote or image the cursor is on), the
-        cursor below it. `add()` puts the picture in the store's images folder and
-        returns its name there (store.add_image, add_image_data); the block
-        goes in loose and the save takes it in. One undo takes it back out."""
+        """A picture, as a pericope of its own, quoted at the cursor
+        (room_here: in a block's text, nested there; after the quote or image
+        the cursor is on), the cursor below it. `add()` puts the picture in
+        the store's images folder and returns its name there (store.add_image,
+        add_image_data). One undo takes it back out, pericope and all."""
         if self.dirty():
             self.save()
         self.refresh_library()
@@ -1929,8 +2023,9 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         if not self.room_here():
             return
         try:
-            iid = self.fresh(self.outer(self.cy))
-            store.restore({"blocks": {iid: store.new_block(iid, {"image": name})}}, tidy=False)
+            iid = store.new_id(self.taken())
+            store.restore({"blocks": {iid: store.new_block(iid, {"image": name}, entry=True)}}, tidy=False)
+            qid = self.fresh(self.outer(self.cy))  # (its quote, where the cursor is: the save makes it)
         except (store.StoreError, OSError, ValueError) as e:
             self.message = str(e)
             return
@@ -1946,7 +2041,7 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
             below = [tail] if tail else []
         if not below and not (at < len(self.lines) and not self.is_atom(at)):
             below = [""]  # (a line to write on below it)
-        self.lines[at:at] = [image_line(iid)] + below
+        self.lines[at:at] = [quote_line(iid, qid)] + below
         self.bids[at:at] = [None] + [bid] * len(below)  # (tidy_bids gives a split block's tail a new id)
         self.tidy_bids()
         self.cy, self.cx, self.unit_side = at + 1, 0, None
@@ -2196,8 +2291,11 @@ def edit_loop(scr, ed: Editor) -> None:
             if ed.dirty():
                 ed.save()
             ed.refresh_library()
+            if ed.gone:
+                return  # deleted elsewhere: fw_app takes us back, or home
             ed.follow_store()
             ed.fetched()
+            ed.meaning_tick()
             ed.visit_tick()
             continue
         # drain everything already waiting (a paste) before redrawing

@@ -61,7 +61,7 @@
               "pattern": "^[0-9]{8}T[0-9]{6}-[0-9a-f]{4}$"
             },
             "mask": {
-              "description": "What the quote shows of each block of its target, by block id, like a block's links: spans [start, end] of that block's own text (a quote inside it is one place: [[0, 1]] when it shows). A block it doesn't list shows nothing. No `mask` shows it all. (In memory fw works with it as anchors into the target's whole text.)",
+              "description": "What the quote shows of each block of its target, by block id, like a block's links: spans [start, end] of that block's own text (a quote inside it is one place: [[0, 1]] when it shows). A block it doesn't list shows nothing. An empty span [p, p] shows nothing: it is where shown text was all deleted, kept so text typed there shows again. No `mask` shows it all. (In memory fw works with it as anchors into the target's whole text.)",
               "type": "object",
               "additionalProperties": {
                 "type": "array",

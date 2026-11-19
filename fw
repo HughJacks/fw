@@ -1,8 +1,11 @@
 #!/bin/zsh
 # fw — open a free-writing entry, optionally with a writing timer.
 #
-#   fw              new entry; quitting it goes home to pick the next
-#   fw -t           new entry with a 10-minute timer (also: --timer)
+#   fw              the web editor, in the browser (its home: a waiting pericope, the garden): the default
+#                   editor (also: fw open, fw o, fw web)
+#   fw term …       the terminal editor (deprecated), with any of the arguments below: fw term = a new entry,
+#                   fw term open = its home
+#   fw -t           new entry with a 10-minute timer (also: --timer), in the terminal editor
 #   fw -t 15        new entry with a 15-minute timer (decimals ok: -t 7.5)
 #   fw journal      open/append the entry titled "journal" (created if missing)
 #   fw journal -t   same, with a 10-minute timer
@@ -36,24 +39,35 @@ usage() {
   print -- "fw — free-writing pericopes with a writing timer.
 
 Usage:
-  fw                 new pericope; quitting it (^Q) goes home, a search over every
-                     pericope: type to filter, Enter opens, Esc quits fw
+  fw                 the web editor, in the browser (the default editor; its core
+                     started if it isn't running): home, a waiting pericope to write
+                     in, the garden and every pericope below   (also: fw open / o / web)
+  fw term [...]      the terminal editor (deprecated): fw term, a new pericope;
+                     fw term open, its home; fw term journal -t, … as below
+  The terminal editor only (the web editor has no titles to open or timer yet):
   fw -t [minutes]    add a writing timer, 10 minutes unless given (also: --timer)
                      works with any of these:  fw -t 15,  fw journal -t,  fw last -t 5
   fw <title>         open/append the pericope with that title (created if missing);
                      quote titles with spaces:  fw \"garden notes\"
   fw last            append to the most-recently-created pericope
-  fw open            start at home                (also: fw o)
   fw list            list every pericope         (also: fw ls)
   fw stop            cancel a running timer       (also: fw s / cancel / -s)
   fw help            show this message            (also: fw -h / --help)
 
-Editor:  fw_edit.py (saves as you type; ^Q home, ^Z undo, ^Y redo, Enter new block;
-         every key: KEYS.md).
+Editor:  the web editor (fw_web.py, the core; web/, the page): the default. Its keys
+         are on its own page (#/keys), and can be changed there.
+         fw_edit.py, the terminal editor (fw term): deprecated, kept working (saves as you
+         type; ^Q home, ^Z undo, ^Y redo, Enter new block; every key: KEYS.md).
 Storage: ${FW_DATA:-$dir/freewrites.json}  (shape: schema/block.schema.json;
          \$FW_DATA picks another store)
          validated and migrated on every run by fw_store.py"
 }
+
+# --- which editor: the web editor by default; `fw term …` the terminal's, with the old arguments.
+# Plain fw and fw open go to the web; a title, last or a timer are the terminal's (the web has neither yet).
+if [[ "$1" == term ]]; then shift
+elif (( $# == 0 )) || [[ $# == 1 && ( "$1" == open || "$1" == o ) ]]; then set -- web
+fi
 
 # --- subcommands that don't open an editor ---------------------------
 case "$1" in
@@ -68,6 +82,25 @@ case "$1" in
     ;;
   list|ls)
     exec "$py" "$store" list
+    ;;
+  web)  # the web editor (fw_web.py, web/): its core started if it isn't running (or started again if its code is
+        # older than what's here), the page opened in the browser
+    port="${FW_WEB_PORT:-8020}"
+    url="http://127.0.0.1:$port/"
+    running="$(curl -s -m 1 "${url}api/version" 2>/dev/null)"
+    if [[ -n "$running" ]] && ! print -r -- "$running" | grep -q "\"code\": \"$("$py" "$dir/fw_web.py" --code-stamp)\""; then
+      print -- "fw web: the core running is older than the code; starting it again"
+      pkill -f "fw_web.py --port $port" 2>/dev/null
+      for _ in {1..50}; do curl -s -o /dev/null -m 1 "${url}api/stamp" || break; sleep 0.1; done
+    fi
+    if ! curl -s -o /dev/null -m 1 "${url}api/stamp"; then
+      "$py" -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' "$py" "$dir/fw_web.py" --port "$port" --no-open \
+        </dev/null >"$dir/.fw-web-$port.log" 2>&1 &!
+      for _ in {1..100}; do curl -s -o /dev/null -m 1 "${url}api/stamp" && break; sleep 0.1; done
+    fi
+    if (( $+commands[open] )); then open "$url"; elif (( $+commands[xdg-open] )); then xdg-open "$url" >/dev/null 2>&1; fi
+    print -- "fw web: $url"
+    exit 0
     ;;
 esac
 

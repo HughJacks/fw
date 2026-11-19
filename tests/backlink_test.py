@@ -39,4 +39,15 @@ check("Enter on one opens its entry, on the trail back here", t.until(lambda: "t
 t.key(Q); t.settle()
 check("  ^Q comes back", "first part" in t.text() and "›" not in t.row(t.scr.lines - 1), t.row(t.scr.lines - 1))
 t.key(Q, ESC); t.done()
+# the line shows only while something points at it (the user, 2026-11-17)
+t = F.fw("linker", rows=30)
+check("  (open)", t.until(lambda: "target↗ here" in t.text()), t.text())
+check("a pericope nothing points at: no backlinks line", "backlinks" not in t.text(), t.text())
+qd = S.index(S.load_data())
+def quote_linker(data, blocks):
+    i = S.new_id(blocks); S.add_block(data, blocks, i, {"quote": P3}); blocks[P1]["content"].append(i)
+S.transact(quote_linker)
+check("  quoted elsewhere: the line comes, by itself", t.until(lambda: "backlinks" in t.text() and "1 quote" in t.text()), t.text())
+t.key(Q, ESC); t.done()
+
 F.report("BACKLINK")

@@ -5,6 +5,10 @@ personal knowledge manager built on blocks and live quotes. This file is
 the technical map: principles, files, the data model, the architecture,
 and working on it. Every key is in `KEYS.md`.
 
+The web editor (`fw_web.py` and `web/`) is the default editor: `fw` opens it
+in the browser. The terminal editor (fw_edit and its mixins, fw_app) is
+deprecated, kept working (`fw term`); new work goes into the web editor.
+
 ## Principles
 
 Slow and without bloat; standard library only, except the store's `loro`
@@ -35,6 +39,9 @@ several machines merge; undo is total; everything is a block.
 | `fw_picker.py` | `Garden`, home's grid of cards (the order from `fw_block.garden`); the search list home, Quote a block, Link to an entry and the kinds picker share (`Picker`; a kind's name typed: it and its blocks first, then the guessed ones, dim) |
 | `fw_screen.py` | the terminal: character widths, soft wrap, word steps, `put`, `draw_box`, terminal modes, the test-only `$FW_SYNC` signal |
 | `fw_app.py` | the loop: `stage` → edit → `finish` → home; the Open it trail |
+| `fw_web.py` | the web editor's core: a local server over the store (127.0.0.1), the only part of the web editor that touches it (fw_store's functions; drafts saved through `commit`); JSON to the page. It rebuilds the page when `web/src` changes and restarts itself when `fw_*.py` change; the open tab reloads itself. `fw`, `fw web` |
+| `web/` | the web editor's page: Svelte 5 components with runes (`App.svelte` the shell and the view open; `Home`, `Pericope`, `Keys`; `Tabs`, `Kinds`, `Ask`, `Masking`; the floating menus `SearchBox`, `ActionsMenu`, `SlashList`, `PictureLink`, through `float.svelte.js`), shared state in `*.svelte.js` (`state`, `keys`, `review`); ProseMirror the editing engine (`editor.js`, `schema.js`, `views.js`; `src/draft.js` pure: tree to document to draft); `main.js` routes; `motion.js` moving between places; keys as data in `keys.svelte.js`; Tailwind; `npm run build` → `dist/`; `npm test`, `node test/e2e.mjs` |
+| `fw_meaning.py` | search by meaning, optional: asks a search service you run apart from fw (`$FW_MEANING_URL`; none by default) in the background after a pause in typing (`Asker`); the search list mixes its answer in (`fw_picker.fuse`). fw has no model of its own and works the same without one |
 | `schema/block.schema.json` | the shape of a block; the source of truth for validation and the header fields |
 | `tests/` | the suites, `fwtest.py` (their shared helpers) and `run.sh` |
 | `freewrites.loro` | your store, beside the code unless `$FW_DATA` names another: a Loro document; `freewrites.json` beside it is a copy written with it, for reading (`.bak` beside it; a change made to it by something else is taken in as edits: `.freewrites.mirror`); `.freewrites.peer` is this machine's peer id; pictures in `images/` |
@@ -138,6 +145,14 @@ visits  = {total, first, recent: [[minute, flags], …]}   the last 10 visits; m
   first, then the blocks guessed to be one, dim (`Picker.kind_first`); a kind's row is its name, drawn blue (`Ink.blue`, `blue_soft`,
   `blue_tag`; `kind_boxes` in the layout). A merge keeps `kinds` answer by
   answer (each its own key in the document: `fw_loro`), never a conflict.
+  Two kinds of one name (made on two machines before a merge) stay two, as
+  two pericopes of one title do: a kind is treated like any other block.
+- **Pictures are pericopes:** an Image block is always an entry; held
+  anywhere, `tidy_store` takes it out (`pictures_apart`, pure
+  `pictures_held`, `picture_quote_id`: the same ids on every machine) and a
+  quote of it takes its place. Its title, until one's written, may come from
+  a model outside fw (`picture-titles.json` beside the store,
+  `store.load_picture_titles`, `display_title`'s `named`).
 - **Types**: every header's top line says what the open block is made of,
   derived, never stored: `fw_block.block_type` (text, image, kind, quote,
   block) and `type_label` ("kind: poem").
@@ -160,6 +175,14 @@ visits  = {total, first, recent: [[minute, flags], …]}   the last 10 visits; m
 - **Masks:** per block on disk; in memory anchors into the target's draft,
   in open/close pairs (`masks_in` / `masks_out` in `fw_block` convert on
   read and write). `inner` masks narrow the quotes inside (intersection).
+  A range whose text is all deleted stays as an empty place, `[p, p]`
+  (`normalize(..., keep_empty=True)` in the writes that move masks), so
+  text typed there shows again; `quoted` hands everything else the mask
+  without them (`shown_only`), `raw_mask` has them; a quote showing
+  nothing but empty places is drawn "(nothing here now)". A save that
+  moves other quotes' masks returns them as they were (`rebase_quotes`),
+  and the editor keeps them with the undo step, put back after the text
+  (`Editor.masks_moved`, `put_masks_back`).
 - **Deleting is unlinking:** `collect()` erases blocks no entry reaches
   through children or quotes (or the clipboard holds, `clip_holds`).
 - **Migrations** (`fw_migrate.py`, pure, one step per version) run as
@@ -258,4 +281,8 @@ except marked ones (`keep`).
 - **Tests:** `tests/run.sh [suite…]`, each suite in a temp copy, one per
   core (about 10 s). Shared helpers in `tests/fwtest.py` (throwaway store,
   fw or the editor in a pty read with pyte, `$FW_SYNC` waits instead of
-  sleeps). `tests/.venv` needs `pyte` and `loro`.
+  sleeps). `tests/.venv` needs `pyte` and `loro`. The suite "web" builds
+  the page, runs its node tests, then the browser suite (`web/test/e2e.mjs`:
+  headless Chrome over the DevTools protocol, each scenario on a fresh
+  store, waiting on `window.fw.settled()`, never fixed sleeps); it's skipped
+  without Node, `web/node_modules` or Chrome.

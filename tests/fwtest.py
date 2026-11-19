@@ -150,8 +150,8 @@ def editor(*args, cols=60, rows=12, env=None):
     """The editor on a draft file: editor("t/f.txt", "--meta", "t/f.meta.json")."""
     return Term([os.environ.get("FW_PYTHON", "python3"), ED, *args], cols, rows, env)
 def fw(*args, cols=70, rows=16, env=None, home=f"{DEV}/fw"):
-    """fw itself (zsh fw ARGS), on the store in $FW_DATA."""
-    return Term(["zsh", home, *args], cols, rows, env)
+    """fw's terminal editor (zsh fw term ARGS), on the store in $FW_DATA. (Plain `fw` is the web editor.)"""
+    return Term(["zsh", home, "term", *args], cols, rows, env)
 
 
 def loro_merge(base: dict, laptop: dict, mini: dict) -> dict:

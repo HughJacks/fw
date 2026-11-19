@@ -46,7 +46,7 @@ def select(t, text):
 
 t = home()
 check("home with nothing typed lists pericopes only", "notes" in t.text() and "the aura of the room" not in t.text(), t.text())
-check("  and counts them as pericopes", "4 pericopes" in t.text() and "+ new pericope" in t.text(), t.row(0))
+check("  and counts them as pericopes (the picture one of its own)", "5 pericopes" in t.text() and "+ new pericope" in t.text(), t.row(0))
 t.key(*"aura")
 check("typing shows a matching block, indented under where it lives", "notes" in t.text() and "  · the aura of the room" in t.text(), t.text())
 check("  its paraphrase family right under it, ≈", at(t, "    ≈ a glow in the room") == at(t, "  · the aura of the room") + 1
@@ -55,7 +55,7 @@ check("  the place that quotes it, below the original", (at(t, "  “the aura of
 select(t, "· the aura of the room")
 check("  the bottom line says Enter opens it where it lives", "open it where it lives" in t.text(), t.text())
 t.key("\x04")
-check("  ^D on a block inside a pericope deletes nothing", "delete '" not in t.text() and len(S.entry_ids(S.load_data())) == 4, bar(t))
+check("  ^D on a block inside a pericope deletes nothing", "delete '" not in t.text() and len(S.entry_ids(S.load_data())) == 5, bar(t))
 t.key(ENTER)
 check("Enter on it opens the pericope it lives in", t.until(lambda: "first idea" in t.text()) and "· notes" not in bar(t), t.text())
 check("  the cursor at the block", " 2:1" in bar(t), bar(t))
@@ -74,9 +74,10 @@ t.key(BS, BS, BS, BS, *"glow")
 check("a match on another member shows the same family, it first", at(t, "  · a glow in the room") is not None
       and at(t, "    ≈ the aura of the room") == at(t, "  · a glow in the room") + 1, t.text())
 t.key(BS, BS, BS, BS, *"pict")
-check("a picture is found, under where it lives", "  · picture" in t.text(), t.text())
-select(t, "· picture"); t.key(ENTER)
-check("  Enter opens its pericope at it", t.until(lambda: "first idea" in t.text()) and " 3:" in bar(t), bar(t))
+check("a picture is found, a pericope of its own, and the place that quotes it", "“picture” quoted in notes" in t.text()
+      and any(l.strip("│ ").startswith("picture") for l in t.text().splitlines()), t.text())
+select(t, "“picture” quoted in notes"); t.key(ENTER)
+check("  Enter on the place opens notes at the quote", t.until(lambda: "first idea" in t.text()) and " 3:" in bar(t), bar(t))
 t.key(Q); t.until(lambda: "open ›" in t.text())
 t.key(ESC); t.done()
 

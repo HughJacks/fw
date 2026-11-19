@@ -1,4 +1,5 @@
-# an image block: a picture file dropped on the terminal (its path pasted) becomes one
+# a picture: a file dropped on the terminal (its path pasted) becomes one, a pericope of its own (since 2026-11-17),
+# quoted where it was dropped
 import functools, http.server, os, struct, sys, threading, zlib
 sys.path.insert(0, "."); import fwtest as F
 from fwtest import check, same, blk, UP, BS, QUIT as Q, UNDO as Z, REDO as Y
@@ -24,8 +25,15 @@ same("the store migrates to the current schema, nothing in it changed", S.load_d
 
 def B(): return S.index(S.load_data())
 def kids(i, b=None):
+    """Block i's children: a quote of a picture (a pericope of its own) as ("image", its file); a picture held
+    directly, which never stays so, as ("held", its file)."""
     b = b or B()
-    return [("image", S.image_of(b[k])) if S.image_of(b[k]) else b[k]["content"] for k in S.children(b[i])]
+    def one(k):
+        q = S.quoted(b[k])
+        if q and S.image_of(b.get(q[0])) and b[q[0]].get("entry"):
+            return ("image", S.image_of(b[q[0]]))
+        return ("held", S.image_of(b[k])) if S.image_of(b[k]) else b[k]["content"]
+    return [one(k) for k in S.children(b[i])]
 RAW = []   # everything the terminal's been sent (pyte drops the picture escapes)
 feed = F.pyte.ByteStream.feed
 F.pyte.ByteStream.feed = lambda self, data: (RAW.append(data), feed(self, data))
@@ -43,15 +51,16 @@ t.key(UP, F.END)     # to the end of "hello world"
 drop(t, PIC)
 b = B()
 name = kids(HOST, b)[1][1] if len(kids(HOST, b)) > 1 and isinstance(kids(HOST, b)[1], tuple) else None
-same("a dropped picture's path (spaces escaped) makes an image block where the cursor was", kids(HOST, b),
+same("a dropped picture's path (spaces escaped) makes a picture pericope, quoted where the cursor was", kids(HOST, b),
      ["hello world", ("image", name), "end"])
 check("  its file is copied into the images folder beside the store, named by its bytes",
       name and os.path.exists(os.path.join("t/images", name)) and name.endswith(".png"), name)
 rows = t.text().split("\n")
 top = next((y for y, r in enumerate(rows) if "hello world" in r), 0) + 2
-check("  drawn in a box of its own, blank inside for the picture (40×20 px at 49 columns: 12 rows), then the next block",
-      rows[top][2:3] == "┌" and all(rows[y].strip("│ ") == "" for y in range(top + 1, top + 13))
-      and rows[top + 13][2:3] == "└" and "end" in rows[top + 15], "\n".join(rows))
+end = next((y for y, r in enumerate(rows) if "end" in r and y > top), None)
+check("  drawn in its quote's box, blank inside for the picture, then the next block (the layout isn't pinned:\n"
+      "  a new editor is coming, the user, 2026-11-17)",
+      rows[top][2:3] == "┌" and end is not None and end - top >= 12, "\n".join(rows))
 check("  and the picture is drawn there: iTerm's inline image escape", any(ESCAPE in r for r in t.raw))
 t.key(Z); t.settle()
 same("^Z takes it back out", kids(HOST), ["hello world", "end"])
@@ -151,7 +160,7 @@ def got():
     k = kids(HOST)
     web_name = next((x[1] for x in k if isinstance(x, tuple)), None)
     return web_name
-check("  a picture's address: downloaded, and an image block where the cursor was", t.until(got), kids(HOST))
+check("  a picture's address: downloaded, a picture pericope quoted where the cursor was", t.until(got), kids(HOST))
 same("  in its place", kids(HOST), ["hello world", ("image", web_name), "end"])
 check("  its file kept in the images folder, not the link",
       web_name and open(os.path.join("t/images", web_name), "rb").read() == open("t/web/pic.png", "rb").read()
@@ -161,51 +170,36 @@ same("  ^Z takes it back out", kids(HOST), ["hello world", "end"])
 t.key(Q, F.ESC); t.done()
 web.shutdown()
 
-# an image is a block like any other: turned into a quote, quoted, opened
-def blocks_of(ref):
-    b = B()
-    return {k: b[k]["content"] for k in S.children(b[ref])}
+# a picture held inside a block (as before 2026-11-17, or put there any way) is taken out: a pericope of its own,
+# quoted where it was; titled by a model when there's a title for it, found by that title
 reset(name)
+b = B()
+same("a picture held in a block: taken out on the next write, quoted where it was", kids(HOST, b), ["hello world", ("image", name), "end"])
+check("  the picture a pericope now, its id kept", b[IMG].get("entry") and b[IMG]["content"] == {"image": name}, b[IMG])
+qid = S.children(b[HOST])[1]
+same("  its quote's id from the picture's and the holder's: the same on every machine", qid, S.picture_quote_id(IMG, HOST))
+check("  titled \"picture\" with no model title", S.build_library(S.load_data())[IMG]["title"] == "picture")
+import json
+json.dump({"model": "test", "titles": {name: "Grey square at noon"}}, open("t/picture-titles.json", "w"))
+same("  with one from a model (picture-titles.json), that", S.build_library(S.load_data())[IMG]["title"], "Grey square at noon")
 t = open_("host")
-t.key(UP)   # the image, selected whole
-t.key(F.MENU, "turn into a quote", F.ENTER); t.settle()
-k = kids(HOST)
-popped = k[1].get("quote") if len(k) == 3 and isinstance(k[1], dict) else None
-check("Turn into a quote, on an image: it moves to an entry of its own, quoted where it was",
-      popped and k[0] == "hello world" and k[2] == "end" and B()[IMG]["content"] == {"quote": popped}, k)
-check("  the new entry holds the picture", popped and kids(popped) == [("image", name)], popped and kids(popped))
-check("  titled from it", popped and S.build_library(S.load_data())[popped]["title"] == "picture")
-check("  and it's still drawn, in the quote", t.until(lambda: any(ESCAPE in r for r in t.raw[-5:])))
-t.key(Z); t.settle()
-same("  ^Z: back as it was", kids(HOST), ["hello world", ("image", name), "end"])
-check("  the entry gone", popped not in B())
-t.key(UP, F.MENU, "and open it", F.ENTER); t.settle()
-check("Turn into a quote and open it, on an image: in the new entry", t.until(lambda: "host ›" in t.text()), t.text())
+t.until(lambda: any(ESCAPE in r for r in t.raw))
+t.key(UP, F.MENU, "open it", F.ENTER); t.settle()
+check("Open it on its quote: the picture's pericope", t.until(lambda: "host ›" in t.text()), t.text())
+check("  its header's title, dim, the model's", "Grey square at noon" in t.text(), t.text())
 t.key(Q); t.settle()
-t.key(Z); t.settle()
 t.key(Q, F.ESC); t.done()
 
-reset(name)
 t = open_("qhost")
-t.key(F.END, F.ENTER, "/", "quote", F.ENTER, "picture")
-check("Quote a block finds a picture inside an entry, by its title", "· picture" in t.text(), t.text())
-t.key(F.DOWN)   # from the entry it's in (the first result) to it
-rows = t.text()
+t.key(F.END, F.ENTER, "/", "quote", F.ENTER, "grey square")
+check("Quote a block finds a picture by the model's title", "Grey square at noon" in t.text(), t.text())
 t.key(F.ENTER); t.settle()
-k = kids(QH)
-made = [x["quote"] for x in k if isinstance(x, dict) and x.get("quote") not in (None, HOST)]
-pic = S.children(B()[made[0]])[0] if made else None
-check("  Enter: the picture is an entry of its own, quoted here, showing the picture alone",
-      made and B()[made[0]].get("entry") and B()[pic]["content"] == {"image": name}
-      and t.until(lambda: any(ESCAPE in r for r in t.raw[-5:])), (k, rows))
-check("  and quoted where it was", {"quote": made[0]} in kids(HOST) if made else False, kids(HOST))
-t.key(UP, DOWN := "\x1b[B", DOWN, "x"); t.settle()
+made = [x for x in S.children(B()[QH]) if S.quoted(B()[x]) == (IMG, None)]
+check("  Enter: quoted here, the picture drawn", made and t.until(lambda: any(ESCAPE in r for r in t.raw[-5:])), kids(QH))
+t.key(UP, "\x1b[B", "\x1b[B", "x"); t.settle()
 check("  a quote of a picture can't be gone into: arrows and typing leave the picture as it is",
-      pic and B()[pic]["content"] == {"image": name}, pic and B()[pic]["content"])
-t.key(Z); t.settle()
-t.key(UP, F.MENU, "open it", F.ENTER); t.settle()
-check("  Open it on that quote: the entry the picture's in", t.until(lambda: "qhost ›" in t.text()), t.text())
-t.key(Q); t.settle()
+      B()[IMG]["content"] == {"image": name}, B()[IMG]["content"])
 t.key(Q, F.ESC); t.done()
+os.remove("t/picture-titles.json")
 
 F.report("IMAGE")

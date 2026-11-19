@@ -27,6 +27,7 @@ import signal
 import sys
 
 import fw_edit as edit
+import fw_meaning
 import fw_screen as screen
 import fw_keys as keys
 import fw_store as store
@@ -143,11 +144,19 @@ def write(scr, attrs: screen.Ink, target: tuple, forward: list | None = None) ->
             for r, t, _ in trail:
                 finish(r, t)  # saved before stepping in: this only tidies up
             raise
-        if ed.deleted is not None:  # deleted from inside: nothing to save; back, or home
-            title = ed.library.get(ref, {}).get("title", "")
-            store.drop_draft(tmp)
-            note = f"deleted '{title}'" + (f" · {ed.deleted} quote{'s' * (ed.deleted != 1)} of it now plain text"
-                                           if ed.deleted else "")
+        if ed.deleted is not None or ed.gone:  # deleted, here or elsewhere: nothing to save; back, or home
+            if ed.gone:
+                note = f"'{ed.here_as}' was deleted elsewhere"
+                if ed.dirty():  # (what was typed since the last save: kept, not lost)
+                    Path(tmp).write_text(ed.draft(), encoding="utf-8")
+                    note += f" · what you hadn't saved is in {tmp}"
+                else:
+                    store.drop_draft(tmp)
+            else:
+                title = ed.library.get(ref, {}).get("title", "")
+                store.drop_draft(tmp)
+                note = f"deleted '{title}'" + (f" · {ed.deleted} quote{'s' * (ed.deleted != 1)} of it now plain text"
+                                               if ed.deleted else "")
             if not trail:
                 return note
             gone = ref
@@ -267,15 +276,26 @@ def home(scr, message: str, attrs: screen.Ink = screen.Ink(), spot: Home | None 
         spot.sel, spot.picked = garden.sel, picker.sel if view is picker else None
         return target
     prev_cr = False
+    seen = store_stamp()
+    asker = fw_meaning.Asker()  # (the search service, asked what's near what's typed: mixed into the search)
     while True:
         draw_home(scr, view, len(refs), message)
         screen.ready(scr)
-        scr.timeout(-1)
+        scr.timeout(edit.POLL_MS)  # (and looks at the store as the editor does: written elsewhere, home is redrawn)
         try:
             key = scr.get_wch()
             screen.SEEN["keys"] += 1
         except curses.error:
             screen.SEEN["wakes"] += 1
+            if store_stamp() != seen:  # another session or machine wrote it: home again, as it was left
+                return left(("home", message))
+            if view is picker:
+                asker.want(picker.query)
+                got = asker.tick()
+                if got:
+                    picker.meaning = got
+                    if not picker.moved:
+                        picker.sel = picker.first_result()
             continue
         act = keys.bind(keys.decode(scr, key, prev_cr), "picker")
         prev_cr = key == "\r"
@@ -317,6 +337,14 @@ def home(scr, message: str, attrs: screen.Ink = screen.Ink(), spot: Home | None 
             return left(("new", typed or None) if done[1] == NEW else ("open", done[1]))
 
 
+def store_stamp():
+    """When the store was last written (None if there's none)."""
+    try:
+        return store.DATA_PATH.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 def home_garden(library: dict, refs: list, pinned: list, offer: dict | None = None) -> Garden:
     """The garden over the entries: fw_block.garden's order, a card's text
     from the library, as of now; a proposed kind (`offer`) a dim card after
@@ -334,7 +362,8 @@ def home_garden(library: dict, refs: list, pinned: list, offer: dict | None = No
     cards = [(k, f"a kind: {offer['name']}" if k == PROPOSE else label("")) for k, label, *_ in pinned]
     notes = {PROPOSE: [f"{len(offer['members'])} pericopes alike, no kind yet", "↵ make it a kind, then say",
                        "  which of them are one", "^D dismiss it"]} if offer else {}
-    g = Garden(store.garden(blocks, refs, now), info, pinned=cards, notes=notes, faint={PROPOSE})
+    right = lambda i: f"{i[4:6]}/{i[6:8]}  {library[i].get('words', 0)}w"  # (as the search's rows)
+    g = Garden(store.garden(blocks, refs, now), info, pinned=cards, notes=notes, faint={PROPOSE}, right=right)
     if offer:
         g.why[PROPOSE] = "proposed"
     return g

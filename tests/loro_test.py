@@ -126,4 +126,21 @@ lap, mini = (json.load(open(f"{here}/{s}/freewrites.json")) for s in ("laptop", 
 check("fw_store.py merge both ways: the same store", lap == mini and r1.returncode == r2.returncode == 0, (r1.stderr, r2.stderr))
 same("  the link on its text, both edits in", (link_text(lap, X), by(lap)[X]["content"]), ("LINK", "laptop: see mini the LINK here"))
 
+# a picture held in a block, taken out by both machines on their own (fw_store.pictures_apart): merged, one quote
+PIC, H = "20261001T100000-dddd", "20261001T100000-d000"
+held = {"schemaVersion": 17, "blocks": [blk(H, [X, PIC], entry=True), blk(X, "words"), blk(PIC, {"image": "0123456789abcdef.png"})]}
+for side in ("laptop", "mini"):
+    shutil.rmtree(f"{here}/{side}", ignore_errors=True); os.makedirs(f"{here}/{side}")
+d = L.load(None, 1); L.write(d, held); open(f"{here}/laptop/freewrites.loro", "wb").write(L.snapshot(d))
+shutil.copy(f"{here}/laptop/freewrites.loro", f"{here}/mini/freewrites.loro")   # (one shared history, the picture still held)
+for side in ("laptop", "mini"):
+    r = store(side, "migrate"); check(f"  the {side} takes it out on its own", r.returncode == 0, r.stderr)
+r1 = store("laptop", "merge", f"{here}/mini/freewrites.loro")
+r2 = store("mini", "merge", f"{here}/laptop/freewrites.loro")
+lap, mini = (json.load(open(f"{here}/{s}/freewrites.json")) for s in ("laptop", "mini"))
+quotes = [b["id"] for b in lap["blocks"] if b["content"] == {"quote": PIC}]
+check("a picture taken out on both machines, merged: the same store", lap == mini and r1.returncode == r2.returncode == 0, (r1.stderr, r2.stderr))
+same("  one quote of it, once in its holder, the picture a pericope", (len(quotes), by(lap)[H]["content"], by(lap)[PIC].get("entry")),
+     (1, [X, quotes[0] if quotes else None], True))
+
 F.report("LORO")

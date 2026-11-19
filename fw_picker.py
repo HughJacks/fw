@@ -26,6 +26,21 @@ def blocks_inside(library: dict, refs: list) -> dict:
     return {r: list(walk(r, 1, {r})) for r in refs}
 
 
+MEANING_PER = 2  # blocks found by meaning listed under one pericope, at most (its nearest)
+
+
+def fuse(*lists: list, k: int = 60) -> list:
+    """Ranked lists made one, by reciprocal rank (each item scored by the sum
+    of 1 / (k + its rank) in the lists it's in); ties as first listed."""
+    score, first = {}, []
+    for lst in lists:
+        for n, x in enumerate(lst):
+            score[x] = score.get(x, 0.0) + 1.0 / (k + n + 1)
+            if x not in first:
+                first.append(x)
+    return sorted(first, key=lambda x: (-score[x], first.index(x)))
+
+
 class Picker:
     """A search list over entries, the same wherever one is picked (home, the
     quote search, Link to an entry): newest first, and typing filters by
@@ -43,7 +58,11 @@ class Picker:
     kind's name puts that kind first, the blocks of that kind under it, then
     the blocks a model guesses are (`guesses`, fw_block.guessed's), dim
     (kind_first). The selection follows the
-    first result until you move it yourself."""
+    first result until you move it yourself. With `meaning` (query, block
+    ids nearest it: a search service's answer, fw_meaning) for what's typed,
+    a search over blocks mixes those in by rank (`fuse`): the pericopes
+    reordered, blocks found only by meaning listed under theirs, "(by
+    meaning)"."""
 
     def __init__(self, library: dict, refs: list, pinned=(), inside=None, label=None, guesses=None, applied=()):
         self.library, self.refs, self.pinned = library, refs, list(pinned)
@@ -59,6 +78,7 @@ class Picker:
         self.where = {k: e for e, ks in self.inside.items() for k, _ in ks}  # block -> its entry
         self.kinds = set(kind_ids(library))
         self.blue = 0  # the attr a kind's row is drawn with (the caller's Ink.blue)
+        self.meaning = None  # (query, block ids nearest it), the search service's answer (fw_meaning): mixed in while that's what's typed
         if self.related:
             blocks = {i: e["block"] for i, e in library.items()}
             self.family = families(blocks)
@@ -85,6 +105,22 @@ class Picker:
                 for e in self.refs}
         order += [e for e in self.refs if hits.get(e) and e not in order]  # (the entries of blocks that matched)
         tops = set(self.refs)
+        by_meaning = set()
+        if self.related and q and self.meaning and self.meaning[0] == self.query:  # the search service's answer, mixed in
+            depth = {k: d for e in self.refs for k, d in self.inside.get(e, [])}
+            ranked = []
+            for i in self.meaning[1]:
+                e = i if i in tops else self.where.get(i)
+                if e is None or e in listed or i in listed:
+                    continue
+                ranked += [e] if e not in ranked else []
+                if i != e and all(i != k for k, _ in hits.get(e, [])) and \
+                        sum(k in by_meaning for k, _ in hits.get(e, [])) < MEANING_PER:
+                    hits[e] = hits.get(e, []) + [(i, depth.get(i, 1))]
+                    by_meaning.add(i)
+                elif i == e and e not in order:
+                    by_meaning.add(e)
+            order = fuse(order, ranked)
         def row(r, shown, at=None, dim=False):
             at = at or r
             right = f"{at[4:6]}/{at[6:8]}  {self.library[at].get('words', 0)}w"
@@ -100,10 +136,11 @@ class Picker:
             return [row(s, indent + "≈ " + title(s), dim=True) for s in self.family[k]
                     if s != k and (s in tops or s in self.where)]
         out = list(first)
+        mark = lambda r: "  (by meaning)" if r in by_meaning else ""
         for r in order:
-            out += [row(r, title(r))] + kin(r, "  ")
+            out += [row(r, title(r) + mark(r))] + kin(r, "  ")
             for k, d in hits.get(r, []):
-                out += [row(k, "  " * d + "· " + title(k))] + kin(k, "  " * (d + 1))
+                out += [row(k, "  " * d + "· " + title(k) + mark(k))] + kin(k, "  " * (d + 1))
         out += [row(x, f"  “{title(k)}” quoted in {title(home)}", home, dim=True)
                 for k in found for x, home in self.quotes.get(k, [])]  # below every match
         return pinned + out
@@ -185,19 +222,21 @@ class Picker:
 
 class Garden:
     """Home as a garden: a grid of cards, one per entry, in fw_block.garden's
-    order (recent, then resurfacing, then the rest), with "+ new pericope"
-    (and a proposed kind, if any) first. Each card: its title, why it's here,
-    when it was made and changed, what last happened to it, and the start of
-    what it says. Arrows move over the grid; Enter picks; typing anything
-    hands over to the search (`Picker`), which Backspace with nothing typed
-    leaves again. Ctrl+G turns the grid into a list (a card a row: title,
-    why, what last happened, dates) and back."""
+    order (recent and resurfacing mixed first, then the rest; not labelled:
+    the user sees it their own way), with "+ new pericope" (and a proposed
+    kind, if any) first. Each card: its title, when it was made and changed,
+    what last happened to it, and the start of what it says. Arrows move over
+    the grid; Enter picks; typing anything hands over to the search
+    (`Picker`), which Backspace with nothing typed leaves again. Ctrl+G turns
+    the grid into a list drawn as the search's is (a title a row, its date
+    and words on the right), in the garden's order, and back."""
 
     CARD_W, CARD_H = 34, 7
 
-    def __init__(self, cards: list, info, pinned=(), notes=None, faint=()):
+    def __init__(self, cards: list, info, pinned=(), notes=None, faint=(), right=None):
         self.cards = [k for k, _ in pinned] + [k for k, _ in cards]  # keys, in order
-        self.why = dict(cards)          # entry -> "recent" | "resurfacing" | ""
+        self.why = {}                   # pinned key -> a word on its card's top edge ("proposed")
+        self.right = right or (lambda key: "")  # entry -> its row's right side in the list (date, words)
         self.pinned = dict(pinned)      # key -> its label (a pinned card)
         self.info = info                # entry -> (title, dates, action, preview)
         self.notes = notes or {}        # pinned key -> the lines under its label (a proposed kind: what Enter and ^D do)
@@ -251,7 +290,7 @@ class Garden:
                 title, why, lines = self.pinned[key], self.why.get(key, ""), self.notes.get(key, [])
             else:
                 title, dates, action, preview = self.info(key)
-                why, lines = self.why.get(key, ""), [dates, action] + wrap_text(preview, inner, 2)
+                why, lines = "", [dates, action] + wrap_text(preview, inner, 2)
             label = f" {why} " if why else ""
             put(scr, y, x, "┌" + label + "─" * max(cw - 2 - len(label), 0) + "┐", edge)
             put(scr, y + 1, x, "│ ", edge)
@@ -270,30 +309,20 @@ class Garden:
 
 
     def draw_list(self, scr, y0: int, x0: int, bw: int, max_rows: int, prompt: str) -> tuple[int, int]:
-        """The cards as a list, a row each: title, why it's here, what last happened, dates."""
-        import curses
-        from fw_screen import put, swidth
+        """The cards as the search draws its list (draw_box): a title a row, its date and words on the right."""
+        from fw_screen import draw_box
         self.cols = 1
-        fit = max(1, max_rows - 1)
-        if self.sel < self.top:
-            self.top = self.sel
-        elif self.sel >= self.top + fit:
-            self.top = self.sel - fit + 1
-        put(scr, y0, x0, (prompt + "type to search")[:bw], curses.A_DIM)
-        tw = max(min(40, bw // 2), 10)
-        for n, key in enumerate(self.cards[self.top:self.top + fit]):
-            i, y = self.top + n, y0 + 2 + n
-            on = i == self.sel
-            if key in self.pinned:
-                title, rest = self.pinned[key], " · ".join(self.notes.get(key, [])[:1])
-                faint = key in self.faint
-            else:
-                title, dates, action, _ = self.info(key)
-                rest, faint = "  ".join(x for x in (self.why.get(key, "").ljust(11), action, dates) if x), False
-            put(scr, y, x0, clip(title, tw).ljust(tw), curses.A_REVERSE if on else
-                curses.A_DIM if faint else curses.A_BOLD | (self.blue if key in self.kinds else 0))
-            put(scr, y, x0 + tw + 2, clip(rest, max(bw - tw - 2, 0)), curses.A_DIM)
-        return y0, x0 + swidth(prompt)
+        def row(key):
+            if key in self.pinned:  # (a proposed kind: dim, with how many)
+                notes = self.notes.get(key, [])
+                return (key, self.pinned[key] + (f" · {notes[0]}" if notes else ""), "", *((True,) if key in self.faint else ()))
+            return (key, self.info(key)[0], self.right(key))
+        rows = [row(k) for k in self.cards]
+        first = max(0, self.sel - max_rows + 1)
+        notes = self.notes.get(self.selected(), [])[1:]
+        footer = " ".join(n.strip() for n in notes)
+        return draw_box(scr, y0, x0, bw, prompt, "", rows[first:first + max_rows], self.sel, first, footer,
+                        tint=lambda key: self.blue if key in self.kinds else 0)
 
 
 def clip(text: str, width: int) -> str:

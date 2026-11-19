@@ -38,7 +38,7 @@ from typing import NamedTuple
 import fw_store as store
 from fw_screen import TAB_WIDTH, cwidth, put, swidth, wrap
 import fw_image
-from fw_store import (CLOSE, ELLIPSIS, IMAGE_RE, MARKS, MAX_DEPTH, OPEN, QUOTE_RE, atom_id, block_draft, chain,
+from fw_store import (CLOSE, ELLIPSIS, IMAGE_RE, MARKS, MAX_DEPTH, OPEN, QUOTE_RE, atom_id, block_draft, chain, image_line,
                       parse_draft, parse_nest)
 
 THIN, HEAVY = "┌┐└┘─│", "┏┓┗┛━┃"  # a box; a selected quote's edge at the end you're on is heavy
@@ -520,6 +520,8 @@ class Layout:
             body = [Drawn(depth, f"↻ {entry['title']}", "note")]
         elif depth > MAX_DEPTH:  # no room for its box: a line in the box around it
             return [Drawn(depth, f"⋯ {entry['title']}", "note")]
+        elif mask == [] and store.empties(store.raw_mask((self.library.get(qid) or {}).get("block"))):
+            body = [Drawn(depth, "(nothing here now)", "note")]  # all it showed was deleted (its empty places kept)
         else:
             body = self.quote_body(ref, path, depth, base + 1, mask, inner, dim) or [Drawn(depth, "(empty)", "note")]
         label = self.top_label(ref, show, qid)
@@ -569,7 +571,9 @@ class Layout:
         lines, bids, nest, vmode = ((self.lines, self.bids, self.nest, self.vmode) if ref == self.cur_id
                                     else (f.lines, f.bids, f.nest, f.vmode) if f else (None,) * 4)
         live = lines is not None and (mask is None) == (vmode is None)
-        if not live:
+        if not live and store.image_of(self.library.get(ref, {}).get("block")):
+            lines, bids, nest = [image_line(ref)], [None], {}  # (a picture, quoted: the picture)
+        elif not live:
             draft = block_draft(self.library, ref)
             draft = draft if mask is None else store.view(draft, mask)
             (lines, bids), nest = parse_draft(draft), parse_nest(draft)

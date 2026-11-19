@@ -1,7 +1,9 @@
 # fw
 
-A terminal free-writing app growing, slowly, into a block-and-live-quote
-notebook. You write; fw saves as you type. Everything you write is made of
+A free-writing app growing, slowly, into a block-and-live-quote notebook.
+You write in your browser; fw saves as you type, to a file on your own
+machine. Nothing leaves it: there's no account, no server but the small one
+fw runs on 127.0.0.1, and no model. Everything you write is made of
 **blocks**, and a block can be:
 
 - **quoted live** somewhere else (edit the quote, and the original changes too),
@@ -10,8 +12,13 @@ notebook. You write; fw saves as you type. Everything you write is made of
 - marked as a **paraphrase** of another block (the same thing said another way),
 - said to be of a **kind** (a poem, a to-do list…), kinds being blocks too.
 
-Home is a **garden**: cards of what you've been writing, mixed with what's
-been slipping out of memory (worked out from when you last visited each).
+Home has an empty pericope waiting in the middle: start typing and it's
+yours. Below it are the search and the **garden** (cards of what you've been
+writing, mixed with what's been slipping out of memory, worked out from when
+you last visited each), and below that everything you've written.
+
+The web editor is the default. The original terminal editor is still there
+(`fw term`), deprecated.
 
 It's an early personal project: things change, and some corners are rough.
 
@@ -19,8 +26,12 @@ It's an early personal project: things change, and some corners are rough.
 
 - Python 3.10 or newer, and one package: [`loro`](https://loro.dev) (the store is a Loro
   document, so copies on several machines can merge)
+- [Node](https://nodejs.org) 22 or newer, once, to build the page (`npm ci`,
+  `npm run build`): the browser loads it from `web/dist/`, nothing from the internet
 - macOS or Linux, with `zsh` (for the `fw` launcher)
-- Any terminal. Pictures draw only in iTerm2; elsewhere a picture shows as a
+- A browser. The web editor's tests drive Google Chrome (`$CHROME` names another
+  Chromium); without it they're skipped.
+- For the terminal editor only: any terminal. Pictures draw only in iTerm2; elsewhere a picture shows as a
   `▣ picture W×H` line. Keys like `ctrl+shift+v` need a terminal that reports
   modified keys (iTerm2, kitty, WezTerm, foot, recent xterm); everything is
   also reachable from the `ctrl+/` menu.
@@ -34,23 +45,40 @@ It's an early personal project: things change, and some corners are rough.
 git clone https://github.com/HughJacks/fw.git
 cd fw
 python3 -m venv .venv && .venv/bin/pip install loro==1.17.1
+(cd web && npm ci && npm run build)
 ./fw            # or put this folder on your PATH and run: fw
 ```
+
+`fw` starts the core (`fw_web.py`, on http://127.0.0.1:8020; `FW_WEB_PORT`
+picks another port) if it isn't running and opens the page. After a
+`git pull`, the running core notices: it rebuilds the page, restarts itself,
+and the open tab reloads.
 
 ## Use
 
 ```
-fw                 new entry; ^Q goes home, the garden (type to search; Esc quits)
-fw -t [minutes]    with a writing timer (10 minutes unless given)
-fw <title>         open or start the entry with that title
-fw last            append to the most recent entry
-fw open            start at home
+fw                 the web editor, in your browser (also: fw open, fw web)
 fw list            list every entry
+fw help            all of it
+
+fw term            the terminal editor: a new entry; ^Q goes home
+fw term open       the terminal editor, starting at home
+fw -t [minutes]    the terminal editor with a writing timer (10 minutes unless given)
+fw <title>         the terminal editor, on the entry with that title (started if missing)
+fw last            the terminal editor, appending to the most recent entry
 fw stop            cancel a running timer
-fw help            all of the above
 ```
 
-The main keys: `Enter` new block, `ctrl+enter` a block inside this one,
+The web editor's keys are Mac-style (⌘ is Ctrl elsewhere): `Enter` a new
+block, `⇧Enter` a line break, `⌘Enter` a block inside this one, `/` at a
+line's start the menu of blocks to put in (quote a block, add a picture…),
+`⌘/` the actions on the block you're in, `⌘O` open the quote or link
+you're in, `⌘[` / `⌘]` back and forward, `⌘⇧Enter` send the pericope away
+(saved, and home), `⌘Z` / `⌘⇧Z` undo and redo, `⌘⇧H` home. Every key, and
+changing them: the keys page, `⌘⇧,` (your bindings are kept in
+`web-keys.json` beside your writing).
+
+The terminal editor's main keys: `Enter` new block, `ctrl+enter` a block inside this one,
 `/` at a line's start the menu of blocks to put in (quote a block, add a
 picture…), `ctrl+/` the menu of actions on the block you're in, `ctrl+e`
 mask a quote, `ctrl+k` link the selection to an entry, `ctrl+o` open the
@@ -64,11 +92,17 @@ Everything lives in `freewrites.loro` beside the code, a Loro document,
 with `freewrites.json` written beside it as a plain copy you can read (and
 a `.bak` of that), pictures in `images/`. Set
 `FW_DATA=/path/to/freewrites.json` to keep it somewhere else. It's created
-on first run, and checked and migrated on every run. To bring in a copy
+when first needed, and checked and migrated on every run. To bring in a copy
 from another machine: `.venv/bin/python fw_store.py merge other/freewrites.loro`
 (both sides' edits kept, the same in either order).
+
+Search by meaning is optional and off: fw has no model. If you run a
+search service that answers `GET /search?q=…&n=…` with
+`{"results": [[block id, …], …]}`, set `FW_MEANING_URL` to it and fw mixes
+its answers into the search.
 
 ## Developing
 
 `DESIGN.md` is the technical map. Tests: `tests/run.sh` (needs `pyte` and `loro`
-in `tests/.venv`; the script says how).
+in `tests/.venv`; the script says how). Its suite "web" builds the page, runs
+`npm test` and the browser suite (`web/test/e2e.mjs`, headless Chrome).

@@ -1,6 +1,6 @@
 # reviewing a kind's maybes (kinds, step 2): a kind's header has a maybes line, the pericopes a model guesses might be
-# one (fw_block.maybes: unanswered, current, p ≥ 0.5, likeliest first; a guess about a block inside a pericope is
-# applied at 0.9 instead, never reviewed, as a learned kind's is: fw_block.is_applied). Enter on it opens each in turn,
+# one (fw_block.maybes: unanswered, current, 0.5 ≤ p < 0.9, likeliest first; from 0.9 a guess is applied, never
+# reviewed: fw_block.is_applied). Enter on it opens each in turn,
 # the bar saying "poem? 95% · 1 of 3": Enter it is one, Backspace it isn't, Tab skip (each on to the next), ^Z back to
 # the one before (its answer taken back), ^Q stop. Nothing types. Back on the kind, each answer is one ^Z.
 import json, os, sys
@@ -53,20 +53,20 @@ b = B()
 data = {"guesses": {POEM: {M1: g(0.99), M2: g(0.95), O1: g(0.7), MINE: g(0.95), OTHER: g(0.6), PD: g(0.8, block_at=T2),
                            LET: g(0.97), POEM: g(0.99)},
                     LET: {MINE: g(0.99)}}}
-same("maybes: pericopes, unanswered, current, p ≥ 0.5, likeliest first", S.maybes(data, b, POEM), [(LET, 0.97), (MINE, 0.95), (OTHER, 0.6)])
+same("maybes: pericopes, unanswered, current, 0.5 ≤ p < 0.9 (from 0.9 they're applied), likeliest first", S.maybes(data, b, POEM), [(OTHER, 0.6)])
 check("  never a block inside a pericope (M2, O1)", not {M2, O1} & {i for i, _ in S.maybes(data, b, POEM)})
 same("  from 0.5 up (the 0.9 of the dim guesses on blocks stays)", (S.MAYBE_AT, S.GUESS_AT), (0.5, 0.9))
 same("  under 0.5: not a maybe", S.maybes({"guesses": {POEM: {MINE: g(0.49)}}}, b, POEM), [])
 same("  ties: the oldest first", S.maybes({"guesses": {POEM: {OTHER: g(0.8), MINE: g(0.8)}}}, b, POEM), [(MINE, 0.8), (OTHER, 0.8)])
-same("  another kind's: its own", S.maybes(data, b, LET), [(MINE, 0.99)])
-same("is_applied: a guess about a block inside a pericope, or a learned kind's; a pericope's, otherwise, asked",
+same("  another kind's: its own (0.99: applied, not a maybe)", S.maybes(data, b, LET), [])
+same("is_applied: any guess that counts (0.9 up), a pericope's too, whichever model (2026-11-18)",
      [S.is_applied(b, M2, POEM, set()), S.is_applied(b, MINE, POEM, set()), S.is_applied(b, MINE, POEM, {POEM}),
-      S.is_applied(S.build_library(S.load_data()), O1, LET, set())], [True, False, True, True])
+      S.is_applied(S.build_library(S.load_data()), O1, LET, set())], [True, True, True, True])
 same("  nothing malformed counts", [S.maybes(x, b, POEM) for x in (None, {}, {"guesses": {POEM: []}})], [[]] * 3)
 
 # --- the maybes line: only a kind's ----------------------------------------------------------------------------------
 fresh()
-write_guesses({POEM: {MINE: g(0.95), OTHER: g(0.7), THIRD: g(0.6), M1: g(0.99), O1: g(0.5)}})
+write_guesses({POEM: {MINE: g(0.85), OTHER: g(0.7), THIRD: g(0.6), M1: g(0.99), O1: g(0.5)}})
 t = F.fw("mine", rows=30, cols=80, env=ENV)
 check("a pericope's header has no maybes line", maybes_row(t) is None, t.text())
 t.key(Q); t.close()
@@ -82,7 +82,7 @@ t = F.fw("poem", rows=30, cols=80, env=ENV)
 check("a kind's header: maybes, 3 to review", maybes_row(t) is not None and "3 · ↵ review them" in maybes_row(t), t.text())
 check("  reached with ↑ (above the kinds line and the title)", to_maybes(t), bar(t))
 t.key(ENTER)
-check("Enter: the likeliest opens, the bar asking", "poem? 95% · 1 of 3" in bar(t) and "buy milk" in t.text(),
+check("Enter: the likeliest opens, the bar asking", "poem? 85% · 1 of 3" in bar(t) and "buy milk" in t.text(),
       bar(t) + "\n" + t.text())
 check("  the bar's keys", "↵ yes" in bar(t) and "⌫ no" in bar(t) and "⇥ skip" in bar(t) and "^Q stop" in bar(t), bar(t))
 check("  on the trail, under the kind", "poem ›" in bar(t), bar(t))
@@ -122,7 +122,7 @@ t.key(Q); t.close()
 
 # --- a maybe that's gone by the time it's reached is passed over ---------------------------------------------------------
 fresh()
-write_guesses({POEM: {MINE: g(0.95), OTHER: g(0.7)}})
+write_guesses({POEM: {MINE: g(0.85), OTHER: g(0.7)}})
 t = F.fw("poem", rows=30, cols=80, env=ENV)
 to_maybes(t); t.key(ENTER)
 S.delete_entry(OTHER)
@@ -137,11 +137,11 @@ data = {"guesses": {POEM: {MINE: g(0.95), OTHER: g(0.7)}, LET: {MINE: g(0.97)}},
 same("learned: the kinds whose source is learned", S.learned(data), {POEM})
 same("  anything malformed: none", [S.learned(x) for x in (None, {}, {"sources": []}, {"sources": {POEM: "learned"}})], [set()] * 4)
 same("a learned kind's maybes: only under 0.9 (over it, applied)", S.maybes(data, b, POEM), [(OTHER, 0.7)])
-same("  another kind's: from 0.5 up, as before", S.maybes(data, b, LET), [(MINE, 0.97)])
+same("  a kind Qwen guesses (not learned): the same, over 0.9 applied (2026-11-18)", S.maybes(data, b, LET), [])
 write_guesses({POEM: {MINE: g(0.95)}, LET: {MINE: g(0.97)}}, learned=[POEM])
 t = F.fw("mine", rows=30, cols=80, env=ENV)
 y = row_of(t, "kinds")
-check("on the block: the applied kind 'poem·', the other guess 'letter?'", " poem· " in t.row(y) and " letter? " in t.row(y), t.row(y))
+check("on the block: both applied, learned or not, 'poem·' and 'letter·'", " poem· " in t.row(y) and " letter· " in t.row(y), t.row(y))
 c = t.cell(y, t.row(y).index(" poem· ") + 1)
 check("  applied: white on blue, like a yes", c.bg == "005faf" and c.fg == "white", (c.fg, c.bg))
 same("  never stored", S.kinds_of(B()[MINE]), {})
@@ -176,7 +176,7 @@ def kind_rows(applied):
 rows = kind_rows({POEM})
 check("search for a learned kind: its applied blocks listed as the said ones, not dim",
       [r[0] for r in rows[:2]] == [POEM, MINE] and len(rows[1]) == 3, rows[:2])
-check("  a kind that isn't learned: its guessed pericopes dim, as before", len(kind_rows(set())[1]) == 4, kind_rows(set())[:2])
+check("  a kind that isn't learned: the same now, applied, not dim (2026-11-18: 0.9 up is applied, whichever model)", len(kind_rows(set())[1]) == 3, kind_rows(set())[:2])
 refs = sorted(r for r, e in lib.items() if e["entry"])
 p = Picker(lib, refs, inside=blocks_inside(lib, refs), guesses={M2: {POEM: 0.95}}, applied=set())
 for ch in "poem": p.key(ch)

@@ -4,12 +4,13 @@ counts. Pure functions over the store's blocks (by id); no files.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import datetime
 
 from fw_draft import BLOCK_RE, IMAGE_RE, QUOTE_RE, block_line, draft_digest, image_line, is_atom, parse_draft, quote_line
-from fw_lens import ELLIPSIS, intersect, normalize, spans_of, view
+from fw_lens import ELLIPSIS, intersect, normalize, shown_only, spans_of, view
 
 def _ordinal(n: int) -> str:
     if 10 <= n % 100 <= 20:
@@ -123,10 +124,20 @@ def with_children(b: dict, kids: list) -> None:
 
 
 def quoted(b: dict | None) -> tuple | None:
-    """A Quote block's (target id, mask or None), else None."""
+    """A Quote block's (target id, mask or None), else None: the mask as it
+    shows, without its empty places (`raw_mask` has them)."""
     match b.get("content") if b else None:
         case {"quote": str(target), **rest}:
-            return target, rest.get("mask")
+            return target, shown_only(rest.get("mask"))
+    return None
+
+
+def raw_mask(b: dict | None) -> list | None:
+    """A Quote block's mask with its empty places (fw_lens): for the writes
+    that move it along."""
+    match b.get("content") if b else None:
+        case {"quote": str(), **rest}:
+            return rest.get("mask")
     return None
 
 
@@ -557,7 +568,8 @@ def per_block(regs: list, mask: list | None) -> dict | None:
             got = [[0, 1]] if any(a < e and b > s for a, b in spans) else []
         else:
             got = [[max(a, s) - s, min(b, e) - s] for a, b in spans
-                   if a < b and (max(a, s) < min(b, e) or s == e and a <= s and e <= b)]
+                   if a < b and (max(a, s) < min(b, e) or s == e and a <= s and e <= b)
+                   or a == b and s <= a <= e]  # (an empty place: fw_lens)
         if got:
             out[bid] = got
     return out
@@ -583,7 +595,7 @@ def flat_mask(regs: list, draft: str, mask: dict | None) -> list | None:
             merged[-1][1] = max(merged[-1][1], b)
         else:
             merged.append([a, b])
-    return normalize(draft, [x for span in merged for x in span])
+    return normalize(draft, [x for span in merged for x in span], keep_empty=True)
 
 
 def convert_masks(blocks_list: list, to_disk: bool) -> list:
@@ -694,12 +706,40 @@ def is_empty_untitled(blocks: dict, ref: str) -> bool:
             and not any(item[0] in ("quote", "image") for item in block_items(blocks, ref)))  # (one nested in a child too)
 
 
-def display_title(blocks: dict, ref: str) -> str | None:
+def display_title(blocks: dict, ref: str, named: dict | None = None) -> str | None:
     """A kind's name (it's its title), else the written title, else one
-    derived from the first line, else from what else it holds ("picture",
-    for a block with no text but a picture)."""
+    derived from the first line, else from what else it holds: a picture,
+    the title a model gave it (`named`, {file name: title}, written beside the store by a model:
+    picture-titles.json), else "picture"."""
     return (kind_of(blocks[ref]) or blocks[ref].get("title") or derive_title(own_text(blocks, ref))
+            or (named or {}).get(image_of(blocks[ref]))
             or ("picture" if any(item[0] == "image" for item in block_items(blocks, ref)) else None))
+
+
+# --- pictures are pericopes ------------------------------------------------------
+# A picture is never held inside another block (the user, 2026-11-17): it's a
+# pericope of its own, quoted where it's shown. Held anywhere, it's taken out:
+# it becomes an entry and a quote of it takes its place (fw_store's
+# pictures_apart, on every write). The quote's id comes from the picture's and
+# its holder's, so two machines doing it make the same block.
+
+def pictures_held(blocks: dict) -> list:
+    """(holder, picture) for every picture block a block holds as a child."""
+    return [(i, k) for i, b in blocks.items() for k in children(b.get("block", b))
+            if image_of((blocks.get(k) or {}).get("block", blocks.get(k)))]
+
+
+def picture_quote_id(picture: str, holder: str, taken=frozenset()) -> str:
+    """The id of the quote that takes picture `picture`'s place in `holder`:
+    the picture's time, and four hex digits from the two ids (another, if
+    those are `taken`)."""
+    n = 0
+    while True:
+        h = hashlib.sha1(f"picture {picture} in {holder} {n}".encode()).hexdigest()[:4]
+        qid = picture[:16] + h
+        if qid not in taken:
+            return qid
+        n += 1
 
 
 def entry_ids(data: dict) -> list[str]:
@@ -707,10 +747,11 @@ def entry_ids(data: dict) -> list[str]:
     return [b["id"] for b in data["blocks"] if b.get("entry")]
 
 
-def build_library(data: dict) -> dict:
-    """Every block by id, as the editor needs it to draw quotes and fill the / menu."""
+def build_library(data: dict, named: dict | None = None) -> dict:
+    """Every block by id, as the editor needs it to draw quotes and fill the
+    / menu (`named`: pictures' titles from a model, display_title)."""
     blocks = index(data)
-    return {i: {"title": display_title(blocks, i) or "untitled", "words": b.get("words", 0),
+    return {i: {"title": display_title(blocks, i, named) or "untitled", "words": b.get("words", 0),
                 "content": b.get("content", ""), "entry": bool(b.get("entry")), "block": b} for i, b in blocks.items()}
 
 
@@ -948,7 +989,7 @@ def ago(minute: int | None, now_min: int) -> str:
 # are kept apart, never stored: `guessed` keeps those that count, and they
 # meet your answers in merge_kinds, where yours win.
 
-GUESS_AT = 0.9  # a model's guess counts (shown, found) from this p(yes) up; a learned kind's is applied
+GUESS_AT = 0.9  # a model's guess counts from this p(yes) up, and is applied (any model's, about anything)
 MAYBE_AT = 0.5  # and from this one up it's a maybe, to review from the kind (maybes)
 
 def kinds_of(b: dict | None) -> dict:
@@ -1008,13 +1049,12 @@ def learned(data) -> set:
 
 
 def is_applied(blocks: dict, bid: str, kid: str, learned_kinds) -> bool:
-    """A guess that counts (`guessed`) about block `bid` is applied, not
-    asked: a learned kind's (`learned_kinds`, as `learned` gives them), or
-    any about a block inside a pericope. Only a pericope's own kinds are
-    reviewed; a block turned into a pericope of its own is asked again."""
-    b = blocks.get(bid)
-    b = b.get("block", b) if isinstance(b, dict) else None
-    return kid in learned_kinds or not (b or {}).get("entry")
+    """A guess that counts (`guessed`: GUESS_AT up) is applied, not asked,
+    whichever model made it and whatever it's about, a pericope too (the
+    user, 2026-11-18: "auto apply, no maybe, above a certain threshold").
+    Only the unsure ones, MAYBE_AT up to GUESS_AT, are maybes to review.
+    (The arguments stay for its callers.)"""
+    return True
 
 
 def maybes(data, blocks: dict, kid: str) -> list:
@@ -1022,8 +1062,8 @@ def maybes(data, blocks: dict, kid: str) -> list:
     unanswered and current (`guessed`, from MAYBE_AT up, so the unsure ones
     too), [(block id, p)], the likeliest first (then the oldest). Not blocks
     inside a pericope (theirs are applied or dropped: `is_applied`), nor a
-    learned kind's guesses from GUESS_AT up (applied too)."""
-    top = GUESS_AT if kid in learned(data) else 2
+    guesses from GUESS_AT up (applied: is_applied)."""
+    top = GUESS_AT
     entry = lambda i: (lambda b: isinstance(b, dict) and b.get("block", b).get("entry"))(blocks.get(i))
     found = [(i, g[kid]) for i, g in guessed(data, blocks, MAYBE_AT).items()
              if kid in g and i != kid and g[kid] < top and entry(i)]

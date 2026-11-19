@@ -55,12 +55,14 @@ check("a delete on home: the card after it selected, in its place", gone not in 
 t.key(ENTER); t.until(lambda: "body" in t.text() and "┌─" not in t.row(1)); t.key(Q); t.until(lambda: "type to search" in t.text())
 check("back from a pericope: the same place", any(selected(t, x) for x in order if x != gone), t.text())
 t.key("\x07")
-check("Ctrl+G: the garden as a list, a row each, no cards", "┌" not in t.text() and "^G grid" in bar(t)
-      and all(x in t.text() for x in order if x != gone), t.text())
+rows = [l for l in t.text().splitlines() if any(x in l for x in order)]
+check("Ctrl+G: the garden as a list, drawn as the search's: a title a row, its date and words on the right",
+      "made " not in t.text() and "^G grid" in bar(t) and len(rows) == len(order) - 1
+      and all(l.rstrip().endswith("w │") for l in rows), t.text())
 t.key(ENTER); t.until(lambda: "body" in t.text()); t.key(Q); t.until(lambda: "type to search" in t.text())
-check("  still a list, coming back", "┌" not in t.text() and "^G grid" in bar(t), t.text())
+check("  still a list, coming back", "made " not in t.text() and "^G grid" in bar(t), t.text())
 t.key("\x07")
-check("  Ctrl+G again: cards", "┌" in t.text() and "^G list" in bar(t), bar(t))
+check("  Ctrl+G again: cards", "made " in t.text() and "^G list" in bar(t), bar(t))
 t.key(ESC); t.done()
 
 # --- back and forward

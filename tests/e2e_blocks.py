@@ -11,9 +11,14 @@ def entry(title):
 fw(["e2e"], ["first block", "\r", "second block", "\x11", "\x11"])   # ^Q the entry, ^Q home
 d, B, e = entry("e2e")
 check("fw: Enter made two blocks", [S.own_text(B, k) for k in e["content"]] == ["first block", "second block"], e["content"])
-before = S.load_data()
+def unvisited(d):   # (opening records a visit, never an edit: a new minute, or a slow run, writes one; what's compared is the writing)
+    return {**d, "blocks": [{k: v for k, v in b.items() if k != "visits"} for b in d["blocks"]]}
+before = unvisited(S.load_data())
 fw(["e2e"], ["\x11", "\x11"])
-check("fw e2e again, quit without typing: store unchanged", S.load_data() == before)
+after = unvisited(S.load_data())
+changed = {b["id"]: sorted(k for k in set(b) | set(o) if b.get(k) != o.get(k))
+           for b, o in ((b, {x["id"]: x for x in before["blocks"]}.get(b["id"], {})) for b in after["blocks"]) if b != o}
+check("fw e2e again, quit without typing: store unchanged", after == before, changed or [k for k in set(after) | set(before) if after.get(k) != before.get(k)])
 fw(["e2e"], [" more", "\x11", "\x11"])
 d, B, e = entry("e2e")
 check("reopened at the end of the last block: typing goes on there, no blank lines", [S.own_text(B, k) for k in e["content"]] == ["first block", "second block more"], [S.own_text(B, k) for k in e["content"]])

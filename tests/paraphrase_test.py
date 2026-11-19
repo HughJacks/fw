@@ -116,10 +116,10 @@ def pic_only(data, blocks):
     S.add_block(data, blocks, PIC, {"image": "0123456789abcdef.png"}); blocks[ME]["content"] = [PIC]
 fresh(); S.transact(pic_only)
 t = F.fw("mine", rows=30, env={"FW_PICTURES": "0"})
-t.key(MENU, "paraphrase it", ENTER); t.settle()
+t.key(UP, MENU, "paraphrase it", ENTER); t.settle()   # (the picture's a pericope of its own, quoted here: its quote)
 k = kids(ME)
-check("Paraphrase it on a picture: it moves out, an empty paraphrase (its description) in its place",
-      len(k) >= 1 and isinstance(k[0], tuple) and k[0][:2] == ("para", "") and S.image_of(B()[S.children(B()[k[0][2]])[0]]), (k, t.text()))
+check("Paraphrase it on a picture's quote: an empty paraphrase (its description) of the picture in its place",
+      len(k) >= 1 and isinstance(k[0], tuple) and k[0][:2] == ("para", "") and S.image_of(B()[k[0][2]]), (k, t.text()))
 t.key(Q, ESC); t.done()
 fresh(); S.set_paraphrase(M1, SRC)
 t = F.fw("mine", rows=34)   # at the end of "my words about it", a paraphrase

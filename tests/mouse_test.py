@@ -21,8 +21,8 @@ cases = [
   ("click in gutter = line start",  "hello", [click(0, 0), "X", "\x11"], [], "Xhello", None),
   ("click clears a selection",      "hello", ["\x01", click(6 + 1, 1), "X", "\x11"], [], "hXello", None),
   ("wheel down x2 moves 6 rows",      "\n".join(f"l{i}" for i in range(30)), [wheel(False), wheel(False), "X", "\x11"], [], None, None),
-  ("click header title, type",      "body", [click(19, 3), "Z", "\x11"], ["--meta", META], "body", "abZcd"),
-  ("header then click back to body","body", [click(19, 3), "Z", click(6 + 2, 6), "Y", "\x11"], ["--meta", META], "boYdy", "abZcd"),
+  ("click header title, type",      "body", [click(19, 2), "Z", "\x11"], ["--meta", META], "body", "abZcd"),
+  ("header then click back to body","body", [click(19, 2), "Z", click(6 + 2, 5), "Y", "\x11"], ["--meta", META], "boYdy", "abZcd"),
 ]
 ok = True
 for label, body, keys, args, want_body, want_title in cases:

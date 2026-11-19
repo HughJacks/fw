@@ -19,6 +19,7 @@ runs it only where the menu would offer it (command_key).
 import threading
 from typing import NamedTuple
 
+import fw_meaning
 import fw_store as store
 import fw_keys as keys
 from fw_picker import NEW, Picker, blocks_inside, new_kind_label, new_label
@@ -56,6 +57,24 @@ SHOW_NAMES = {"title": "title", "created": "date", "updated": "last update", "wo
 
 
 class Commands:
+    # --- search by meaning (fw_meaning) ---------------------------------
+    def meaning_tick(self) -> None:
+        """Idle, with a search over blocks open (Quote a block and its kin):
+        the search service asked what's near what's typed, its answer mixed in
+        (fw_meaning, Picker.meaning)."""
+        pk = self.palette.picker if self.palette is not None else None
+        if pk is None or not pk.related:
+            return
+        if self.asker is None:
+            self.asker = fw_meaning.Asker()
+        self.asker.want(pk.query)
+        got = self.asker.tick()
+        if got:
+            pk.meaning = got
+            if not pk.moved:
+                pk.sel = pk.first_result()
+            self.stale = True
+
     # --- the / menu ---------------------------------------------------
     def quote_refs(self) -> list:
         """Entries that can be quoted here, newest first (ids sort by creation)."""

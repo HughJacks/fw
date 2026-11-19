@@ -56,6 +56,7 @@ from pathlib import Path
 from fw_draft import *  # noqa: F401,F403
 from fw_lens import *  # noqa: F401,F403
 from fw_block import *  # noqa: F401,F403
+import fw_block
 from fw_migrate import SCHEMA_VERSION, BadStore, upgrade
 import fw_image
 import fw_loro
@@ -69,6 +70,7 @@ PEER_PATH = DATA_PATH.with_name(".freewrites.peer")  # this machine's peer id in
 CLIP_PATH = DATA_PATH.with_name(".fw-clip.json")  # the rich clipboard (save_clip)
 IMAGES_PATH = DATA_PATH.with_name("images")  # the pictures of Image blocks, named by what's in them (add_image)
 THUMBS_PATH = DATA_PATH.with_name(".fw-thumbs")  # smaller copies of them to draw (picture_bytes); can go any time
+TITLES_PATH = DATA_PATH.with_name("picture-titles.json")  # pictures' titles (written beside the store by a model outside fw)
 GUESSES_PATH = DATA_PATH.with_name("kind-guesses.json")  # a model's guesses at kinds (written beside the store by a model outside fw)
 MAX_DOWNLOAD = 50_000_000  # the biggest picture fetch_image takes
 SCHEMA_PATH = HERE / "schema" / "block.schema.json"
@@ -187,7 +189,7 @@ def merge_file(path: str) -> str:
         data["blocks"] = masks_in(data["blocks"])
         data = upgrade(data)
         listed_once(data)
-        collect(data, clip_holds())
+        tidy_store(data, clip_holds())
         sync_words(data)
         errs = invalid(data, load_schema())
         if errs:
@@ -210,8 +212,9 @@ def listed_once(data: dict) -> None:
     seen = set()
     for b in sorted(data["blocks"], key=lambda b: b["id"]):
         kids = children(b)
-        if kids and any(k in seen for k in kids):
-            with_children(b, [k for k in kids if k not in seen])
+        once = list(dict.fromkeys(kids))  # (and once in it: both machines put the same block in)
+        if kids and (any(k in seen for k in once) or once != kids):
+            with_children(b, [k for k in once if k not in seen])
         seen.update(kids)
 
 
@@ -285,6 +288,33 @@ def load_guesses() -> dict:
             got = {}
         _guesses = ((st.st_mtime_ns, st.st_size), got if isinstance(got, dict) else {})
     return _guesses[1]
+
+
+_titles = (None, {})  # (the file's mtime and size, its titles) as last read
+
+
+def load_picture_titles() -> dict:
+    """picture-titles.json beside the store: {file name: title}, a model's
+    title for each picture (made by a model from its caption); {} when
+    there's none or it can't be read. Read again only when it changes."""
+    global _titles
+    try:
+        st = TITLES_PATH.stat()
+    except OSError:
+        return {}
+    if _titles[0] != (st.st_mtime_ns, st.st_size):
+        try:
+            got = json.loads(TITLES_PATH.read_text(encoding="utf-8")).get("titles")
+        except (OSError, ValueError, AttributeError):
+            got = {}
+        _titles = ((st.st_mtime_ns, st.st_size),
+                   {k: v for k, v in got.items() if isinstance(v, str) and v.strip()} if isinstance(got, dict) else {})
+    return _titles[1]
+
+
+def build_library(data: dict) -> dict:
+    """fw_block.build_library, pictures titled by the model's titles (load_picture_titles)."""
+    return fw_block.build_library(data, load_picture_titles())
 
 
 def on_disk_read(old: dict) -> list:
@@ -410,16 +440,21 @@ def apply_defaults(obj: dict, schema: dict) -> list[str]:
 
 # --- writing content ---------------------------------------------------------
 
-def rebase_quotes(data: dict, ref: str, old: str, new: str, skip: str | None = None) -> None:
+def rebase_quotes(data: dict, ref: str, old: str, new: str, skip: str | None = None) -> dict:
     """Keep the mask of every quote of `ref` in step with an edit of it
-    (noted in data["rebased"]: moving anchors along isn't an update)."""
+    (noted in data["rebased"]: moving anchors along isn't an update).
+    Returns a copy of each quote whose masks moved, as it was before: what
+    undoing the edit puts back once the text is back (`Editor.restore`)."""
     if old == new:
-        return
-    blocks = index(data)
+        return {}
+    blocks, was = index(data), {}
     for b in data["blocks"]:
         q = quoted(b)
-        if q and q[0] == ref and q[1] is not None and b.get("id") != skip:
-            with_mask(b, normalize(new, rebase(old, new, q[1])))
+        if not q:
+            continue
+        before = copy.deepcopy(b)
+        if q[0] == ref and q[1] is not None and b.get("id") != skip:
+            with_mask(b, normalize(new, rebase(old, new, raw_mask(b)), keep_empty=True))
             data.setdefault("rebased", set()).add(b.get("id"))
         inner = quote_inner(b)
         moved = {k: normalize(new, rebase(old, new, m)) for k, m in inner.items()
@@ -427,6 +462,9 @@ def rebase_quotes(data: dict, ref: str, old: str, new: str, skip: str | None = N
         if moved:
             with_inner(b, {**inner, **moved})
             data.setdefault("rebased", set()).add(b.get("id"))
+        if b != before:
+            was[b["id"]] = before
+    return was
 
 
 def stamp_updated(data: dict, old_blocks: list, rebased: set = frozenset()) -> None:
@@ -647,6 +685,29 @@ def picture_bytes(name: str, width: int | None) -> bytes:
     return image_file(name).read_bytes()
 
 
+def pictures_apart(data: dict) -> int:
+    """Every picture a block holds taken out to be a pericope of its own, a
+    quote of it in its place (fw_block: pictures_held, picture_quote_id: the
+    same ids on every machine). Returns how many."""
+    blocks = index(data)
+    held = pictures_held(blocks)
+    for holder, pic in held:
+        qid = picture_quote_id(pic, holder, {i for i, b in blocks.items() if quoted(b) != (pic, None)})
+        if qid not in blocks:
+            add_block(data, blocks, qid, {"quote": pic})
+            blocks[qid]["created"] = blocks[pic].get("created", blocks[qid]["created"])
+        with_children(blocks[holder], [qid if k == pic else k for k in children(blocks[holder])])
+        blocks[pic]["entry"] = True
+    return len(held)
+
+
+def tidy_store(data: dict, keep=()) -> None:
+    """What every write does before it's saved: pictures taken out to be
+    pericopes (pictures_apart), then what nothing reaches erased (collect)."""
+    pictures_apart(data)
+    collect(data, keep)
+
+
 def collect(data: dict, keep=()) -> int:
     """Erase every block no entry reaches, through children or quotes (nor
     one of `keep`: blocks cut, that the clipboard holds, clip_holds).
@@ -689,6 +750,9 @@ def editable_keys(schema: dict) -> list[str]:
 
 # -------------------------------------------------------------------- commands
 
+EMPTY_KEPT_MIN = 60  # an empty untitled pericope is cleared by migrate only once untouched this long
+
+
 def cmd_migrate(_args) -> None:
     schema = load_schema()
     data = load_data()
@@ -702,7 +766,11 @@ def cmd_migrate(_args) -> None:
     if len(blocks) != len(data["blocks"]):
         fatal.append("two blocks share an id")
     open_ids = _clean_drafts()
+    now = int(clock() // 60)
     for ref in entry_ids(data):
+        touched = iso_minute(blocks[ref].get("updated"))
+        if touched is not None and now - touched < EMPTY_KEPT_MIN:
+            continue  # (just started, maybe on another machine, whose open drafts this one can't see)
         if is_empty_untitled(blocks, ref) and ref not in open_ids:
             print(f"fw: removed empty untitled pericope {ref}", file=sys.stderr)
             blocks[ref].pop("entry")  # (erased by collect, below)
@@ -711,7 +779,7 @@ def cmd_migrate(_args) -> None:
         added = apply_defaults(b, schema)
         if added:
             print(f"fw: block {b.get('id')}: added field(s) {', '.join(added)}", file=sys.stderr)
-    collect(data, clip_holds())
+    tidy_store(data, clip_holds())
     sync_words(data)
     fatal += invalid(data, schema)
 
@@ -865,7 +933,7 @@ def _apply_header(fw: dict, fields: list[dict], data: dict, schema: dict) -> lis
 
 
 def commit(entry_id: str, draft: str | None, fields: list[dict], final: bool = False,
-           base: str | None = None) -> tuple[list[str], str]:
+           base: str | None = None) -> tuple[list[str], str, dict | None, dict]:
     """Write one block's draft text and header fields into the store. The
     editor calls this on every autosave, so the store always holds the current
     text; `end` calls it with final=True, which also discards an entry left
@@ -876,7 +944,8 @@ def commit(entry_id: str, draft: str | None, fields: list[dict], final: bool = F
     nothing now) goes as a deleted entry does: each quote of it elsewhere
     keeps the last of what it showed, as text (`let_go`). Returns (notes,
     the block's new content_hash, a record that puts back what that changed,
-    or None); raises StoreError on refusal."""
+    or None, and the quotes whose masks moved along, as they were:
+    `rebase_quotes`); raises StoreError on refusal."""
     with store_lock():
         schema = load_schema()
         data = load_data()
@@ -884,29 +953,29 @@ def commit(entry_id: str, draft: str | None, fields: list[dict], final: bool = F
         fw = blocks.get(entry_id)
         if fw is None:
             raise StoreError(f"no block with id {entry_id}")
-        record = None
-        if draft is None:
-            notes = []
+        record, moved = None, {}
+        if draft is None:  # (only the header: the blocks just as they are)
+            notes = _apply_header(fw, fields, data, schema)
         elif base is not None and content_hash(blocks, entry_id) != base:
             raise StoreError("not saved: this block changed in another session since you opened it")
         else:
             notes = _apply_header(fw, fields, data, schema)
             old, was_held = block_draft(blocks, entry_id), set(subtree(blocks, entry_id))
             write_content(data, blocks, fw, draft_items(draft, blocks, marked(blocks)))
-            rebase_quotes(data, entry_id, old, block_draft(blocks, entry_id))
+            moved = rebase_quotes(data, entry_id, old, block_draft(blocks, entry_id))
             cut = {j for i in clip_holds() for j in subtree(blocks, i)}  # (cut, to be pasted: not gone)
             holders = held(blocks)
             record = let_go(data, blocks, {i for i in was_held if loose(blocks, i, holders) and i not in cut})
         if final and fw.get("entry") and is_empty_untitled(blocks, entry_id):
             fw.pop("entry")  # (erased by collect, below)
             notes.append("nothing written, discarded empty pericope")
-        collect(data, clip_holds())
+        tidy_store(data, clip_holds())
         sync_words(data)
         errs = invalid(data, schema)
         if errs:
             raise StoreError("refusing to save, a block became invalid: " + "; ".join(errs))
         save_data(data)
-        return notes, content_hash(index(data), entry_id), record
+        return notes, content_hash(index(data), entry_id), record, moved
 
 
 def let_go(data: dict, blocks: dict, gone: set) -> dict | None:
@@ -934,7 +1003,7 @@ def transact(change, tidy: bool = True):
         data = load_data()
         result = change(data, index(data))
         if tidy:
-            collect(data, clip_holds())
+            tidy_store(data, clip_holds())
         sync_words(data)
         errs = invalid(data, schema)
         if errs:
@@ -1006,13 +1075,15 @@ def quote_of(blocks: dict, qid: str) -> tuple:
 
 
 def commit_view(qid: str, text: str, opened: int | None = None, base: str | None = None,
-                seen: list | None = None) -> dict:
+                seen: list | None = None) -> tuple[dict, dict]:
     """Save an edited view of masked quote `qid` into the block it shows
     (the lens's put), and move its mask along. `seen`: the mask it was seen
     with, when quotes around it narrow it (their inner masks); then the
     view goes back through that, and every mask moves along with the edit.
     Returns new content hashes of that block and of the blocks holding the
-    quote."""
+    quote, and the other quotes whose masks moved along, as they were
+    (`rebase_quotes`; this quote's own mask follows its view)."""
+    moved = {}
     def change(data, blocks):
         target, mask = quote_of(blocks, qid)
         if base is not None and content_hash(blocks, target) != base:
@@ -1023,14 +1094,17 @@ def commit_view(qid: str, text: str, opened: int | None = None, base: str | None
         write_content(data, blocks, blocks[target], draft_items(draft, blocks, marked(blocks)))
         stored = block_draft(blocks, target)
         if narrowed:
-            rebase_quotes(data, target, old, stored)
+            moved.update(rebase_quotes(data, target, old, stored))
+            moved.pop(qid, None)
         else:
-            with_mask(blocks[qid], normalize(stored, rebase(draft, stored, new_mask)))
-            rebase_quotes(data, target, old, stored, skip=qid)
+            was = [x for t in empties(raw_mask(blocks[qid])) for x in (t, t)]  # its empty places, in hidden text
+            new_mask = with_empties(new_mask, empties(rebase(old, draft, was)))  # (where the put moved them; one grown goes)
+            with_mask(blocks[qid], normalize(stored, rebase(draft, stored, new_mask), keep_empty=True))
+            moved.update(rebase_quotes(data, target, old, stored, skip=qid))
         return target
     target = transact(change)
     data = load_data()
-    return hashes(data, target, *parents(index(data), qid))
+    return hashes(data, target, *parents(index(data), qid)), moved
 
 
 def set_quote_mask(qid: str, draft: str | None, mask: list | None, inner: bool = False) -> tuple[dict, dict]:
@@ -1043,7 +1117,8 @@ def set_quote_mask(qid: str, draft: str | None, mask: list | None, inner: bool =
         target, _ = quote_of(blocks, qid)
         undo = {"blocks": {qid: copy.deepcopy(blocks[qid])}}
         stored = block_draft(blocks, target)
-        with_mask(blocks[qid], None if mask is None else normalize(stored, rebase(draft, stored, mask)))
+        with_mask(blocks[qid], None if mask is None else
+                  with_empties(normalize(stored, rebase(draft, stored, mask)), empties(raw_mask(blocks[qid]))))
         if inner:
             with_inner(blocks[qid], {})
         return undo
@@ -1104,7 +1179,8 @@ def set_quote_masks(qid: str, own: tuple, inner: dict) -> tuple[dict, dict]:
         undo = {"blocks": {qid: copy.deepcopy(blocks[qid])}}
         stored = block_draft(blocks, target)
         text, mask = own
-        with_mask(blocks[qid], None if mask is None else normalize(stored, rebase(text, stored, mask)))
+        with_mask(blocks[qid], None if mask is None else
+                  with_empties(normalize(stored, rebase(text, stored, mask)), empties(raw_mask(blocks[qid]))))
         kept = dict(quote_inner(blocks[qid]))
         for iq, (draft, m) in inner.items():
             q = quoted(blocks.get(iq))
@@ -1475,7 +1551,7 @@ def finish(ref: str, tmp: str) -> list[str]:
     # a draft the editor already saved is in the store (or newer text is, from
     # another session): only the empty-entry check is left to do
     synced = info.get("synced") == draft_digest(draft)
-    notes, _, _ = commit(ref, None if synced else draft, info.get("fields", []), final=True, base=info.get("base"))
+    notes, _, _, _ = commit(ref, None if synced else draft, info.get("fields", []), final=True, base=info.get("base"))
     return notes
 
 
