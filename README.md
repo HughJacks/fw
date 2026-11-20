@@ -22,6 +22,44 @@ The web editor is the default. The original terminal editor is still there
 
 It's an early personal project: things change, and some corners are rough.
 
+## Try it
+
+On a Mac (Linux works too), in Terminal:
+
+1. **Get the two things fw needs**, Python and Node. With [Homebrew](https://brew.sh):
+
+   ```sh
+   brew install python node
+   ```
+
+2. **Download fw and set it up** (a minute or two):
+
+   ```sh
+   git clone https://github.com/HughJacks/fw.git ~/fw
+   ~/fw/install.sh
+   ```
+
+3. **Start writing:**
+
+   ```sh
+   fw
+   ```
+
+   Your browser opens on fw's home. Just start typing in the empty page in
+   the middle: it saves as you type. (If `fw` isn't found, the installer
+   printed one line to add to `~/.zshrc`; or run `~/fw/fw`.)
+
+**A few keys to start with** (⌘ is Ctrl on Linux): `Enter` a new block,
+`⌘/` what you can do with the block you're in, `/` at the start of a line
+to quote another block, `⌘⇧Enter` done with this page (saved, back home),
+`⌘[` back. Every key, and changing them: `⌘⇧,`.
+
+**Your writing** stays on your computer, in `~/fw/freewrites.loro` (with a
+readable copy, `freewrites.json`, beside it). Nothing is sent anywhere.
+
+**To update:** `cd ~/fw && git pull && ./install.sh`. To stop fw's little
+background server: `pkill -f fw_web.py` (the next `fw` starts it again).
+
 ## Requirements
 
 - Python 3.10 or newer, and one package: [`loro`](https://loro.dev) (the store is a Loro
@@ -40,6 +78,8 @@ It's an early personal project: things change, and some corners are rough.
   keeps its own clipboard.
 
 ## Install
+
+`./install.sh` does all of this (and links `fw` into `~/.local/bin`). By hand:
 
 ```sh
 git clone https://github.com/HughJacks/fw.git
