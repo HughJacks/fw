@@ -14,8 +14,11 @@ sees JSON, never the store.
 Standard library only (and loro, through fw_store). Listens on 127.0.0.1.
 
     GET  /                          the page
-    GET  /api/home                  the pericopes in the garden's order
-    GET  /api/search?q=&meaning=1   home's search (fw_picker.Picker's rows); with
+    GET  /api/home                  every pericope, a line each, in the recommendation's order
+    POST /api/visit                 {pericope?, block?, flags?, ago?, flush?}: attention from the page, kept as
+                                    visits (fw_block.attend) and written when they end (store.record_visits)
+    GET  /api/exits/<id>[?meaning=1] where to go from a pericope (fw_search.exits), a line each
+    GET  /api/search?q=&meaning=1   home's search (fw_search.Search's rows); with
                                     meaning=1, the search service asked too (fw_meaning) and mixed in
     GET  /api/pericope/<id>         a pericope: its header and its blocks, as a tree
     PUT  /api/pericope/<id>         {draft, title, base, final, also}: saved (store.commit), any block (a
@@ -28,10 +31,11 @@ Standard library only (and loro, through fw_store). Listens on 127.0.0.1.
     POST /api/maskto                {quote, block}: the quote masked to just that block
     POST /api/picture               {url}, or a picture's bytes: a picture pericope (store.add_image_data)
     POST /api/act                   {do, …}: the Ctrl+/ menu's actions (detach, popout, showall, show, lock,
-                                    link, unlink, kind, rename, paraphrase_it, paraphrase, delete), each a
+                                    link, unlink, kind, newkind, rename, paraphrase_it, paraphrase, delete), each a
                                     store function; its undo record
                                     comes back
-    GET  /api/kinds                 every kind, {id, name} (the kinds picker)
+    GET  /api/kinds[?members=1]     every kind, {id, name} (the kinds picker); with members, each kind's, and the
+                                    pericopes of no kind, `unkinded` (the kinds view)
     GET  /api/clip                  what fw last clipped (the rich clipboard, .fw-clip.json, shared with the terminal)
     POST /api/clip                  {ids, cut, text}: blocks clipped (a cut one kept by the store while it's held)
     GET  /api/blocks?ids=           blocks as the page edits them, keeping their ids (pasted after a cut: moved)
@@ -60,7 +64,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import fw_meaning  # noqa: E402
 import fw_store as store  # noqa: E402
-from fw_picker import NEW, Picker, blocks_inside  # noqa: E402
+from fw_search import NEW, Search, blocks_inside, exits, home_order  # noqa: E402
 
 WEB = HERE / "web"
 PORT = 8020
@@ -104,7 +108,8 @@ def build_page() -> bool:
     return subprocess.run(cmd, cwd=WEB, capture_output=True, timeout=120).returncode == 0
 
 
-ACTIVE = [0]   # requests being answered now (a restart waits for none)
+ACTIVE = [0]   # requests being answered now (a restart waits for none); changed under ACTIVE_LOCK (threads)
+ACTIVE_LOCK = threading.Lock()
 
 
 def keys_path() -> Path:
@@ -126,6 +131,46 @@ def write_keys(keys: dict) -> None:
     os.replace(tmp, keys_path())
 
 
+VISITS = {"live": {}, "pending": {}}   # the visits under way and those waiting to be written (fw_block.attend), the
+VISITS_LOCK = threading.Lock()         # page's attention told here (POST /api/visit); the core outlives the tab
+
+
+def attention(blocks: dict, pericope: str | None, block: str | None, flags: str, at: float) -> None:
+    """Attention from the page, as the terminal editor's visit_tick: on the pericope open (any key, opening it: "o");
+    on the block the cursor's in, once it's stayed or been written in ("c", "w", "q" through a quote), carried up to
+    its entry (fw_block.ancestors: not through quotes)."""
+    with VISITS_LOCK:
+        for ids, f in (([pericope], "o") if pericope else ([], ""),
+                       ([block, *store.ancestors(blocks, block)], flags) if block and flags else ([], "")):
+            ids = [i for i in ids if i in blocks]
+            if ids:
+                VISITS["live"], seen = store.attend(VISITS["live"], ids, f, at)
+                VISITS["pending"] = store.note_visits(VISITS["pending"], seen)
+
+
+def flush_visits(everything: bool = False) -> None:
+    """The visits that have ended (no attention for VISIT_GAP), or all of them, written into the store
+    (store.record_visits: not an edit); kept to try again if it refuses."""
+    with VISITS_LOCK:
+        now = store.clock()
+        if not VISITS["pending"] or not (everything or store.ended(VISITS["live"], now) & VISITS["pending"].keys()):
+            return
+        try:
+            store.record_visits(VISITS["pending"])
+        except (store.StoreError, OSError):
+            return
+        VISITS["pending"] = {}
+        VISITS["live"] = {i: x for i, x in VISITS["live"].items() if now - x[1] <= store.VISIT_GAP}
+
+
+def keep_flushing() -> None:
+    """Every half minute, the visits that have ended written (the tab may have gone)."""
+    import time
+    while True:
+        time.sleep(30)
+        flush_visits()
+
+
 def keep_current() -> None:
     """Always the latest code (the user, 2026-11-18): every second, the page built again when its source changed,
     and this core started again, in place, when fw's code changed (once no request is being answered, so no save
@@ -136,7 +181,9 @@ def keep_current() -> None:
         try:
             if page_stale():
                 build_page()
-            if code_stamp() != CODE and ACTIVE[0] == 0:
+            with ACTIVE_LOCK:
+                idle = ACTIVE[0] == 0
+            if code_stamp() != CODE and idle:
                 print("fw web: fw's code changed; starting again", file=sys.stderr, flush=True)
                 os.execv(sys.executable, [sys.executable, *sys.argv])
         except (OSError, ValueError):
@@ -187,8 +234,8 @@ def tree_json(library: dict, ref: str, depth: int = 1, path: tuple = (), locked:
     a picture, the picture."""
     blocks = blocks_of(library)
     b = blocks[ref]
-    if isinstance(b.get("content"), str):
-        return [{"t": "text", "id": ref, "own": True, "text": b["content"], "links": links_json(library, b), "para": para_json(library, b)}]
+    if store.text_of(b) is not None:   # (a pericope is never a paraphrase: para_json says none)
+        return [{"t": "text", "id": ref, "own": True, "text": store.text_of(b), "links": links_json(library, b), "para": para_json(library, b)}]
     if store.image_of(b):
         return [{"t": "image", "id": None, "file": store.image_of(b)}]
     return [node_json(library, k, depth, path, locked) for k in store.children(b)]
@@ -244,7 +291,11 @@ def quote_json(library: dict, qid: str | None, target: str, mask, show, inner, d
          "home": store.home_of(blocks, target)[0] if entry else None,
          "masked": mask is not None, "show": list(show or []),
          "lock": bool(qid and store.quote_lock(blocks.get(qid))), "locked": locked,
-         "picture": bool(entry and store.image_of(entry["block"]))}
+         "picture": bool(entry and store.image_of(entry["block"])),
+         # (what its top line can show of its source, its mini header: made, last update, words)
+         "created": entry["block"].get("created") if entry else None,
+         "updated": entry["block"].get("updated") if entry else None,
+         "words": entry["block"].get("words", 0) if entry else 0}
     if entry is None:
         q["body"] = [{"t": "note", "text": f"missing block {target}"}]
     elif target in path:
@@ -279,14 +330,13 @@ def node_json(library: dict, ref: str, depth: int = 1, path: tuple = (), locked:
         return {"t": "image", "id": ref, "file": store.image_of(b)}
     kids = store.children(b)
     if kids:
-        return {"t": "container", "id": ref, "children": [node_json(library, k, depth, path, locked) for k in kids],
-                "para": para_json(library, b)}
+        return {"t": "container", "id": ref, "children": [node_json(library, k, depth, path, locked) for k in kids]}
     return {"t": "text", "id": ref, "text": store.own_text(blocks, ref), "links": links_json(library, b), "para": para_json(library, b)}
 
 
 def para_json(library: dict, b: dict) -> dict | None:
-    """What block `b` paraphrases, if it's marked: its id, title, where it lives, and its text (the dim guide
-    an empty paraphrase shows, and Show its source)."""
+    """What block `b` paraphrases, if it's a paraphrase: its id, title, where it lives, and its text (the dim
+    guide an empty paraphrase shows, and Show its source)."""
     src = store.paraphrases(b)
     if not src:
         return None
@@ -295,28 +345,6 @@ def para_json(library: dict, b: dict) -> dict | None:
         return {"id": src, "title": "(its source is gone)", "text": "", "home": None}
     return {"id": src, "title": library[src]["title"], "text": store.full_text(blocks, src)[:4000],
             "home": store.home_of(blocks, src)[0]}
-
-
-def paraphrase_it(ref: str) -> tuple[str, dict]:
-    """Paraphrase it (the terminal's): on quote `ref`, an empty paraphrase of what it quotes takes its place; on a
-    block written here (or a picture), it moves to a pericope of its own (store.pop_out) and an empty paraphrase
-    of that takes its place. Returns (the paraphrase's id, a record that undoes it all)."""
-    b = store.index(store.load_data()).get(ref)
-    if b is None:
-        raise store.StoreError("write something first")
-    record = None
-    if store.quoted(b):
-        source = store.quoted(b)[0]
-    else:
-        source, _, record = store.pop_out(ref)   # (ref is a quote of it now, where it was)
-    pid, undo = store.new_paraphrase(source, record)
-    def swap(data, blocks):   # the paraphrase where the quote was
-        for holder in store.parents(blocks, ref):
-            undo["blocks"].setdefault(holder, store.copy.deepcopy(blocks[holder]))
-            store.with_children(blocks[holder], [pid if k == ref else k for k in store.children(blocks[holder])])
-        undo["blocks"].setdefault(ref, store.copy.deepcopy(blocks[ref]))
-    store.transact(swap)
-    return pid, undo
 
 
 def links_json(library: dict, b: dict) -> list:
@@ -382,6 +410,39 @@ def maybes_json(library: dict, kid: str) -> list:
             for b, p in store.maybes(store.load_guesses(), library, kid) if b in library]
 
 
+def unkinded_json(library: dict) -> list:
+    """The pericopes of no kind (the kinds view's last group, the user, 2026-11-23: "a grouping of anything with no
+    kind"): no yes of yours, no sure guess (a maybe isn't one); not a kind itself. Newest first, a line each as
+    members_json's."""
+    blocks = blocks_of(library)
+    guesses = store.guessed(store.load_guesses(), library)
+    none = [i for i, e in library.items() if e.get("entry") and store.kind_of(blocks.get(i)) is None
+            and True not in store.merge_kinds(store.kinds_of(blocks.get(i)), guesses.get(i)).values()]
+    return [{"key": b, "open": b, "title": library[b]["title"], "dim": False,
+             "right": f"{b[4:6]}/{b[6:8]}  {library[b].get('words', 0)}w"} for b in sorted(none, reverse=True)]
+
+
+def members_json(library: dict, kid: str) -> list:
+    """A kind's members (fw_block.of_kind: your answers, newest first; then a model's sure guesses, GUESS_AT up,
+    newest first; then its maybes, fw_block.maybes, likeliest first), a line each as home's list, each opening where it
+    lives; a guess `dim` with its `p`, a maybe's `maybe` too, to answer from the list (the kinds view, and a kind's own
+    page below what it says: worked out, never stored as quotes, the user, 2026-11-22)."""
+    blocks = blocks_of(library)
+    data = store.load_guesses()
+    guesses = store.guessed(data, library)
+    found = [b for b in reversed(store.of_kind(blocks, kid, guesses)) if b != kid and b in library]
+    yours = [b for b in found if kid in store.kinds_of(blocks[b])]
+    sure = [(b, guesses[b][kid]) for b in found if b not in yours]
+    maybe = [(b, p) for b, p in store.maybes(data, library, kid) if b in library and b not in found]
+    out = []
+    for b, p, ask in [(b, None, False) for b in yours] + [(b, p, False) for b, p in sure] + [(b, p, True) for b, p in maybe]:
+        home = store.home_of(blocks, b)[0]
+        out.append({"key": b, "open": home, "title": library[b]["title"], "dim": p is not None,
+                    **({"p": round(p, 2)} if p is not None else {}), **({"maybe": True} if ask else {}),
+                    "right": f"{b[4:6]}/{b[6:8]}  {library[home].get('words', 0)}w"})
+    return out
+
+
 def kind_tokens(library: dict, ref: str) -> list:
     """The header's kinds line, as the terminal's (Editor.kind_chips): each answer (`yes`: true, false), then a
     model's guesses that count (store.guessed): a learned kind's applied ("applied"), any other a guess
@@ -397,94 +458,93 @@ def kind_tokens(library: dict, ref: str) -> list:
     return out
 
 
+def backlink_rows(library: dict, found: list) -> list:
+    """The backlinks as the list above the header shows them (the user, 2026-11-23: "a reverse of the go to", just off
+    screen): oldest first, so the newest is nearest the header; a kind's members aren't here (they're below it). Each
+    {key, open: the pericope it's in, at: the pointing block, title, kind, right: "MM/DD", words: the words around it
+    (a link's, a paraphrase's own; a quote's, the block before it, else after)}."""
+    blocks = blocks_of(library)
+    up = {k: i for i, b in blocks.items() for k in store.children(b)}
+    def near(i):
+        kids = store.children(blocks.get(up.get(i), {})) or []
+        n = kids.index(i) if i in kids else -1
+        for k in ([kids[n - 1]] if n > 0 else []) + kids[n + 1:n + 2]:
+            t = store.own_text(blocks, k).strip()
+            if t and not store.quoted(blocks[k]):
+                return t
+        return ""
+    out = []
+    for x in found:
+        if x["kind"] == "kind" or x["home"] not in library:
+            continue
+        by, text = x["by"], ""
+        if x["kind"] == "link":
+            own = store.own_text(blocks, by)
+            spot = next((link["at"] for link in store.links(blocks[by]) if link["at"][0] == x["at"] - store.home_of(blocks, by)[1]), None)
+            a, e = spot or (0, 0)
+            text = ("…" if a > 40 else "") + own[max(0, a - 40):e + 40].strip() + ("…" if e + 40 < len(own) else "")
+        elif x["kind"] == "paraphrase":
+            text = store.text_of(blocks[by])
+        else:
+            text = near(by)
+        when = x["created"] or blocks[x["home"]].get("created") or ""
+        out.append({"key": f"{x['kind']}:{by}:{x['at']}", "open": x["home"], "at": by, "title": library[x["home"]]["title"],
+                    "kind": x["kind"], "right": f"{when[5:7]}/{when[8:10]}" if when else "",
+                    "words": " ".join(text.split())[:120]})
+    return out
+
+
 def pericope_json(library: dict, ref: str) -> dict:
     """A pericope (or any block) as the page opens it: its header and what it holds."""
     blocks = blocks_of(library)
     b = blocks[ref]
     found = store.backlinks(blocks, ref)
     return {"id": ref, "title": b.get("title"), "shown": library[ref]["title"],
-            "type": store.type_label(b), "kind": store.kind_of(b) is not None,
+            "type": store.type_label(b, blocks), "kind": store.kind_of(b) is not None,
             "created": b.get("created"), "updated": b.get("updated"), "words": b.get("words", 0),
+            "visited": store.minute_iso(store.last_visit(b)) or None,   # (its last visit, as the terminal's "last visited")
             "kinds": store.kinds_text(blocks, b), "kindTokens": kind_tokens(library, ref),
             "maybes": maybes_json(library, ref) if store.kind_of(b) is not None else None,
+            "members": members_json(library, ref) if store.kind_of(b) is not None else None,
             "backlinks": store.backlink_summary(found) if found else "",
+            "backlinkRows": backlink_rows(library, found),
             "base": store.content_hash(blocks, ref), "children": tree_json(library, ref, 1, (ref,))}
 
 
-def preview(blocks: dict, ref: str, chars: int = 240, pictures: int = 2) -> list:
-    """What a card shows of `ref`, in order: its text and pictures as they come, through quotes too (each block
-    once, masks kept, as full_text), until about `chars` of text or `pictures` pictures. [{t: text, text} |
-    {t: image, file}], neighbouring text run together."""
-    if ref not in blocks:
-        return []
-    own = store.image_of(blocks[ref])
-    if own:
-        return [{"t": "image", "file": own}]
-    out, seen, left = [], {ref}, {"chars": chars, "pictures": pictures}
-
-    def add_text(text):
-        text = " ".join(shown_text(text).split())
-        if not text or left["chars"] <= 0:
-            return
-        text = text[:left["chars"]]
-        left["chars"] -= len(text)
-        if out and out[-1]["t"] == "text":
-            out[-1]["text"] += " " + text
-        else:
-            out.append({"t": "text", "text": text})
-
-    def walk(items):
-        for item in items:
-            if left["chars"] <= 0 and left["pictures"] <= 0:
-                return
-            match item:
-                case ("text", text):
-                    add_text(text)
-                case ("image", i) if left["pictures"] > 0:
-                    f = store.image_of(blocks.get(i))
-                    if f:
-                        left["pictures"] -= 1
-                        out.append({"t": "image", "file": f})
-                case ("quote", target, mask, _, inner) if target in blocks and target not in seen:
-                    seen.add(target)
-                    if store.image_of(blocks[target]):
-                        walk([("image", target)])
-                    else:
-                        walk(store.quote_items(blocks, target, mask, inner=inner))
-    walk(store.block_items(blocks, ref))
-    return out
-
-
-GARDEN = 12   # the garden's cards: the first this many (the user, 2026-11-18); the rest are found by searching
-
-
 def home_json(library: dict) -> list:
-    """The garden: the first GARDEN pericopes in its order, each with what a card says. Pictures are left out
-    (the user, 2026-11-18: searching finds them)."""
+    """Home's list: every pericope, a line each, in the recommendation's order (fw_search.home_order: what's alive
+    for you, fused with where to start). The garden's cards were taken out (the user, 2026-11-20: "keep just the
+    simple list")."""
     blocks = blocks_of(library)
-    refs = sorted((r for r, e in library.items() if e["entry"] and not store.image_of(blocks[r])), reverse=True)
-    now = int(store.clock() // 60)
-    out = []
-    for i, _ in store.garden(blocks, refs, now)[:GARDEN]:
-        what, when = store.last_action(blocks[i])
-        out.append({"key": i, "title": library[i]["title"], "right": f"{i[4:6]}/{i[6:8]}  {library[i].get('words', 0)}w",
-                    "last": f"{what} {store.ago(when, now)}".strip(), "kind": store.kind_of(blocks[i]) is not None,
-                    "preview": preview(blocks, i)})
-    return out
-
-
-def library_json(library: dict) -> list:
-    """The whole library, below the garden (the user, 2026-11-18): every pericope, newest first, a line each."""
+    refs = sorted((r for r, e in library.items() if e["entry"]), reverse=True)
     return [{"key": i, "title": library[i]["title"], "right": f"{i[4:6]}/{i[6:8]}  {library[i].get('words', 0)}w",
-             "kind": store.kind_of(library[i]["block"]) is not None}
-            for i in sorted((r for r, e in library.items() if e["entry"]), reverse=True)]
+             "kind": store.kind_of(blocks[i]) is not None}
+            for i in home_order(blocks, refs, int(store.clock() // 60))]
+
+
+def exits_json(library: dict, here: str, meaning: bool = False) -> list:
+    """Where to go from `here` (fw_search.exits), a line each as home's list, those filled from home's order marked
+    `unrelated`; with `meaning`, the search service asked for
+    the blocks nearest its text (its title and the start of what it says), none if it doesn't answer."""
+    blocks = blocks_of(library)
+    refs = [r for r, e in library.items() if e["entry"]]
+    near = None
+    if meaning and fw_meaning.URL not in ("", "off"):
+        text = f"{library[here]['title']}\n{store.full_text(blocks, here)}"[:600]
+        try:
+            near = fw_meaning.fetch(fw_meaning.URL, text) if len(text.strip()) >= fw_meaning.MIN_CHARS else None
+        except (OSError, ValueError):
+            near = None
+    related, filled = exits(blocks, refs, here, int(store.clock() // 60), near)
+    return [{"key": i, "title": library[i]["title"], "right": f"{i[4:6]}/{i[6:8]}  {library[i].get('words', 0)}w",
+             "kind": store.kind_of(blocks[i]) is not None, "unrelated": i in filled} for i in related + filled]
 
 
 def search_json(library: dict, query: str, meaning: list | None = None) -> list:
-    """Home's search, as the terminal's: fw_picker.Picker's rows (with the
-    mini's answer, `meaning`, mixed in when there is one)."""
+    """Home's search, as the terminal's: fw_search.Search's rows (with the
+    the search service's answer, `meaning`, mixed in when there is one)."""
     refs = sorted((r for r, e in library.items() if e["entry"]), reverse=True)
-    p = Picker(library, refs, pinned=[(NEW, lambda q: f"+ new pericope “{q}”" if q else "+ new pericope")],
+    p = Search(library, refs, pinned=[(NEW, lambda q: f"+ new pericope “{q}”" if q else "+ new pericope")],
                inside=blocks_inside(library, refs))
     p.query = query
     if meaning is not None:
@@ -493,8 +553,12 @@ def search_json(library: dict, query: str, meaning: list | None = None) -> list:
     rows = []
     for key, shown, right, *dim in p.rows():
         home = key if key == NEW or library[key]["entry"] else store.home_of(blocks, key)[0]
+        go = key if key == NEW else p.source(key)
+        orig = store.paraphrases(blocks.get(go))   # a paraphrase is never opened: its original is (the user, 2026-11-21)
+        if orig in blocks and store.home_of(blocks, orig)[0]:
+            home, go = store.home_of(blocks, orig)[0], orig
         rows.append({"key": "new" if key == NEW else key, "label": shown, "right": right, "dim": bool(dim and dim[0]),
-                     "open": home, "at": None if key in (NEW, home) else p.source(key),
+                     "open": home, "at": None if go in (NEW, home) else go,
                      "source": None if key == NEW else p.source(key),          # what quoting this row quotes
                      "inside": key != NEW and key != home and not store.quoted(blocks.get(key))})  # a block inside a pericope
     return rows
@@ -513,8 +577,36 @@ def stamp() -> int:
         return 0
 
 
+def refusal(method: str, path: str, host: str | None, origin: str | None, ctype: str | None, port: int) -> str | None:
+    """Why a request isn't the page's own (None: it is). Only this machine's page may use the core (the audit of
+    2026-11-19): the Host must be 127.0.0.1:<port> or localhost:<port> (a rebound DNS name can't read the store), any
+    Origin must be that too (no other site can call the API: a browser always sends one across sites), and what
+    changes something (PUT, POST) must say its body is JSON (a plain-text POST, which needs no preflight, is refused;
+    a dropped picture's bytes, POST /api/picture, come as image/*). Pure."""
+    ours = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    if (host or "").strip().lower() not in ours:
+        return "not this machine's page (Host)"
+    if origin is not None and origin.strip().lower() not in {f"http://{h}" for h in ours}:
+        return "not this machine's page (Origin)"
+    if method in ("PUT", "POST"):
+        kind = (ctype or "").split(";")[0].strip().lower()
+        if kind != "application/json" and not (path == "/api/picture" and kind.startswith("image/")):
+            return "expected Content-Type: application/json"
+    return None
+
+
 class Handler(BaseHTTPRequestHandler):
+    def refused(self, method: str) -> bool:
+        """Answered 403 when the request isn't the page's own (refusal)."""
+        why = refusal(method, urlparse(self.path).path, self.headers.get("Host"), self.headers.get("Origin"),
+                      self.headers.get("Content-Type"), self.server.server_address[1])
+        if why:
+            self.send(403, {"error": why})
+        return bool(why)
+
     def do_GET(self):
+        if self.refused("GET"):
+            return
         url = urlparse(self.path)
         ask = parse_qs(url.query)
         path = url.path
@@ -534,7 +626,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"code": CODE, "page": page_stamp(), "store": str(store.DATA_PATH)})
             if path == "/api/home":
                 lib = library()
-                return self.send(200, {"count": sum(1 for e in lib.values() if e["entry"]), "rows": home_json(lib), "library": library_json(lib)})
+                return self.send(200, {"count": sum(1 for e in lib.values() if e["entry"]), "rows": home_json(lib)})
             if path == "/api/search":
                 q = (ask.get("q") or [""])[0]
                 meaning = None
@@ -545,6 +637,12 @@ class Handler(BaseHTTPRequestHandler):
                     except (OSError, ValueError):
                         meaning = None
                 return self.send(200, {"query": q, "rows": search_json(library(), q, meaning), "meaning": meaning is not None})
+            ex = re.fullmatch(r"/api/exits/([^/]+)", path)
+            if ex and ID_RE.match(ex.group(1)):   # where to go from a pericope (fw_search.exits); meaning=1: the search service asked too
+                lib = library()
+                if not (lib.get(ex.group(1)) or {}).get("entry"):
+                    return self.send(404, {"error": "no such pericope"})
+                return self.send(200, {"rows": exits_json(lib, ex.group(1), (ask.get("meaning") or ["0"])[0] == "1")})
             if path == "/api/masking":   # what masking a quote works on (masking_json)
                 qid = (ask.get("quote") or [""])[0]
                 lib = library()
@@ -559,6 +657,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"blocks": [node_json(lib, i) for i in ids]})
             if path == "/api/kinds":   # every kind: {id, name}, oldest first (the kinds picker)
                 lib = library()
+                if (ask.get("members") or ["0"])[0] == "1":   # (the kinds view: each kind's members too)
+                    return self.send(200, {"kinds": [{"id": k, "name": lib[k]["title"], "members": members_json(lib, k)}
+                                                     for k in store.kind_ids(lib)], "unkinded": unkinded_json(lib)})
                 return self.send(200, {"kinds": [{"id": k, "name": lib[k]["title"]} for k in store.kind_ids(lib)]})
             if path == "/api/quote":   # a new quote of `target`, as the page draws it (what it shows, what it holds)
                 target = (ask.get("target") or [""])[0]
@@ -584,6 +685,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(500, {"error": str(e)})
 
     def do_PUT(self):
+        if self.refused("PUT"):
+            return
         if urlparse(self.path).path == "/api/keys":   # {keys}: the user's key bindings, kept
             try:
                 keys = self.body().get("keys") or {}
@@ -618,13 +721,25 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(500, {"error": str(e)})
 
     def do_POST(self):
+        if self.refused("POST"):
+            return
         path = urlparse(self.path).path
         try:
+            if path == "/api/visit":   # {pericope?, block?, flags?, ago?, flush?}: attention from the page (attention)
+                body = self.body()
+                ago = body.get("ago") or 0
+                at = store.clock() - (ago if isinstance(ago, (int, float)) and 0 <= ago <= store.VISIT_GAP else 0)
+                flags = "".join(f for f in "cwq" if f in str(body.get("flags") or ""))
+                lib = library()
+                attention(blocks_of(lib), body.get("pericope") if (lib.get(body.get("pericope")) or {}).get("entry") else None,
+                          body.get("block"), flags, at)
+                flush_visits(everything=bool(body.get("flush")))
+                return self.send(200, {})
             if path == "/api/pericope":   # a new pericope ({title})
                 title = (self.body().get("title") or "").strip() or None
                 def make(data, blocks):
                     return store.add_block(data, blocks, store.new_id(blocks), [], title=title, entry=True)["id"]
-                ref = store.transact(make, tidy=False)   # (its base too: home's waiting pericope saves into it at once)
+                ref = store.transact(store.editing(make), tidy=False)   # (its base too: home's waiting pericope saves into it at once)
                 return self.send(200, {"id": ref, "base": store.content_hash(blocks_of(library()), ref)})
             if path == "/api/popout":   # {block}: a pericope of its own, quoted where it was (store.pop_out)
                 ref = self.body().get("block")
@@ -661,11 +776,14 @@ class Handler(BaseHTTPRequestHandler):
                 if do == "kind":              # an answer: block is (true) or isn't (false) a kind, or none (null); a new kind by `name`
                     kid, record = store.set_kind(body.get("block"), body.get("kind"), body.get("answer"), body.get("name") or "")
                     return self.send(200, {"kind": kid, "record": record})
+                if do == "newkind":           # a kind called `name`, made (the kinds view's + new kind); one there already: it
+                    kid, record = store.new_kind(body.get("name") or "")
+                    return self.send(200, {"kind": kid, "record": record})
                 if do == "rename":            # a kind's name (its title): refused empty, or another kind's
                     record = store.rename_kind(body.get("kind"), body.get("name") or "")
                     return self.send(200, {"record": record})
                 if do == "paraphrase_it":     # Paraphrase it: your words in its place (paraphrase_it)
-                    pid, record = paraphrase_it(body.get("block"))
+                    pid, record = store.paraphrase_it(body.get("block"))
                     return self.send(200, {"id": pid, "record": record})
                 if do == "paraphrase":        # Paraphrases… (`source`) / Not a paraphrase (no source)
                     record = store.set_paraphrase(body.get("block"), body.get("source"))
@@ -701,7 +819,7 @@ class Handler(BaseHTTPRequestHandler):
                     name = store.add_image_data(store.fetch_image(url), url)
                 def make(data, blocks):
                     return store.add_block(data, blocks, store.new_id(blocks), {"image": name}, entry=True)["id"]
-                ref = store.transact(make, tidy=False)   # (its base too: home's waiting pericope saves into it at once)
+                ref = store.transact(store.editing(make), tidy=False)   # (its base too: home's waiting pericope saves into it at once)
                 return self.send(200, {"id": ref, "base": store.content_hash(blocks_of(library()), ref)})
             return self.send(404, {"error": "not found"})
         except store.StoreError as e:
@@ -742,13 +860,15 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def handle(self):
-        ACTIVE[0] += 1
+        with ACTIVE_LOCK:
+            ACTIVE[0] += 1
         try:
             super().handle()
         except (BrokenPipeError, ConnectionResetError):   # (the page went away mid-answer: nothing to tell it)
             pass
         finally:
-            ACTIVE[0] -= 1
+            with ACTIVE_LOCK:
+                ACTIVE[0] -= 1
 
 
 def serve(port: int = PORT) -> ThreadingHTTPServer:
@@ -767,11 +887,15 @@ def main() -> int:
     if a.code_stamp:
         print(CODE)
         return 0
-    store.cmd_migrate(None)  # (as fw does on every run: the store checked and brought up to date)
+    try:
+        store.cmd_migrate(None)  # (as fw does on every run: the store checked and brought up to date)
+    except store.StoreError as e:
+        store.die(str(e))
     if os.environ.get("FW_WEB_WATCH", "1") != "0":
         if page_stale():
             build_page()
         threading.Thread(target=keep_current, daemon=True).start()
+    threading.Thread(target=keep_flushing, daemon=True).start()
     httpd = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     url = f"http://127.0.0.1:{a.port}/"
     print(f"fw web: {url}", file=sys.stderr, flush=True)

@@ -21,8 +21,8 @@ def blk(i, content, title=None, entry=False, **more):
     return {"id": i, "title": title, **({"entry": True} if entry else {}), "content": content, "words": 0,
             "created": T, "updated": T, **more}
 def fresh():
-    """mine: M1 (a poem, said so) and M2; other: O1; the kinds poem (described) and letter."""
-    blocks = [blk(MINE, [M1, M2], "mine", True), blk(M1, "roses are red", kinds={POEM: True}), blk(M2, "buy milk"),
+    """mine: M1 and M2; other: O1; the kinds poem (described) and letter."""
+    blocks = [blk(MINE, [M1, M2], "mine", True), blk(M1, "roses are red"), blk(M2, "buy milk"),
               blk(OTHER, [O1], "other", True), blk(O1, "an old pond"),
               blk(THIRD, [T1], "third", True), blk(T1, "a third thing"),
               blk(POEM, {"kind": "poem", "blocks": [PD]}, entry=True), blk(PD, "a short piece in lines"),
@@ -163,8 +163,8 @@ check("the kind's maybes line: the maybes, and how many are applied", "1 · ↵ 
 t.key(Q); t.close()
 write_guesses({POEM: {M2: g(0.95), O1: g(0.92), T1: g(0.7), OTHER: g(0.7)}})
 t = F.fw("poem", rows=30, cols=80, env=ENV)
-check("  a kind not learned: its guesses about blocks inside pericopes applied (≥ 0.9), not reviewed",
-      "1 · ↵ review them · 2 applied" in (maybes_row(t) or ""), maybes_row(t))
+check("  its guesses about blocks inside pericopes: nothing (only a pericope has kinds)",
+      "1 · ↵ review them" in (maybes_row(t) or "") and "applied" not in maybes_row(t), maybes_row(t))
 t.key(Q); t.close()
 from fw_picker import Picker, blocks_inside
 lib = S.build_library(S.load_data())

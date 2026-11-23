@@ -5,8 +5,9 @@
 //   image        a picture (only a picture pericope's own: a picture elsewhere is a quote of one)
 import { Schema } from "prosemirror-model";
 
-/** A block's DOM attributes: a paraphrase (its `para`: what it paraphrases) drawn red, "≈ its source" on top. */
-const paraAttrs = (n, cls) => (n.attrs.para ? { class: `${cls} fw-para`, "data-para": `≈ ${n.attrs.para.title}` } : { class: cls });
+/** A block's DOM attributes: a paraphrase (its `para`: what it paraphrases) drawn as a quote is (the user, 2026-11-20: "a kind
+ * of transclusion", its source not named), its ↗ a widget (editor.js). */
+const paraAttrs = (n, cls) => (n.attrs.para ? { class: `${cls} fw-para` } : { class: cls });
 
 export const schema = new Schema({
   nodes: {

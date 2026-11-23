@@ -36,6 +36,7 @@ several machines merge; undo is total; everything is a block.
 | `fw_blocks.py` | part of `Editor` (a mixin): blocks selected whole, and copy/cut/delete/typing/paste over them; the rich clipboard's blocks |
 | `fw_layout.py` | part of `Editor` (a mixin): the layout (rows: `Row`, `Drawn`; boxes, the one text column) and drawing; its pure parts plain functions |
 | `fw_state.py` | the editor's modes (`Editor.mode`) and the state each owns, as records: `View`, `Frame`, `Masking`, `Menu`, `Picked`, `FieldEdit`; and `Home`, home as it was left (view, typed, selection, grid or list, the places gone back from) |
+| `fw_search.py` | pure: the search list ranked (`Search`; a kind's name typed: it and its blocks first, then the guessed ones, dim; `fuse` mixes in search by meaning), both editors' ; `home_order`, home's list with nothing typed |
 | `fw_picker.py` | `Garden`, home's grid of cards (the order from `fw_block.garden`); the search list home, Quote a block, Link to an entry and the kinds picker share (`Picker`; a kind's name typed: it and its blocks first, then the guessed ones, dim) |
 | `fw_screen.py` | the terminal: character widths, soft wrap, word steps, `put`, `draw_box`, terminal modes, the test-only `$FW_SYNC` signal |
 | `fw_app.py` | the loop: `stage` → edit → `finish` → home; the Open it trail |
@@ -49,9 +50,9 @@ several machines merge; undo is total; everything is a block.
 
 Where each kind of change goes is in `CLAUDE.md`.
 
-## Data model (schema v17)
+## Data model (schema v19)
 
-The store is `{schemaVersion: 17, blocks: [Block]}`: everything is a block.
+The store is `{schemaVersion: 18, blocks: [Block]}`: everything is a block.
 Blocks are flat (side by side, by id) and content is recursive. That's the
 data fw works on; on disk it's a Loro document (`fw_loro`, since
 2026-11-16), so copies on several machines merge by themselves
@@ -60,15 +61,15 @@ tidies a merge the same way everywhere).
 `load_data`/`save_data` are unchanged.
 
 ```
-Block   = { id, title, entry?, created, updated, words, content, links?, paraphrases?, kinds?, visits? }
+Block   = { id, title, entry?, created, updated, words, content, links?, kinds?, visits? }
 Content = Text    "a string"
+        | Paraphrase {"paraphrase": "<id>", "text": "a string"}   your words about another block
         | Blocks  ["<id>", …]                         children, in order
         | Quote   {"quote": "<id>", "mask"?, "show"?: [prop…], "inner"?: {"<quote id>": mask}, "lock"?: true}
         | Image   {"image": "<hash>.<png|jpg|gif|webp>"}    a file in images/
         | Kind    {"kind": "<name>", "blocks": ["<id>", …]}  what a block can be: its description, children
 links   = [{to: entry id, at: [start, end], created?}]  spans of a text block's text
-paraphrases = "<id>"                                    on any block but a quote
-kinds   = {"<kind id>": true | false}                   what it is (or isn't): only your answers
+kinds   = {"<kind id>": true | false}                   what a pericope is (or isn't): only your answers
 mask (on disk) = {block id: [[start, end], …]}          what shows of each block of the target
 visits  = {total, first, recent: [[minute, flags], …]}   the last 10 visits; minutes since the epoch; flags of o c w q
 ```
@@ -94,8 +95,13 @@ visits  = {total, first, recent: [[minute, flags], …]}   the last 10 visits; m
 - **Kinds** (v16): a kind (a poem, a to-do) is a block whose content is
   Kind, a name and a description made of ordinary child blocks, always an
   entry; `children`, `own_text`, `block_items`, `block_draft` treat it as a
-  container, and `with_children` writes one back keeping its name. A block
-  says what it is in `kinds`, only your answers (several allowed).
+  container, and `with_children` writes one back keeping its name. A
+  pericope, and only a pericope, says what it is in `kinds`, only your
+  answers (several allowed): `set_kind` and `set_kinds` refuse a block
+  inside one, `tidy_store` (`kinds_apart`) drops any a block gets by moving
+  in, `guessed` ignores guesses about one, and the v19 migration carried
+  each yes inside up to its pericope (the pericope's own answer winning).
+  To say what a part is, pop it out.
   A model's guesses are never stored: a model outside fw may write
   `kind-guesses.json` beside the store; `store.load_guesses`
   reads it (again when it changes; none or broken: {}), and the pure
@@ -107,7 +113,7 @@ visits  = {total, first, recent: [[minute, flags], …]}   the last 10 visits; m
   through `store.set_kind`, one undo step; Ctrl+O opens the kind.
   A kind learned from the answers (`fw_block.learned`: kind-guesses.json's
   `sources`, "learned" once it has 10) has its guesses that count applied,
-  and so does any kind about a block inside a pericope (`fw_block.is_applied`):
+  as does any guess from 0.9 up (`fw_block.is_applied`):
   drawn like a yes with a mark, "note·", listed undimmed in its search
   (`Picker.applied`), still never stored.
   A kind's header has a derived maybes line (`fw_block.maybes`: its guesses
@@ -169,8 +175,11 @@ visits  = {total, first, recent: [[minute, flags], …]}   the last 10 visits; m
   (`history_key`), so no earlier text step is undone through it. Drawn: `⊘`
   first on its top line, what shows through it dim. Toggled from Ctrl+/ or
   Ctrl+L (`toggle_lock`, `store.set_quote_lock`).
-- **Pointers, not objects:** a quote *is* the edge (its mask lives on it);
-  a link and a paraphrase mark are attributes; none keeps anything alive.
+- **Pointers, not objects:** a quote *is* the edge (its mask lives on it),
+  and so is a paraphrase (v18: its own content case, words plus the
+  original's id, read through `text_of`/`with_text` wherever text is); a
+  link is an attribute; none keeps anything alive. A paraphrase is never
+  opened itself (search, ⌘O: its original) and never a pericope.
   **Backlinks** are derived (`fw_block.backlinks`), never stored.
 - **Masks:** per block on disk; in memory anchors into the target's draft,
   in open/close pairs (`masks_in` / `masks_out` in `fw_block` convert on
@@ -189,7 +198,7 @@ visits  = {total, first, recent: [[minute, flags], …]}   the last 10 visits; m
   `load_data` reads the store; `migrate` saves the result. A schema change
   adds a step.
 - Code takes blocks apart with `match`: `children`, `quoted`, `image_of`,
-  `kind_of`, `paraphrases`, `kinds_of`, `links`, `own_text`, `block_items`,
+  `kind_of`, `paraphrases`, `text_of`, `kinds_of`, `links`, `own_text`, `block_items`,
   `full_text`, `block_draft`.
 
 ### The draft (what the editor edits)
@@ -208,13 +217,16 @@ except marked ones (`keep`).
 
 ### Writes
 
-- **One transaction shape:** `transact(change)` locks, loads, applies the
-  change, collects, recounts words, validates, saves. `StoreError` on
-  refusal. (`commit` isn't on it yet: 'Left from the audit'.)
-- **Commands on it:** `commit_view`, `set_quote_mask(s)`, `mask_quote_to`,
+- **One transaction shape:** `transact(change)`: `change(store)` returns
+  (new store, result), never changing the store it's given; then tidied,
+  words recounted, stamped, validated, saved. `StoreError` on refusal.
+  In-place edits go through `editing(edit)` (on a copy); flags beside the
+  store, never in it; `commit` is on it. Blocks change through `fw_block`'s
+  `with_*`, which return a new block (`put_block`).
+- **Commands on it:** `commit`, `commit_view`, `set_quote_mask(s)`, `mask_quote_to`,
   `set_quote_show`, `set_quote_lock`, `detach`, `pop_out`, `nest_out`, `new_entry`,
   `link_text`, `add_links`, `unlink_text`, `set_paraphrase`,
-  `new_paraphrase`, `set_kinds`, `set_kind`, `rename_kind`, `delete_entry`, `let_go`, `restore`.
+  `new_paraphrase`, `paraphrase_it`, `set_kinds`, `set_kind`, `rename_kind`, `delete_entry`, `let_go`, `restore`.
 - **Undo records:** store-side actions return `{blocks: {id: copy | None}}`;
   `restore(record)` applies one and returns its inverse (undo and redo).
 - **Sessions:** `stage` writes the draft and its `.meta.json` sidecar
@@ -247,6 +259,75 @@ except marked ones (`keep`).
   anew clears what's ahead (`fw_app.write`). Ctrl+[ is told from Esc by the
   kitty keyboard protocol.
 
+## Suggesting: one question per signal
+
+Each signal answers one question, as its own pure ranked list holding only
+what it has something to say about; a context mixes the ones it needs with
+`fw_search.fuse` (reciprocal rank, no weights), so nothing is blended by
+hand-tuned numbers and each can be judged alone.
+
+| signal | question | where |
+|---|---|---|
+| text match | does it say what I typed? | `fw_search.Search` |
+| meaning (embeddings, a search service apart from fw) | is it about what I typed? | `fw_meaning` → `fuse` |
+| memory (FSRS-style, from visits) | is it alive for me, or fading? | `fw_block.garden`, `memory` |
+| hubs (randomized HITS over quotes, links, paraphrases; not quoted pictures) | is it a way in? | `fw_block.pericope_edges`, `hits` |
+| authorities (the same HITS) | is it where things lead? | `fw_block.hits` (orders `alongside`) |
+| pointing here (backlinks' pericopes) | what uses this? | `fw_search.exits` |
+| alongside (co-citation, coupling) | what sits with this in the structure? | `fw_block.alongside` |
+| next (the visit right after, from visits) | where do I go after this? | `fw_block.visited_next` |
+| kinds | what is it? | filters and groups (`kind_first`), never a score |
+
+Home with nothing typed = memory ⊕ hubs, then the rest by last activity
+(`home_order`). Search = text ⊕ meaning, a kind's name typed first.
+A pericope's exits ("from here", `fw_search.exits`) = pointing here ⊕
+alongside ⊕ next ⊕ meaning, not what it points at, filled from
+`home_order` when short. Every page's foot is one component,
+`web/src/Suggested.svelte` (the search, + new, the suggestions): `from` a
+pericope its exits, none (home's waiting pericope, still unmade) every
+pericope in `home_order`. There's one for the page (App.svelte), following
+the pericope open (Pericope.svelte's bindable `now`: id, base); each save
+(a new base) asks its exits again, at most every 8 s (`AGAIN`), so they
+follow what's written. ⌘⇧↵ moves only `.fw-peri` (motion.js `away`, then
+`arrive`): the suggestions stay, gliding if home lays them out elsewhere.
+Typing in its "go to" is no menu: the same rows become the search's
+results (keyed, flip), + new titled with the query last.
+The kinds view (`#/kinds`, ⌘⇧U, `web/src/KindsView.svelte`) is a page of
+its own, not home: every kind folded, → its members, + new kind
+(`store.new_kind`). A kind's members are worked out, never stored as
+quotes: `fw_web.members_json` over `fw_block.of_kind`, your answers
+newest first, then guesses from `GUESS_AT` up, dim, then its maybes
+(`fw_block.maybes`), each guess answered in the list with Y/N
+(`kindYes`/`kindNo`, POST /api/act kind), N on one of yours taking it out
+(a no), ⌘⌫ on a kind deleting it, asked first (`kindDelete`, POST /api/act
+delete: `store.delete_entry`, its answers dropped everywhere); last, the
+pericopes of no kind (`fw_web.unkinded_json`: no yes, no sure guess), a
+group opened like a kind. A kind can be of kinds (it's a pericope): the
+view is a tree of paths, a kind nested in each kind it's of (yours or a
+sure guess), the top level only kinds of none (plus, oldest first, any a
+loop leaves unreached), a kind met inside itself ↻; membership isn't
+carried up. GET
+`/api/kinds?members=1`, and `members` on a kind's pericope, drawn below
+its description by `web/src/Members.svelte`.
+The backlinks above the header (`web/src/Backlinks.svelte`, rows from
+`fw_web.backlink_rows`, `backlinkRows` on a pericope: oldest first, a kind's
+members left out) are the go-to list turned over: rows, a rule, "links to
+this". The rule sits near the window's top (a negative margin) and the rows
+hang absolutely right above it, so at rest only a sliver shows and the page
+can't scroll to them; brought in (a wheel up at the top, or ↵/↑ on the
+header's backlinks chip) they join the flow, the page growing
+(`--backs-room`) and scrolling by their height, so nothing moves; scrolled
+back down to that height (not focused in them) they hang again. Leaving
+(↓ past the nearest, Esc, 6 s idle, or 1.2 s after the mouse leaves them)
+scrolls smoothly back to that height first, then hangs them.
+Lists scroll on purpose (`web/src/scrolling.js`: `reveal` keeps the selected
+row `PAD` from the window's edges, `showList` shows a short list whole,
+smoothly, at once in still mode): the backlinks, the kinds view, a kind's
+members.
+Visits on the web: the page tells the core your attention
+(`web/src/visits.js` → POST /api/visit); the core keeps them as the
+terminal does (`fw_block.attend`) and writes them when they end or you
+leave (`fw_web.flush_visits`, `store.record_visits`).
 ## Architecture of the editor
 
 - **The buffer** is `lines` plus `bids` (one block id per line, None on a

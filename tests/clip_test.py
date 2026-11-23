@@ -76,7 +76,7 @@ fresh()
 QD = "20261001T100000-d0aa"
 def put_quote(data, blocks):   # a quote of S1, the block itself (as ^V of it makes)
     S.add_block(data, blocks, QD, {"quote": S1}); blocks[DEST]["content"].append(QD)
-S.transact(put_quote)
+S.transact(S.editing(put_quote))
 check("(a quote of the block in dest)", {"of": S1} in shape(DEST)[0] if isinstance(shape(DEST)[0], list) else {"of": S1} in shape(DEST), shape(DEST))
 t = open_("src")
 t.key(ESC, SUP, SUP, CUT); t.settle()

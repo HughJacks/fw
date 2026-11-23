@@ -1,5 +1,5 @@
 // results.js — a search's selection kept across the search service's answer (the user, 2026-11-18: suggestions shouldn't "just
-// pop in"). The rows themselves are drawn by Home.svelte and SearchBox.svelte: a placeholder while the search service's answer
+// pop in"). The rows themselves are drawn by Suggested.svelte and SearchBox.svelte: a placeholder while the search service's answer
 // is on its way, then rows already there move (Svelte's flip) and new ones ease in.
 
 

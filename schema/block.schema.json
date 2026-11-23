@@ -33,12 +33,30 @@
       "readOnly": true
     },
     "content": {
-      "description": "What the block is, one of five shapes: Text (a string, may contain newlines); Blocks (its children, by id, in order); Quote (a live view of another block, `quote` naming it; an optional `mask` of anchors into that block's text, in open/close pairs, shows only what's between them, the rest as …; an optional `show` lists which of its properties the quote's top line shows; an optional `inner` masks the quotes inside it, seen through it; an optional `lock` keeps anyone writing through it); or Image (one picture: `image` names its file in the `images` folder beside the store, named by a hash of its bytes); or Kind (what a block can be, as a poem or a to-do: `kind` its short name, `blocks` its description, child blocks held as Blocks holds them; a kind is always an entry). An entry with nothing written is empty Blocks.",
+      "description": "What the block is, one of six shapes: Text (a string, may contain newlines); Paraphrase (your own words about another block, `paraphrase` naming it and `text` the words, a string like Text's: drawn as text, not live, unlike a quote; it keeps nothing alive, and one of a block that's gone is just text; a paraphrase is always inside a pericope, never one itself); Blocks (its children, by id, in order); Quote (a live view of another block, `quote` naming it; an optional `mask` of anchors into that block's text, in open/close pairs, shows only what's between them, the rest as …; an optional `show` lists which of its properties the quote's top line shows; an optional `inner` masks the quotes inside it, seen through it; an optional `lock` keeps anyone writing through it); or Image (one picture: `image` names its file in the `images` folder beside the store, named by a hash of its bytes); or Kind (what a block can be, as a poem or a to-do: `kind` its short name, `blocks` its description, child blocks held as Blocks holds them; a kind is always an entry). An entry with nothing written is empty Blocks.",
       "default": [],
       "oneOf": [
         {
           "title": "Text",
           "type": "string"
+        },
+        {
+          "title": "Paraphrase",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "paraphrase",
+            "text"
+          ],
+          "properties": {
+            "paraphrase": {
+              "type": "string",
+              "pattern": "^[0-9]{8}T[0-9]{6}-[0-9a-f]{4}$"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
         },
         {
           "title": "Blocks",
@@ -204,14 +222,8 @@
         }
       }
     },
-    "paraphrases": {
-      "description": "Marks the block as a paraphrase of another block: your own words about it (not live, unlike a quote, whose content is the pointer; here the pointer sits beside the content). On any block but a quote: text, a block holding blocks (a long paraphrase), a picture. Just a pointer: it keeps nothing alive; deleting the entry it's in drops it, and one pointing at a block that's gone is ignored. Managed by fw: Paraphrases… / Not a paraphrase.",
-      "type": "string",
-      "pattern": "^[0-9]{8}T[0-9]{6}-[0-9a-f]{4}$",
-      "readOnly": true
-    },
     "kinds": {
-      "description": "What the block is, as you said: each kind (a Kind block, by id) it is (true) or isn't (false); only your answers (a model's guesses are worked out apart, never stored). A block can be several kinds. Just a pointer: it keeps nothing alive, and deleting a kind drops it here. Written in the header's kinds field by name (\"poem, not letter\"; a new name makes a new kind).",
+      "description": "What the pericope is, as you said (only a pericope has kinds: a block inside one has none, and loses any it's given, as when it's moved in): each kind (a Kind block, by id) it is (true) or isn't (false); only your answers (a model's guesses are worked out apart, never stored). A block can be several kinds. Just a pointer: it keeps nothing alive, and deleting a kind drops it here. Written in the header's kinds field by name (\"poem, not letter\"; a new name makes a new kind).",
       "type": "object",
       "additionalProperties": {
         "type": "boolean"

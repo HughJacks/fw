@@ -3,24 +3,32 @@
 // into its own block through the core (PUT /api/pericope/<id>: the terminal's commit). A quote that can be
 // written through holds an editor of its own (QuoteView); one that can't (masked, locked, a picture, too
 // deep) is drawn read only from what the core says it shows.
-import { EditorState, Plugin, NodeSelection, TextSelection, Selection } from "prosemirror-state";
+import * as visits from "./visits.js";
+import { EditorState, Plugin, PluginKey, NodeSelection, TextSelection, Selection } from "prosemirror-state";
 import { EditorView, Decoration, DecorationSet } from "prosemirror-view";
 import { keymap } from "prosemirror-keymap";
 import { baseKeymap, chainCommands, splitBlock, liftEmptyBlock } from "prosemirror-commands";
-import { BlockSelection, blocksPlugin, selectAround, grow, removeSelected, removeEmpty, nestIn, selectBlock } from "./blocks.js";
+import { BlockSelection, blocksPlugin, selectAround, grow, removeSelected, removeEmpty, joinOut, nestIn, selectBlock, levelKey, atLevel } from "./blocks.js";
 import { history, undo, redo } from "prosemirror-history";
 import { schema } from "./schema.js";
 import { pmDoc, draftOf, freshIds, pmLens, lensOf } from "./draft.js";
 import { quoteEl, drawBody } from "./views.js";
+import { ui } from "./state.svelte.js";
+import { EditorRunes } from "./editor-state.svelte.js";
+import { stopMasking } from "./masking.js";
 
-const SAVE_AFTER = TEST ? 30 : 400;   // ms after the last key: saved (the terminal's autosave; quicker in the tests)
+// every change saved as it's made (the user, 2026-11-23: "all updates should be instant, so the idea of a write or a save
+// is after every single change"): no waiting for the keys to stop; saves go one at a time, each with all that's changed
+// by then (save(): one in flight, the next after it), so fast typing is a save about every 90 ms, never a queue
+const SAVE_AFTER = 0;
 const RETRY = TEST ? 150 : 1000;       // ms: a save the store refused, tried again
 export const waiting = new Set();     // the editors with a save scheduled, not yet begun (the tests' "settled")
 
 import { api, TEST } from "./api.js";
 import { slashMenu } from "./menu.js";
 import { clipboardPlugin } from "./clipboard.js";
-import { keyOf } from "./keys.js";
+import { keyOf, pressed } from "./keys.js";
+const TRAVEL = ["back", "forward", "home", "done", "keys"];   // (the keys that only move you elsewhere)
 export { api };
 
 /** A transaction giving ids where the document needs them (draft.freshIds), or null. A block split off one
@@ -38,24 +46,148 @@ function idsTr(state) {
   return tr.setMeta("addToHistory", false);
 }
 
-const views = new WeakMap();   // a quote's DOM -> its QuoteView (to go into it from the keys)
+const markKey = new PluginKey("fw-mark");
+// where you are, as each editor's own state (the audit of 2026-11-19: not module variables a plugin reads): `current`,
+// it's the editor you're in; `quiet`, nothing drawn as where you are yet. Set by a transaction's meta (hereKey), so
+// what's drawn changes with the state, never by an empty transaction dispatched to redraw.
+const hereKey = new PluginKey("fw-here");
+/** The paraphrase the selection is in, innermost first, or selected whole (one block): its `para`, or null. */
+function paraAt(state) {
+  const sel = state.selection;
+  if (sel instanceof BlockSelection) { const b = sel.blocks(); return b.length === 1 ? b[0].node.attrs.para || null : null; }
+  if (sel instanceof NodeSelection) return sel.node.attrs.para || null;
+  for (let d = sel.$from.depth; d > 0; d--) if (sel.$from.node(d).attrs.para) return sel.$from.node(d).attrs.para;
+  return null;
+}
+
+const views = new WeakMap();
+/** `sel` (where an arrow would go, Selection.findFrom's) a quote that can be gone into: into it, at its start going
+ * down (`dir` 1), its end going up, and true; else false (a picture, a stand-in: selected whole as before). */
+function enterQuote(view, sel, dir) {
+  if (!(sel instanceof NodeSelection) || sel.node.type.name !== "quote") return false;
+  const qv = views.get(view.nodeDOM(sel.from));
+  return !!(qv && qv.inner && qv.enter(dir < 0 ? "end" : "start"));
+}   // a quote's DOM -> its QuoteView (to go into it from the keys)
 
 // Where you are (the user, 2026-11-18): one editor at a time is the one you're in, and only its selection is drawn,
 // the block its cursor is in (fw-here) or what it has selected whole (fw-chosen); its DOM is marked fw-current (so the
-// quotes you're writing through, around it, show: app.css). Every other editor is at rest, whatever selection it
-// last had. You stay in it while a menu or a question of the page has the focus, or the window loses it; you leave
-// it for another editor, or for anything else on the page (the title, home's search).
+// quotes you're writing through, around it, show: app.css), unless it's quiet (nothing drawn as where you are). Every
+// other editor is at rest, whatever selection it last had. You stay in it while a menu or a question of the page has
+// the focus, or the window loses it; you leave it for another editor, or for anything else on the page (the title,
+// home's search). Each editor's state says whether it's the one (hereKey); `current` only remembers which to tell
+// it isn't, when another is.
 let current = null;
-/** Editor `ed` (or none) the one you're in; the one you were in and it drawn again. */
+/** Editor `ed` (or none) the one you're in: its state says so, and the one you were in's says it isn't. */
 function setCurrent(ed) {
   if (current === ed) return;
   const was = current;
   current = ed;
-  for (const e of [was, ed]) {
-    if (!e || e.gone) continue;
-    e.view.dom.classList.toggle("fw-current", e === current);
-    e.view.dispatch(e.view.state.tr.setMeta("addToHistory", false));   // (its marks drawn again)
+  if (was && !was.gone) was.view.dispatch(was.view.state.tr.setMeta(hereKey, { current: false }).setMeta("addToHistory", false));
+  if (ed && !ed.gone) ed.view.dispatch(ed.view.state.tr.setMeta(hereKey, { current: true }).setMeta("addToHistory", false));
+}
+/** How many words a document holds (the header's count). */
+export const wordsIn = (doc) => doc.textBetween(0, doc.content.size, " ", " ").split(/\s+/).filter(Boolean).length;
+
+/** Where you are in `root`'s editors, from their states (the tabs' path, Tabs.svelte; nothing read from the page):
+ * {editor, chosen, from, to}, the editor you're in and what's drawn there: blocks selected whole (`chosen`, the first
+ * and last at positions `from`, `to`), or the block of text the cursor's in (`from`); `from` null: in it, nothing of
+ * it drawn (a quote showing one block: the quote). Null: you're nowhere in it, or it's quiet. Reactive: it reads each
+ * editor's $state. */
+export function focusOf(root) {
+  if (!root || root.gone) return null;
+  for (const e of editorsIn(root)) {
+    const st = e.pm, h = st && hereKey.getState(st);
+    if (!h?.current || h.quiet) continue;
+    const sel = st.selection;
+    if (sel instanceof NodeSelection) return { editor: e, chosen: true, from: sel.from, to: sel.from };
+    if (sel instanceof BlockSelection) { const b = sel.blocks(); if (b.length) return { editor: e, chosen: true, from: b[0].pos, to: b.at(-1).pos }; }
+    const { $from } = sel;
+    for (let d = $from.depth; d > 0; d--) if ($from.node(d).type.name === "text_block") return { editor: e, chosen: false, from: $from.before(d), to: $from.before(d) };
+    return { editor: e, chosen: false, from: null, to: null };
   }
+  return null;
+}
+/** Editor `e` and the editors of the quotes in it, at any depth, outermost first. */
+const editorsIn = (e) => [e, ...[...e.kids].flatMap(editorsIn)];
+
+// --- where you are on a page, kept as you leave it and put back as you come back to it along the trail (⌘[ and ⌘], the
+// user, 2026-11-19, later: "exactly the place and cursor status you came from"; main.js)
+/** Where you are in `root`'s editors (the one you're in): the caret or text selected ({anchor, head}: each the block
+ * of text it's in, how far in, and what that block holds), or blocks selected whole ({blocks: [first id, last id]});
+ * `path`: the quotes (their ids) the editor it's in is inside, outermost first; `quiet`: nothing drawn yet. Null: none. */
+export function spotOf(root) {
+  const e = root && current && !current.gone && editorsIn(root).includes(current) ? current : null;
+  if (!e) return null;
+  const path = [];
+  for (let x = e; x.holder; x = x.holder.parent) path.unshift(x.holder.node.attrs.id);
+  const sel = e.view.state.selection, base = { path, quiet: !!e.quiet, level: !!levelKey.getState(e.view.state) };
+  if (sel instanceof NodeSelection) return { ...base, blocks: [sel.node.attrs.id, sel.node.attrs.id] };
+  if (sel instanceof BlockSelection) { const b = sel.blocks(); return b.length ? { ...base, blocks: [b[0].node.attrs.id, b.at(-1).node.attrs.id] } : null; }
+  const at = ($p) => {
+    for (let d = $p.depth; d > 0; d--) { const n = $p.node(d); if (n.isTextblock && n.attrs.id) return { id: n.attrs.id, off: $p.pos - $p.start(d), holds: holds(n) }; }
+    return null;
+  };
+  const anchor = at(sel.$anchor), head = at(sel.$head);
+  return anchor && head ? { ...base, anchor, head } : null;
+}
+/** What a block of text holds, its line breaks and holes too: alike, a place in one is the same place in the other. */
+const holds = (n) => n.textBetween(0, n.content.size, "", (leaf) => `\u0000${leaf.type.name}`);
+/** Spot `spot` as a selection of `doc`, or null: not there as it was (a block not shown, or shown otherwise: masked). */
+function spotIn(doc, spot) {
+  const find = (id) => { let at = null; doc.descendants((n, pos) => { if (at === null && n.attrs.id === id) at = pos; return at === null; }); return at; };
+  if (spot.blocks) {
+    const [a, b] = spot.blocks.map(find);
+    if (a === null || b === null) return null;
+    if (a === b) return selectBlock(doc, a);
+    const $a = doc.resolve(a), $b = doc.resolve(b);
+    return $a.parent === $b.parent ? new BlockSelection($a, doc.resolve(b + doc.nodeAt(b).nodeSize)) : null;
+  }
+  const place = ({ id, off, holds: was }) => {
+    const at = find(id), n = at === null ? null : doc.nodeAt(at);
+    return n?.isTextblock && holds(n) === was ? at + 1 + off : null;
+  };
+  const a = place(spot.anchor), h = place(spot.head);
+  return a === null || h === null ? null : TextSelection.create(doc, a, h);
+}
+/** Spot `spot` (spotOf, kept as the page was left) put back in `root`'s editors, the one it was in (by the quotes it's
+ * inside), as it was: quiet stays quiet. Not there as it was (changed since): left as the page opened. The editor it
+ * was put back in, or false. With `focus` off (a menu open over it), the focus is left where it is: it's only the
+ * editor you're in. */
+export function restoreSpot(root, spot, { focus = true } = {}) {
+  if (!root || root.gone || !spot) return false;
+  let e = root;
+  for (const qid of spot.path || []) { e = [...e.kids].find((k) => k.holder?.node.attrs.id === qid); if (!e) return false; }
+  const sel = spotIn(e.view.state.doc, spot);
+  if (!sel) return false;
+  if (focus) e.view.focus(); else setCurrent(e);
+  e.view.dispatch(e.view.state.tr.setSelection(sel).setMeta(levelKey, !!spot.level));
+  if (spot.quiet) e.hush();
+  return e;
+}
+
+/** Spot `spot` (spotOf, taken before an action) put back in `root` after the action redrew it, following its text
+ * where the action moved it (2026-11-19: the cursor stays where it was): as it was; or, its block a quote now (Turn
+ * into a quote, its redo), in the quote, in the one block of text there that holds what it held; or, the quote it was
+ * in text again (undone, Turn into text), in that text. The editor it was put back in, or false. */
+export function keepSpot(root, spot, how = {}) {
+  if (!spot) return false;
+  const as = restoreSpot(root, spot, how);
+  if (as) return as;
+  if (!spot.anchor || spot.anchor.id !== spot.head.id) return false;   // (text selected across blocks: not followed)
+  let e = root;
+  for (const qid of spot.path || []) { e = [...(e?.kids || [])].find((k) => k.holder?.node.attrs.id === qid); }
+  const id = spot.anchor.id;
+  const inside = e && [...e.kids].find((k) => k.holder?.node.attrs.id === id);   // its block a quote now: into it
+  if (inside) {
+    let text = null;
+    inside.view.state.doc.descendants((n) => { if (!text && n.isTextblock && n.attrs.id && holds(n) === spot.anchor.holds) text = n.attrs.id; return !text; });
+    if (text) return restoreSpot(root, { ...spot, path: [...spot.path, id], anchor: { ...spot.anchor, id: text }, head: { ...spot.head, id: text } }, how);
+  }
+  if (spot.path?.length) {   // the quote it was in is text again: out of it
+    const out = spot.path.at(-1);
+    return restoreSpot(root, { ...spot, path: spot.path.slice(0, -1), anchor: { ...spot.anchor, id: out }, head: { ...spot.head, id: out } }, how);
+  }
+  return false;
 }
 
 /** A line a masked quote keeps as it is (the lens's rawline): a quote inside it drawn as any quote, with what it shows
@@ -91,24 +223,23 @@ function keepInView(view) {
   return true;
 }
 
-export class BlockEditor {
+export class BlockEditor extends EditorRunes {   // (what the page derives from, as runes: editor-state.svelte.js)
   /** `host`: where it's drawn; `id`: the block it writes into; `children`: what it holds (the core's tree);
    * `base`: the content it was built on; `around`: the editors this one's inside (outermost last), whose
    * shown text a save here changes; `exit(dir)`: leave it (a quote's editor: -1 up, 1 down, 0 select it);
    * `open(target, at)`: Open it; `status()`: something changed worth saying. */
   constructor(host, { id, children, base, readOnly = false, around = [], exit = null, open, status = () => {}, act = () => false, holder = null, top = null, lens = null,
     fields = () => ({}), saved = () => {}, bottom = null, begin = null }) {
+    super();
     // (bottom(): ↓ past the last line, home's search; begin(): no id yet (home's waiting pericope, 2026-11-19): its
     // pericope made in the background on the first change, a promise of the core's {id, base}; saves wait for it)
     // (top(): ↑ from the first line, the page's header; lens: {qid, segments, hole}, written through a masked quote;
     // fields(): what else goes with its next save, the header's (its title, when changed); saved(sent): a save done, what went with it)
     Object.assign(this, { id, base, readOnly, around, exit, open, status, act, holder, top, lens, fields, onSaved: saved, bottom, begin });
     this.making = null;   // (the pericope being made, begin()'s promise: until then nothing's written)   // (act: the Ctrl+/ menu's; holder: the QuoteView it's in)
-    this.kids = new Set();       // the editors of the quotes in it
     this.peeking = new Set();    // the paraphrases whose source shows inside them (Show its source), this session
     this.saving = null;   // (a save in flight: a promise, settled when it's done)
     this.timer = null;
-    this.message = "";
     this.view = new EditorView(host, {
       state: this.make(children),
       editable: () => !readOnly,
@@ -129,7 +260,9 @@ export class BlockEditor {
           if (log.length > 20) log.shift();
         }
         this.view.updateState(this.view.state.apply(tr));
+        this.pm = this.view.state;
         if (tr.docChanged) {
+          visits.changed(this);
           this.schedule();
           if (tr.getMeta("addToHistory") !== false) this.act(this, "changed");   // (what was undone can't be redone now)
         }
@@ -137,9 +270,25 @@ export class BlockEditor {
       },
     });
     this.giveIds();
+    this.pm = this.view.state;
+    this.since = wordsIn(this.pm.doc);
     this.saved = this.draft();
     // (the one you're in: as the focus comes to it; left for anything but a menu or a question, or another window)
     this.view.dom.addEventListener("focus", () => setCurrent(this));
+    // (quiet, arrived from a block selected whole: until a key or a click, nothing drawn as where you are)
+    // (a key that only moves you elsewhere, or a modifier pressed on its own, isn't a touch: stepping back out of it, it
+    // stays as it was, 2026-11-19, later). Anything that would change what's selected whole, unseen (typing, dictation,
+    // ⌫, ⌦, ↵, a paste or a cut), only shows it: nothing you can't see is replaced.
+    const unquiet = (e) => {
+      if (!this.quiet || (e.type === "keydown" && (["Meta", "Control", "Alt", "Shift", "CapsLock"].includes(e.key) || TRAVEL.some((id) => pressed(e, id))))) return;
+      this.view.dispatch(this.view.state.tr.setMeta(hereKey, { quiet: false }).setMeta("addToHistory", false));
+      const sel = this.view.state.selection, mod = e.metaKey || e.ctrlKey;
+      const edits = ["beforeinput", "paste", "cut"].includes(e.type)
+        || (e.type === "keydown" && ((e.key.length === 1 && !mod) || ["Backspace", "Delete", "Enter"].includes(e.key) || (mod && ["v", "x"].includes(e.key.toLowerCase()))));
+      if (edits && (sel instanceof NodeSelection || sel instanceof BlockSelection)) { e.preventDefault(); e.stopImmediatePropagation(); }
+    };
+    for (const type of ["keydown", "mousedown", "beforeinput", "paste", "cut"]) this.view.dom.addEventListener(type, unquiet, true);
+    for (const type of ["keydown", "mousedown", "beforeinput"]) this.view.dom.addEventListener(type, () => visits.input(this));   // (attention: visits.js)
     this.view.dom.addEventListener("blur", (e) => {
       const to = e.relatedTarget;
       if (!to || to.closest?.(".fw-menu, .fw-ask, .ProseMirror")) return;
@@ -149,13 +298,23 @@ export class BlockEditor {
 
   make(children) {
     const ids = new Plugin({ appendTransaction: (trs, _, state) => (trs.some((t) => t.docChanged) ? idsTr(state) : null) });
-    const guide = new Plugin({   // a paraphrase not written yet shows its source, dim; Show its source, the same
+    const guide = new Plugin({   // a paraphrase's ↗, as a quote's; not written yet, its source dim; Show its source, the same
       props: {
         decorations: (state) => {
           const out = [];
           state.doc.descendants((n, pos) => {
             const para = n.attrs?.para;
             if (!para) return;
+            const go = () => {
+              const g = document.createElement("span");
+              g.className = "fw-open";
+              g.contentEditable = "false";
+              g.textContent = "↗";
+              g.title = "Open it";
+              g.addEventListener("mousedown", (e) => { e.preventDefault(); this.open({ target: para.id, home: para.home }); });
+              return g;
+            };
+            out.push(Decoration.widget(pos + 1, go, { side: -2, ignoreSelection: true, key: `o${n.attrs.id}${para.id}` }));
             const empty = n.type.name === "text_block" && n.content.size === 0;
             if (empty || this.peeking.has(n.attrs.id)) {
               const make = () => {
@@ -171,14 +330,22 @@ export class BlockEditor {
         },
       },
     });
-    const here = new Plugin({   // where you are, drawn: only in the editor you're in (setCurrent)
+    const here = new Plugin({   // where you are, drawn: only in the editor you're in (its state says: setCurrent, hush)
+      key: hereKey,
+      state: { init: () => ({ current: current === this, quiet: this.quiet }),   // (drawn again from the store: as it was)
+                 apply: (tr, was) => { const m = tr.getMeta(hereKey); return m ? { ...was, ...m } : was; } },
       props: {
         // (one focus, the user, 2026-11-18: either a caret, editing, or blocks selected whole, never both: selecting,
         // no caret shows)
-        attributes: (state) => (current === this && (state.selection instanceof NodeSelection || state.selection instanceof BlockSelection)
-          ? { class: "fw-selecting" } : {}),
+        attributes: (state) => {
+          const { current: mine, quiet } = hereKey.getState(state);
+          if (!mine) return {};
+          const selecting = quiet || state.selection instanceof NodeSelection || state.selection instanceof BlockSelection;
+          return { class: [quiet ? "" : "fw-current", selecting ? "fw-selecting" : ""].filter(Boolean).join(" ") };
+        },
         decorations: (state) => {
-          if (current !== this) return null;
+          const { current: mine, quiet } = hereKey.getState(state);
+          if (!mine || quiet) return null;   // (quiet: arrived from a block selected whole, nothing yet where you are)
           const sel = state.selection, { $from } = sel;
           const chosen = (from, to) => Decoration.node(from, to, { class: "fw-chosen" });
           if (sel instanceof NodeSelection) return DecorationSet.create(state.doc, [chosen(sel.from, sel.to)]);   // (selected whole)
@@ -200,8 +367,23 @@ export class BlockEditor {
         plugins: [lensKeys, this.keys(), keymap(baseKeymap), history(), guard, here] });
     }
     const slash = slashMenu(this, (at) => this.enterQuote(at));
+    // a block marked (mark(id, cls): the block a step between pericopes goes through, motion.js): its element given the
+    // classes by ProseMirror itself, which keeps them (it redraws an element whose classes are changed from outside)
+    const marking = new Plugin({
+      state: { init: () => null, apply: (tr, was) => { const m = tr.getMeta(markKey); return m === undefined ? was : m; } },
+      key: markKey,
+      props: {
+        decorations: (state) => {
+          const m = markKey.getState(state);
+          if (!m) return null;
+          let deco = null;
+          state.doc.descendants((n, pos) => { if (!deco && n.attrs.id === m.id) deco = Decoration.node(pos, pos + n.nodeSize, { class: m.cls }); return !deco; });
+          return deco ? DecorationSet.create(state.doc, [deco]) : null;
+        },
+      },
+    });
     return EditorState.create({ doc: schema.nodeFromJSON(pmDoc(children)),
-      plugins: [slash, blocksPlugin(), clipboardPlugin(this), this.keys(), keymap(baseKeymap), history(), ids, here, guide] });
+      plugins: [slash, blocksPlugin(), clipboardPlugin(this), this.keys(), keymap(baseKeymap), history(), ids, here, guide, marking] });
   }
 
   keys() {
@@ -214,6 +396,13 @@ export class BlockEditor {
       const q = quoteAt(state);
       return !!(q && q.qv && q.qv.inner && q.qv.enter(where));
     };
+    const onto = (dir) => (state, dispatch, view) => {   // ↑/↓ past a line's edge onto a quote: into it, not selecting it
+      // whole first (the user, 2026-11-20: "we should just enter"; Esc is how a block is selected whole)
+      const sel = state.selection;
+      if (!(sel instanceof TextSelection) || !sel.empty || !view.endOfTextblock(dir < 0 ? "up" : "down")) return false;
+      const $p = state.doc.resolve(dir < 0 ? sel.$from.before(sel.$from.depth) : sel.$to.after(sel.$to.depth));
+      return enterQuote(view, Selection.findFrom($p, dir, false), dir);
+    };
     const edge = (dir) => (state, dispatch, view) => {   // at the top or bottom of a quote's editor: out of it; at the page's top, the header
       if (!this.exit && !(dir < 0 && this.top) && !(dir > 0 && this.bottom)) return false;
       const sel = state.selection, whole = sel instanceof NodeSelection;
@@ -225,6 +414,10 @@ export class BlockEditor {
       if (more || !textEdge) return false;
       if (this.exit) this.exit(dir); else if (dir < 0) this.top(); else this.bottom();
       return true;
+    };
+    const below = (state) => {   // ↓ on the page's last picture, selected whole: a block below it to write in
+      const sel = state.selection;
+      return sel instanceof NodeSelection && sel.to === state.doc.content.size && this.roomBelow();
     };
     const out = (dir) => (state, dispatch) => {   // blocks selected whole (not one quote): the cursor into the first or last
       const sel = state.selection;
@@ -240,8 +433,38 @@ export class BlockEditor {
       this.exit(dir);
       return true;
     };
+    // block level (blocks.js atLevel): ↑/↓ the block before or after at the same level, past the first or last in a
+    // container or quote the one before or after it, a level out; → (or Enter) in a level: a container's or a quote's
+    // first block, and text, bottomed out, to writing (→ the caret at its start, Enter at its end; a quote showing one
+    // block of text, into its text); ← out a level, the block around it (out of a quote: the quote), and with nothing
+    // around it (the page's top level) to writing, the caret at its start (the user, 2026-11-19)
+    const levelMove = (dir) => (state) => atLevel(state) && this.levelStep(state.selection.from, state.selection.to, dir);
+    const levelIn = (where) => (state, dispatch) => {
+      if (!atLevel(state)) return false;
+      const pos = state.selection.from, n = state.doc.nodeAt(pos);
+      if (n?.type.name === "quote") {
+        const qv = views.get(this.view.nodeDOM(pos)), inner = qv?.inner;
+        if (!inner) return false;
+        const d = inner.view.state.doc;
+        if (d.childCount === 1 && d.firstChild.isTextblock) return qv.enter(where);
+        inner.selectLevel(0);
+        return true;
+      }
+      if (n?.isTextblock) { dispatch?.(state.tr.setSelection(TextSelection.create(state.doc, where === "start" ? pos + 1 : pos + n.nodeSize - 1)).scrollIntoView()); return true; }
+      if (n && !n.isAtom && n.childCount) { this.selectLevel(pos + 1); return true; }
+      return false;
+    };
+    const levelOut = (state) => atLevel(state) && this.levelOut();
+    const levelStart = (state, dispatch) => {   // (at the top level, nothing around it: the caret at its start)
+      if (!atLevel(state)) return false;
+      const doc = state.doc, pos = state.selection.from, n = doc.nodeAt(pos);
+      if (n.type.name === "quote") { const qv = views.get(this.view.nodeDOM(pos)); return !!(qv?.inner && qv.enter("start")); }
+      if (n.isAtom) return false;   // (a picture: the caret beside it, as ever)
+      dispatch?.(state.tr.setSelection(Selection.near(doc.resolve(pos + 1), 1)).scrollIntoView());
+      return true;
+    };
     return keymap({
-      "Enter": chainCommands((state, dispatch) => {   // on blocks selected whole (a quote, a picture): a new block below them
+      "Enter": chainCommands(levelIn("end"), (state, dispatch) => {   // on blocks selected whole (a quote, a picture): a new block below them
         if (!(state.selection instanceof NodeSelection || state.selection instanceof BlockSelection)) return false;
         if (dispatch) {
           const after = state.selection.to;
@@ -258,10 +481,10 @@ export class BlockEditor {
       "Mod-z": chainCommands(undo, () => this.act(this, "undo")),
       "Mod-y": chainCommands(redo, () => this.act(this, "redo")),
       "Mod-Shift-z": chainCommands(redo, () => this.act(this, "redo")),
-      "ArrowDown": chainCommands(into("start"), out(1), edge(1)),
-      "ArrowUp": chainCommands(into("end"), out(-1), edge(-1)),
-      "ArrowLeft": side(-1),
-      "ArrowRight": side(1),
+      "ArrowDown": chainCommands(levelMove(1), into("start"), onto(1), out(1), edge(1), below),
+      "ArrowUp": chainCommands(levelMove(-1), into("end"), onto(-1), out(-1), edge(-1)),
+      "ArrowLeft": chainCommands(levelOut, levelStart, side(-1)),
+      "ArrowRight": chainCommands(levelIn("start"), side(1)),
       "Escape": (state, dispatch) => {   // the block you're in selected whole; again, the one around it; in a quote's editor, at its top, the quote
         const whole = state.selection instanceof NodeSelection || state.selection instanceof BlockSelection;
         if (this.exit && whole && state.selection.$from.depth === 0) { this.exit(0); return true; }
@@ -272,8 +495,10 @@ export class BlockEditor {
       },
       "Shift-ArrowUp": grow(-1),
       "Shift-ArrowDown": grow(1),
-      "Backspace": chainCommands(removeSelected, removeEmpty(-1)),
-      "Delete": chainCommands(removeSelected, removeEmpty(1)),
+      "Backspace": chainCommands(removeSelected, joinOut(-1), removeEmpty(-1)),
+      "Delete": chainCommands(removeSelected, joinOut(1), removeEmpty(1)),
+      // (with ⌘ or ⌥ still held from ⌘↵, the same at a block's edge; elsewhere the browser's word and line deletes)
+      "Mod-Backspace": joinOut(-1), "Alt-Backspace": joinOut(-1), "Mod-Delete": joinOut(1), "Alt-Delete": joinOut(1),
       "Mod-Shift-v": () => {   // paste and match style: a plain copy of what was clipped, not live quotes
         this.staticPaste = true;
         setTimeout(() => { this.staticPaste = false; }, 1000);
@@ -285,17 +510,25 @@ export class BlockEditor {
       [keyOf("nest")]: nestIn,
       [keyOf("open")]: (state) => {   // Open it: a quote selected whole; a link; in a quote's editor, its source at the cursor
         const q = quoteAt(state);
-        if (q) { this.open(q.node.attrs.data || { target: q.node.attrs.target }); return true; }
+        if (q) { this.open({ ...(q.node.attrs.data || { target: q.node.attrs.target }), whole: true }); return true; }   // (selected whole: arrives quiet)
         const link = this.context().link;
         if (link) { this.open({ target: link.to }); return true; }
-        if (!this.exit) return false;
-        const { $from } = state.selection;
-        let at = null;
-        for (let d = $from.depth; d > 0 && !at; d--) at = $from.node(d).attrs.id;
-        this.open({ target: this.id, at });
-        return true;
+        const para = paraAt(state);   // (a paraphrase: its source, as a quote's, the innermost first)
+        if (para) { this.open({ target: para.id, home: para.home }); return true; }
+        return this.openHere();
       },
     });
+  }
+
+  /** Open it from inside a quote's editor: its source, as the pericope, at the cursor (the block it's in, how far in).
+   * Not a quote's editor: false. */
+  openHere() {
+    if (!this.exit) return false;
+    const { $from } = this.view.state.selection;
+    let at = null, off = null;
+    for (let d = $from.depth; d > 0 && !at; d--) { at = $from.node(d).attrs.id; if (at && $from.node(d).isTextblock && !this.lens) off = $from.pos - $from.start(d); }
+    this.open({ target: this.id, at, off });
+    return true;
   }
 
   /** Where the cursor is, for the Ctrl+/ menu: the quote selected whole (`quote`: its node's attrs), the
@@ -329,7 +562,7 @@ export class BlockEditor {
         }
       }
     }
-    return { quote, within: this.holder ? this.holder.node.attrs : null, block, link, span };
+    return { quote, within: this.holder ? this.holder.node.attrs : null, block, link, span, para: paraAt(this.view.state) };
   }
 
   /** Where a new quote at the cursor would go, for the core to draw it from there (GET /api/quote's `into`, `depth`:
@@ -364,6 +597,7 @@ export class BlockEditor {
     if (this.lens) return;   // (a lens's blocks are the source's, named by their marker lines)
     const tr = idsTr(this.view.state);
     if (tr) this.view.updateState(this.view.state.apply(tr));
+    this.pm = this.view.state;
   }
 
   draft() {
@@ -373,7 +607,7 @@ export class BlockEditor {
   dirty() { return this.draft() !== this.saved; }
   /** Busy: unsaved, saving, or written in through a quote just now (then the store isn't followed here). */
   busy() {
-    return this.dirty() || this.saving || !!document.querySelector(".fw-menu")   // (a menu's open: positions in use)
+    return this.dirty() || this.saving || ui.menus > 0   // (a menu's open: positions in use)
       || [...this.kids].some((k) => k.busy() || k.view.hasFocus());
   }
 
@@ -447,6 +681,7 @@ export class BlockEditor {
     // drops takes its editor with it, QuoteView.destroy)
     this.view.updateState(this.make(children));
     this.giveIds();
+    this.since = wordsIn(this.pm.doc);   // (its words as the store has them now)
     this.base = base;
     this.saved = this.draft();
     let pos = Math.min(at, this.view.state.doc.content.size);
@@ -456,14 +691,16 @@ export class BlockEditor {
     try { this.view.dispatch(this.view.state.tr.setSelection(Selection.near(this.view.state.doc.resolve(pos)))); } catch {}
   }
 
-  /** Where the cursor goes, and the view (the user, 2026-11-18): at block `at` (its start, or it selected whole),
-   * the cursor centered on the screen; else at the very start, the page from its top. */
-  place(at = null) {
+  /** Where the cursor goes, and the view (the user, 2026-11-18): at block `at` (its start, or `off` characters in:
+   * where it was in the quote it was opened from, 2026-11-19; or it selected whole), the cursor centered on the screen;
+   * else at the very start, the page from its top. */
+  place(at = null, off = null) {
     const doc = this.view.state.doc;
     let start = null;
     if (at) doc.descendants((n, pos) => { if (start === null && n.attrs.id === at) start = pos; });
+    const node = start !== null ? doc.nodeAt(start) : null;
     const sel = start !== null
-      ? (doc.nodeAt(start).isAtom ? NodeSelection.create(doc, start) : TextSelection.create(doc, start + 1))
+      ? (node.isAtom ? NodeSelection.create(doc, start) : TextSelection.create(doc, start + 1 + Math.min(Math.max(0, off || 0), node.isTextblock ? node.content.size : 0)))
       : Selection.atStart(doc);
     this.view.dispatch(this.view.state.tr.setSelection(sel));
     if (start === null) { window.scrollTo(0, 0); return; }
@@ -473,14 +710,71 @@ export class BlockEditor {
     } catch { this.view.nodeDOM(start)?.scrollIntoView?.({ block: "center" }); }
   }
 
-  /** Ends with a quote or picture: a block to write in below it (dropped on save if nothing's written). */
+  /** Block `pos` selected whole, at block level (blocks.js), this the editor you're in. */
+  selectLevel(pos) {
+    const v = this.view;
+    if (!v.hasFocus()) v.focus();
+    v.dispatch(v.state.tr.setSelection(selectBlock(v.state.doc, pos)).setMeta(levelKey, true).scrollIntoView());
+  }
+
+  /** At block level, out a level: the block around the selected one(s) selected whole; at this editor's top, a quote's,
+   * the quote (one showing one block: that block's box is the quote's, so on out past it); the page's top: false. */
+  levelOut() {
+    const $f = this.view.state.selection.$from;
+    if ($f.depth > 0) { this.selectLevel($f.before()); return true; }
+    const q = this.holder;
+    if (!q || q.parent.gone) return false;
+    const doc = this.view.state.doc, one = doc.childCount === 1 && doc.firstChild.isTextblock;
+    q.exit(0);
+    if (one) q.parent.levelOut();
+    return true;
+  }
+
+  /** At block level, from blocks `from`–`to` the block after them (`dir` 1) or before (-1) at the same level; none
+   * there, the one after (before) the container they're in, a level out, and so on; past this editor's last (first),
+   * a quote's, on past the quote in the editor it's in; the page's, nowhere further. */
+  levelStep(from, to, dir) {
+    const doc = this.view.state.doc;
+    for (let $p = doc.resolve(dir > 0 ? to : from); ; $p = doc.resolve(dir > 0 ? $p.after() : $p.before())) {
+      const n = dir > 0 ? $p.nodeAfter : $p.nodeBefore;
+      if (n) { this.selectLevel(dir > 0 ? $p.pos : $p.pos - n.nodeSize); return true; }
+      if ($p.depth === 0) break;
+    }
+    const q = this.holder;
+    if (q && !q.parent.gone) { const pos = q.getPos(); return q.parent.levelStep(pos, pos + q.node.nodeSize, dir); }
+    if (dir > 0 && this.bottom) this.bottom();   // (past the page's last block: its foot, the suggestions, as from text; the user, 2026-11-20)
+    else if (dir < 0 && this.top) this.top();   // (before its first: the header, as from text; the user, 2026-11-22)
+    return true;
+  }
+
+  /** Quiet: nothing drawn as where you are (no caret, no block in focus, not the editor you're in) until a key or a click. */
+  hush() {
+    this.view.dispatch(this.view.state.tr.setMeta(hereKey, { quiet: true }).setMeta("addToHistory", false));
+  }
+
+  /** Quiet (hush): its state says. */
+  get quiet() { return !!(this.pm && hereKey.getState(this.pm)?.quiet); }
+
+  /** Block `id` marked with classes `cls` (null: none marked), and its element, once drawn. */
+  mark(id, cls = "") {
+    if (this.gone) return null;
+    this.view.dispatch(this.view.state.tr.setMeta(markKey, id ? { id, cls } : null).setMeta("addToHistory", false));
+    if (!id) return null;
+    let at = null;
+    this.view.state.doc.descendants((n, pos) => { if (at === null && n.attrs.id === id) at = pos; return at === null; });
+    return at === null ? null : this.view.nodeDOM(at);
+  }
+
+  /** The page ends with a quote or picture: going down past it (the user, 2026-11-19: none made on opening, only as you
+   * go there), a block to write in below it, the cursor in it (dropped on save if nothing's written). Whether it made one. */
   roomBelow() {
-    const last = this.view.state.doc.lastChild;
-    if (this.readOnly || !["quote", "image"].includes(last.type.name)) return;
-    const end = this.view.state.doc.content.size;
-    this.view.updateState(this.view.state.apply(this.view.state.tr.insert(end, schema.nodes.text_block.create()).setMeta("addToHistory", false)));
-    this.giveIds();
-    this.saved = this.draft();
+    const state = this.view.state, last = state.doc.lastChild;
+    if (this.exit || this.readOnly || !last || !["quote", "image"].includes(last.type.name)) return false;
+    const tr = state.tr.insert(state.doc.content.size, schema.nodes.text_block.create()).setMeta("addToHistory", false);
+    tr.setSelection(TextSelection.create(tr.doc, tr.doc.content.size - 1));
+    this.view.focus();
+    this.view.dispatch(tr.scrollIntoView());
+    return true;
   }
 
   /** Saved (and the quotes in it), then gone. */
@@ -528,11 +822,13 @@ export class QuoteView {
     }
   }
 
-  /** Into it, at its start or its end. */
+  /** Into it, at its start or its end; one that starts (or ends) with a quote: on into that one, as far as it goes. */
   enter(where) {
     const v = this.inner.view;
+    const at = where === "start" ? Selection.atStart(v.state.doc) : Selection.atEnd(v.state.doc);
+    if (enterQuote(v, at, where === "start" ? 1 : -1)) return true;
     v.focus();
-    v.dispatch(v.state.tr.setSelection(where === "start" ? Selection.atStart(v.state.doc) : Selection.atEnd(v.state.doc)).scrollIntoView());
+    v.dispatch(v.state.tr.setSelection(at).scrollIntoView());
     return true;
   }
 
@@ -543,8 +839,12 @@ export class QuoteView {
     // further, so the arrows flow on through quotes that end together)
     const near = dir < 0 ? Selection.findFrom(doc.resolve(pos), -1, false) : dir > 0 ? Selection.findFrom(doc.resolve(pos + this.node.nodeSize), 1, false) : null;
     if (!near && dir !== 0 && this.parent.exit) { this.parent.exit(dir); return; }
+    if (!near && dir > 0 && this.parent.roomBelow()) return;   // (down out of the page's last quote: a block below it to write in)
+    if (dir !== 0 && enterQuote(v, near, dir)) return;   // (out of it onto another quote: into that one, as from text)
+    if (!near && dir < 0 && !this.parent.exit && this.parent.top) { this.parent.top(); return; }   // (up out of the page's first: the header, as from text)
     v.focus();
-    v.dispatch(v.state.tr.setSelection(near || NodeSelection.create(doc, pos)).scrollIntoView());
+    const tr = v.state.tr.setSelection(near || NodeSelection.create(doc, pos));
+    v.dispatch((dir === 0 ? tr.setMeta(levelKey, true) : tr).scrollIntoView());   // (Esc out of it: the quote, at block level)
   }
 
   // (events inside it are its own, not the page's: its editor's, and masking's panel, whose keys and clicks the page
@@ -559,6 +859,7 @@ export class QuoteView {
     return true;
   }
   destroy() {
+    stopMasking(this.dom);   // (masking it, its box going: the panel too)
     if (!this.inner) return;
     this.parent.kids.delete(this.inner);
     if (this.inner.dirty()) this.inner.save();   // (what was written through it, kept)
@@ -577,6 +878,6 @@ export function selectBox(root, box) {
   ed.view.state.doc.descendants((n, pos) => { if (at === null && ed.view.nodeDOM(pos) === box) at = pos; });
   if (at === null) return false;
   ed.view.focus();
-  ed.view.dispatch(ed.view.state.tr.setSelection(selectBlock(ed.view.state.doc, at)));
+  ed.view.dispatch(ed.view.state.tr.setSelection(selectBlock(ed.view.state.doc, at)).setMeta(levelKey, true));
   return true;
 }

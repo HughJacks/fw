@@ -46,7 +46,7 @@ check("a pericope nothing points at: no backlinks line", "backlinks" not in t.te
 qd = S.index(S.load_data())
 def quote_linker(data, blocks):
     i = S.new_id(blocks); S.add_block(data, blocks, i, {"quote": P3}); blocks[P1]["content"].append(i)
-S.transact(quote_linker)
+S.transact(S.editing(quote_linker))
 check("  quoted elsewhere: the line comes, by itself", t.until(lambda: "backlinks" in t.text() and "1 quote" in t.text()), t.text())
 t.key(Q, ESC); t.done()
 

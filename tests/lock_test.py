@@ -57,16 +57,16 @@ def png(path, w=4, h=4):
 # --- the shape: migration and schema
 fresh()
 d = json.load(open(os.environ["FW_DATA"]))
-up = M.upgrade(copy.deepcopy({**d, "schemaVersion": 16}))
+up = M.upgrade(copy.deepcopy({**d, "schemaVersion": 16}), now=S.now_local(), new_id=S.new_id)
 check("v16 → v17: marked to be saved, the blocks as they were",
-      M.SCHEMA_VERSION == 17 and up["schemaVersion"] == 17 and up.get("upgraded") and up["blocks"] == d["blocks"])
+      M.SCHEMA_VERSION >= 17 and up["schemaVersion"] == M.SCHEMA_VERSION and M.behind({**d, "schemaVersion": 16}) and up["blocks"] == d["blocks"])
 schema = S.load_schema()
 check("the schema takes lock: true on a quote", not S.validate_instance(blk(QL, {"quote": SRC, "lock": True}), schema))
 check("  only true (absent: unlocked)", S.validate_instance(blk(QL, {"quote": SRC, "lock": False}), schema)
       and S.validate_instance(blk(QL, {"quote": SRC, "lock": "yes"}), schema))
-b = {"content": {"quote": SRC, "show": ["title"]}}; S.with_lock(b, True)
+b = {"content": {"quote": SRC, "show": ["title"]}}; b = S.with_lock(b, True)
 check("with_lock keeps the rest of the quote", b["content"] == {"quote": SRC, "show": ["title"], "lock": True}, b)
-S.with_lock(b, False); check("  unlocking leaves no lock", b["content"] == {"quote": SRC, "show": ["title"]}, b)
+b = S.with_lock(b, False); check("  unlocking leaves no lock", b["content"] == {"quote": SRC, "show": ["title"]}, b)
 lib = {QL: {"content": {"quote": SRC, "lock": True}}, QO: {"content": {"quote": SRC}}, QN: {"content": {"quote": DEEP}}}
 same("locked_by: nothing open, writable", S.locked_by(lib, []), None)
 same("  inside an unlocked quote, writable", S.locked_by(lib, [QO]), None)

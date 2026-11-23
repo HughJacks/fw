@@ -6,12 +6,16 @@
 <script>
   import { tick } from "svelte";
   import { api } from "./api.js";
+  import { opened } from "./state.svelte.js";
 
-  // id: the block; tokens: the core's kindTokens; done(said): an answer changed; open(kind); down(): ↓ out (the title)
-  let { id, tokens = [], done, open, down } = $props();
+  // id: the block; tokens: the core's kindTokens; done(said): an answer changed; open(kind); down(): ↓ out (the title);
+  // up(): ↑ out (the backlinks, when there are some)
+  let { id, tokens = [], done, open, down, up = null } = $props();
   let chips = [];   // (each token's element, then the +'s)
   let picking = $state(null);   // the picker open: {left, top, typed, kinds, sel}
   let pickInput = $state();
+  let pickerOpen = $derived(!!picking);
+  $effect(() => { if (pickerOpen) return opened(); });   // (a menu open over the page: state.svelte.js)
 
   const label = (t) => (t.mark === "no" ? `not ${t.name}` : t.mark === "applied" ? `${t.name}·` : t.mark === "guess" ? `${t.name}?` : t.name);
   const hint = (t) => (t.mark === "guess" ? `a model's guess (${t.p}): ↵ yes, ⌫ no` : t.mark === "applied" ? "a model's, applied: ⌫ no" : "↵ open it · ⌫ take it back");
@@ -55,6 +59,7 @@
     if (e.key === "ArrowLeft") all[Math.max(0, n - 1)]?.focus();
     else if (e.key === "ArrowRight") all[Math.min(all.length - 1, n + 1)]?.focus();
     else if (e.key === "ArrowDown") down();
+    else if (e.key === "ArrowUp" && up) up();
     else if (e.key === "Enter" && !t) picker(chips[tokens.length], "");
     else if (e.key === "Enter" && t.mark === "guess") answer(t.kind, true);
     else if (e.key === "Enter" || (e.key === "o" && e.ctrlKey)) open(t.kind);
@@ -72,6 +77,7 @@
   {#each tokens as t, n (t.kind + t.mark)}
     <button class="fw-chip fw-chip-{t.mark}" title={hint(t)} bind:this={chips[n]} onkeydown={(e) => chipKey(e, n)} ondblclick={() => open(t.kind)}>{label(t)}</button>
   {/each}
+  {#if !tokens.length}<span class="fw-none">none</span>{/if}   <!-- (an empty field says so: the user, 2026-11-21) -->
   <button class="fw-chip fw-chip-plus" title="a kind: ↵, or type its name" bind:this={chips[tokens.length]}
     onkeydown={(e) => chipKey(e, tokens.length)} onclick={() => picker(chips[tokens.length], "")}>+</button>
 </div>

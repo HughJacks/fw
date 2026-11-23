@@ -57,9 +57,9 @@ fresh()
 d = json.load(open(os.environ["FW_DATA"]))
 check("the store is v15 (or later)", d["schemaVersion"] == M.SCHEMA_VERSION >= 15, d["schemaVersion"])
 v14 = {**d, "schemaVersion": 14}
-up = M.upgrade(copy.deepcopy(v14))
+up = M.upgrade(copy.deepcopy(v14), now=S.now_local(), new_id=S.new_id)
 check("v14 → v15: marked to be saved, the blocks as they were (no visits yet)",
-      up["schemaVersion"] == M.SCHEMA_VERSION and up.get("upgraded") and up["blocks"] == d["blocks"] and not any("visits" in b for b in up["blocks"]))
+      up["schemaVersion"] == M.SCHEMA_VERSION and M.behind(v14) and up["blocks"] == d["blocks"] and not any("visits" in b for b in up["blocks"]))
 json.dump(v14, open(os.environ["FW_DATA"], "w")); S.cmd_migrate(None)
 d2 = json.load(open(os.environ["FW_DATA"]))
 check("  migrate saves it: current, same blocks", d2["schemaVersion"] == M.SCHEMA_VERSION and len(d2["blocks"]) == len(d["blocks"]))

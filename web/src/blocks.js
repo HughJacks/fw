@@ -3,10 +3,18 @@
 // selects it; selected, they're drawn bright, and Backspace or Delete removes them, typing replaces them with a
 // new block holding what's typed, Enter puts a new block below. An empty block of text goes with one Backspace
 // (or Delete) instead of the cursor moving onto what's beside it.
-import { Selection, SelectionRange, TextSelection, NodeSelection, Plugin } from "prosemirror-state";
+import { Selection, SelectionRange, TextSelection, NodeSelection, Plugin, PluginKey } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
 import { schema } from "./schema.js";
 import { Fragment } from "prosemirror-model";
+
+// Block level (the user, 2026-11-19, later: "if we have a block selected, up and down arrow should navigate at block
+// selection level"): blocks selected deliberately (Esc, a click on a tab or a number, Shift+↑/↓, and moving at block
+// level) are at block level, where ↑/↓ go from block to block (editor.js). A quote only arrowed onto from text isn't:
+// the same arrow goes on into it. Any other change of the selection leaves block level.
+export const levelKey = new PluginKey("fw-level");
+/** Blocks selected whole at block level. */
+export const atLevel = (state) => !!levelKey.getState(state) && (state.selection instanceof BlockSelection || state.selection instanceof NodeSelection);
 
 /** A run of whole blocks, siblings in one parent: from the start of the first to the end of the last. */
 export class BlockSelection extends Selection {
@@ -58,12 +66,16 @@ export function selectAround(state, dispatch) {
   if (sel instanceof BlockSelection || sel instanceof NodeSelection) {
     const $from = sel.$from;
     if ($from.depth > 0) target = $from.before($from.depth);   // (the container holding them)
+    else if (!levelKey.getState(state)) {   // (at the top, selected but not at block level, a page opened on a quote say: now it is)
+      if (dispatch) dispatch(state.tr.setMeta(levelKey, true));
+      return true;
+    }
   } else {
     const b = blockAround(sel.$from);
     if (b) target = b.pos;
   }
   if (target === null) return false;
-  if (dispatch) dispatch(state.tr.setSelection(selectBlock(state.doc, target)).scrollIntoView());
+  if (dispatch) dispatch(state.tr.setSelection(selectBlock(state.doc, target)).setMeta(levelKey, true).scrollIntoView());
   return true;
 }
 
@@ -85,7 +97,7 @@ export function grow(dir) {
       head -= prev.nodeSize;
     }
     if (head === $anchor.pos) return true;
-    if (dispatch) dispatch(state.tr.setSelection(new BlockSelection($anchor, state.doc.resolve(head))).scrollIntoView());
+    if (dispatch) dispatch(state.tr.setSelection(new BlockSelection($anchor, state.doc.resolve(head))).setMeta(levelKey, true).scrollIntoView());
     return true;
   };
 }
@@ -135,11 +147,57 @@ export function removeEmpty(dir) {
   };
 }
 
+/** Backspace at the start of a container's second block (dir -1), or Delete at the end of its first (1), when it holds
+ * just those two blocks of text: ⌘↵ taken back (the user, 2026-11-23: "after deleting the command enter we should
+ * return to the same parent structure"). The two joined into one block of text in the container's place, with the
+ * container's id (the block ⌘↵ split), the cursor where they meet; so ⌘↵ then ⌫, again and again, never nests deeper.
+ * Not a paraphrase's (Enter grows one). */
+export function joinOut(dir) {
+  return (state, dispatch) => {
+    const sel = state.selection;
+    if (!sel.empty || !(sel instanceof TextSelection)) return false;
+    const $at = sel.$from, block = $at.parent;
+    if (block.type.name !== "text_block" || $at.depth < 2) return false;
+    const box = $at.node(-1), n = $at.index(-1);
+    if (box.type.name !== "container" || box.attrs.para || box.childCount !== 2) return false;
+    if (dir < 0 ? n !== 1 || $at.parentOffset !== 0 : n !== 0 || $at.parentOffset !== block.content.size) return false;
+    const [a, b] = [box.child(0), box.child(1)];
+    if (a.type.name !== "text_block" || b.type.name !== "text_block" || a.attrs.para || b.attrs.para) return false;
+    if (!dispatch) return true;
+    const pos = $at.before(-1);
+    const one = schema.nodes.text_block.create({ id: box.attrs.id }, a.content.append(b.content));
+    const tr = state.tr.replaceWith(pos, pos + box.nodeSize, one);
+    dispatch(tr.setSelection(TextSelection.create(tr.doc, pos + 1 + a.content.size)).scrollIntoView());
+    return true;
+  };
+}
+
 /** The plugin: blocks selected whole drawn bright; typing over them replaces them with a new block holding it;
  * a click on a block's number in the gutter selects it. */
 export function blocksPlugin() {
+  let view = null;
   return new Plugin({
+    key: levelKey,
+    view: (v) => { view = v; return {}; },
+    // A quote or picture selected whole with nowhere for a caret at either end (after another, or the page's last, say):
+    // Chrome moves the browser's selection to the page's first letter on the next key, and ProseMirror read that back,
+    // so the next ↓ (or anything typed) went to the page's start (2026-11-19, later). That read is refused, and the
+    // browser's selection put back where it is.
+    filterTransaction(tr, state) {
+      if (tr.docChanged || !tr.selectionSet || tr.getMeta("pointer") || tr.getMeta(levelKey) !== undefined) return true;
+      const was = state.selection, now = tr.selection;
+      if (!(was instanceof NodeSelection && was.node.isAtom) || !(now instanceof TextSelection) || !now.empty) return true;
+      const stranded = (n) => !n || n.isAtom;
+      if (now.from !== Selection.atStart(tr.doc).from || !stranded(was.$from.nodeBefore) || !stranded(was.$to.nodeAfter)) return true;
+      queueMicrotask(() => { if (view && !view.isDestroyed && view.hasFocus()) view.focus(); });
+      return false;
+    },
+    state: {   // (at block level: set by what selects deliberately; any other change of the selection leaves it)
+      init: () => false,
+      apply: (tr, was, old) => { const m = tr.getMeta(levelKey); return m !== undefined ? m : tr.selectionSet && !tr.selection.eq(old.selection) ? false : was; },
+    },
     props: {
+
       decorations(state) {
         const sel = state.selection;
         if (!(sel instanceof BlockSelection)) return null;
@@ -161,7 +219,7 @@ export function blocksPlugin() {
           if (pos === null) return false;
           e.preventDefault();
           view.focus();
-          view.dispatch(view.state.tr.setSelection(selectBlock(view.state.doc, pos)));
+          view.dispatch(view.state.tr.setSelection(selectBlock(view.state.doc, pos)).setMeta(levelKey, true));
           return true;
         },
       },
@@ -205,5 +263,8 @@ export function splitSelection(state, newId) {
   const pos = sel.$from.before();
   const tr = state.tr.replaceWith(pos, pos + block.nodeSize,
     block.attrs.own ? Fragment.fromArray(kids) : schema.nodes.container.create({ id: block.attrs.id }, kids));
+  // (the selection kept on what was selected, its block of its own now: it stays selected through the pop out)
+  const mid = pos + (block.attrs.own ? 0 : 1) + (parts[0].size ? kids[0].nodeSize : 0) + 1;
+  tr.setSelection(TextSelection.create(tr.doc, mid, mid + (b - a)));
   return { tr, id };
 }

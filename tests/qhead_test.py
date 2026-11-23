@@ -20,10 +20,10 @@ def top(): return next(y for y in range(t.scr.lines) if t.row(y).startswith("2 "
 
 check("pretty_time: a date and a clock", S.pretty_time("2026-10-21T00:05:00-04:00") == "Oct 21, 2026, 12:05 am", S.pretty_time("2026-10-21T00:05:00-04:00"))
 check("  or just the date", S.pretty_time("2026-10-21T15:04:00-04:00", clock=False) == "Oct 21, 2026")
-b = {"content": {"quote": A, "show": ["title"]}}; S.with_mask(b, [0, 3])
+b = {"content": {"quote": A, "show": ["title"]}}; b = S.with_mask(b, [0, 3])
 check("a new mask keeps what the quote shows", b["content"] == {"quote": A, "show": ["title"], "mask": [0, 3]}, b)
-S.with_show(b, ["words", "title"]); check("  and show keeps the mask, in a fixed order", b["content"] == {"quote": A, "mask": [0, 3], "show": ["title", "words"]}, b)
-S.with_show(b, []); check("  none: no show at all", "show" not in b["content"], b)
+b = S.with_show(b, ["words", "title"]); check("  and show keeps the mask, in a fixed order", b["content"] == {"quote": A, "mask": [0, 3], "show": ["title", "words"]}, b)
+b = S.with_show(b, []); check("  none: no show at all", "show" not in b["content"], b)
 schema = S.load_schema()
 check("the schema takes a show list", not S.validate_instance(blk(Q, {"quote": A, "show": ["title", "created"]}), schema))
 check("  of known properties only", S.validate_instance(blk(Q, {"quote": A, "show": ["colour"]}), schema))

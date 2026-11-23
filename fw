@@ -1,7 +1,7 @@
 #!/bin/zsh
 # fw — open a free-writing entry, optionally with a writing timer.
 #
-#   fw              the web editor, in the browser (its home: a waiting pericope, the garden): the default
+#   fw              the web editor, in the browser (its home: a waiting pericope, the search, the list): the default
 #                   editor (also: fw open, fw o, fw web)
 #   fw term …       the terminal editor (deprecated), with any of the arguments below: fw term = a new entry,
 #                   fw term open = its home
@@ -41,7 +41,7 @@ usage() {
 Usage:
   fw                 the web editor, in the browser (the default editor; its core
                      started if it isn't running): home, a waiting pericope to write
-                     in, the garden and every pericope below   (also: fw open / o / web)
+                     in, the search and every pericope below   (also: fw open / o / web)
   fw term [...]      the terminal editor (deprecated): fw term, a new pericope;
                      fw term open, its home; fw term journal -t, … as below
   The terminal editor only (the web editor has no titles to open or timer yet):

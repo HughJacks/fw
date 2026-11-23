@@ -4,7 +4,7 @@ fw has no model of its own. A search service, run apart from fw, keeps an
 embedding model loaded and answers which blocks are nearest a query:
 GET <url>/search?q=…&n=… → {"results": [[block id, …], …]}, nearest first. fw asks it
 after a pause in typing, in the background, and the search list mixes the
-answer in by rank (fw_picker.fuse). Nothing waits on it: with none set, or
+answer in by rank (fw_search.fuse). Nothing waits on it: with none set, or
 when it can't be reached, the search is the title search it always was, and
 it isn't asked again for a while. Standard library only; the I/O is the
 Asker's thread, the rest is pure.

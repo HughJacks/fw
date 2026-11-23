@@ -5,7 +5,8 @@
 <script>
   import { onMount, untrack } from "svelte";
   // editor: where it opened; commands(editor, ctx); run(editor, name, ctx); root(): the page's editor (after a toggle)
-  let { left, top, editor, commands, run, root, dismiss } = $props();
+  // moved(editor): a toggle redrew the page, the cursor now in `editor` (the focus goes back there)
+  let { left, top, editor, commands, run, root, dismiss, moved = () => {} } = $props();
   let query = $state(""), sel = $state(0), group = $state(null), rev = $state(0), input = $state();
   let ed = untrack(() => editor), ctx = ed.context();   // (where it is: the page's again after a toggle)
   let shown = $derived.by(() => {
@@ -21,8 +22,11 @@
     if (!c) return;
     if (c.name.startsWith("group:")) { group = c.name.slice(6); sel = 0; query = ""; return; }
     if (!c.stays) dismiss(true);
-    await run(ed, c.name, ctx);
-    if (c.stays) { ed = root(); ctx = ed.context(); rev++; input?.focus(); }   // (its labels say what's on now)
+    const got = await run(ed, c.name, ctx);
+    if (c.stays) {   // (its labels say what's on now, where the cursor is now: a toggle may have drawn the page again)
+      ed = got?.view && !got.gone ? got : ed.gone ? root() : ed;
+      moved(ed); ctx = ed.context(); rev++; input?.focus();
+    }
   }
   function key(e) {
     if (e.key === "ArrowDown") sel = Math.min(shown.length - 1, at + 1);

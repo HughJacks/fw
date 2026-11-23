@@ -97,11 +97,13 @@ def kind_of(b: dict | None) -> str | None:
 
 def block_type(b: dict | None) -> str:
     """What block `b` is, by its content's case (the header's type, derived,
-    never stored): "text", "image", "kind", "quote", or "block" (it holds
-    blocks)."""
+    never stored): "text", "paraphrase", "image", "kind", "quote", or "block"
+    (it holds blocks)."""
     match b.get("content") if b else None:
         case str():
             return "text"
+        case {"paraphrase": str(), "text": str()}:
+            return "paraphrase"
         case {"image": str()}:
             return "image"
         case {"kind": str(), "blocks": list()}:
@@ -111,16 +113,31 @@ def block_type(b: dict | None) -> str:
     return "block"
 
 
-def type_label(b: dict | None) -> str:
+def type_label(b: dict | None, blocks: dict | None = None) -> str:
     """Block `b`'s type as its header's top line shows it: a kind's says
-    which, "kind: poem"."""
-    return f"kind: {kind_of(b)}" if kind_of(b) is not None else block_type(b)
+    which, "kind: poem". With `blocks` (the web's header), a pericope says
+    what it is as a whole (the user, 2026-11-23: "if we have a pericope which
+    has one block, the type of the pericope should be the type of that one
+    block", never "block"): its one block's type (text, quote, image), else
+    "pericope" (several, none, or one that holds blocks)."""
+    if kind_of(b) is not None:
+        return f"kind: {kind_of(b)}"
+    if blocks is None or not (b or {}).get("entry") or block_type(b) != "block":
+        return block_type(b)
+    kids = [k for k in children(b) if k in blocks]
+    one = block_type(blocks[kids[0]]) if len(kids) == 1 else "block"
+    return one if one != "block" else "pericope"
 
 
-def with_children(b: dict, kids: list) -> None:
-    """Give block `b` these children: a Kind keeps its name, anything else becomes Blocks."""
+def without(b: dict, key: str) -> dict:
+    """Block `b` without field `key` (a new block; `b` as it was)."""
+    return {k: v for k, v in b.items() if k != key}
+
+
+def with_children(b: dict, kids: list) -> dict:
+    """Block `b` with these children (a new block): a Kind keeps its name, anything else becomes Blocks."""
     name = kind_of(b)
-    b["content"] = {"kind": name, "blocks": kids} if name is not None else kids
+    return {**b, "content": {"kind": name, "blocks": kids} if name is not None else kids}
 
 
 def quoted(b: dict | None) -> tuple | None:
@@ -212,9 +229,29 @@ def seen_quote(blocks: dict, qid: str, inner: dict) -> tuple:
 
 
 def paraphrases(b: dict | None) -> str | None:
-    """The block `b` is marked as a paraphrase of, if any."""
+    """What Paraphrase block `b` paraphrases (the original's id), else None."""
     b = b.get("block", b) if b else None
-    return b.get("paraphrases") if b else None
+    match b.get("content") if b else None:
+        case {"paraphrase": str(src), "text": str()}:
+            return src
+    return None
+
+
+def text_of(b: dict | None) -> str | None:
+    """A block's own text when it's a block of text: a Text block's string, a
+    Paraphrase's words (the user, 2026-11-21: a paraphrase is a block like a
+    quote, drawn as text); else None."""
+    match b.get("content") if b else None:
+        case str(text) | {"paraphrase": str(), "text": str(text)}:
+            return text
+    return None
+
+
+def with_text(b: dict, text: str) -> dict:
+    """Block `b` with this text (a new block): a paraphrase stays one, of the
+    same original; anything else becomes Text."""
+    src = paraphrases(b)
+    return {**b, "content": {"paraphrase": src, "text": text} if src else text}
 
 
 def links(b: dict | None) -> list:
@@ -288,12 +325,9 @@ def carry_links(old: str, new: str, held: dict) -> dict:
     return out
 
 
-def with_links(b: dict, ls: list) -> None:
-    """Give block `b` these hyperlinks (none: no `links`)."""
-    if ls:
-        b["links"] = ls
-    else:
-        b.pop("links", None)
+def with_links(b: dict, ls: list) -> dict:
+    """Block `b` with these hyperlinks (a new block; none: no `links`)."""
+    return {**b, "links": ls} if ls else without(b, "links")
 
 
 def cut_links(ls: list, a: int, b: int) -> list:
@@ -318,7 +352,7 @@ def own_text(blocks: dict, ref: str, seen: frozenset = frozenset()) -> str:
     if b is None or ref in seen:
         return ""
     match b.get("content", ""):
-        case str(text):
+        case str(text) | {"paraphrase": str(), "text": str(text)}:
             return text
         case list() | {"kind": str(), "blocks": list()}:
             return "\n".join(own_text(blocks, k, seen | {ref}) for k in children(b)
@@ -336,7 +370,7 @@ def block_items(blocks: dict, ref: str, seen: frozenset = frozenset(), inner: di
     if b is None or ref in seen:
         return []
     match b.get("content", ""):
-        case str(text):
+        case str(text) | {"paraphrase": str(), "text": str(text)}:
             return [("text", text)]
         case list() | {"kind": str(), "blocks": list()}:
             out = []
@@ -399,7 +433,7 @@ def block_draft(blocks: dict, ref: str) -> str:
     itself. A child that holds blocks of its own (a container) is drafted
     as its children, each naming it too (and the containers it's in), to any depth."""
     match blocks[ref].get("content", ""):
-        case str(text):
+        case str(text) | {"paraphrase": str(), "text": str(text)}:
             return text
         case list() | {"kind": str(), "blocks": list()}:  # (a kind: its description's blocks)
             return "\n".join(child_lines(blocks, children(blocks[ref])))
@@ -441,10 +475,10 @@ def content_hash(blocks: dict, ref: str) -> str | None:
     return draft_digest(json.dumps(block_items(blocks, ref))) if ref in blocks else None
 
 
-def with_mask(b: dict, mask: list | None) -> None:
-    """Give Quote block `b` a new mask (None: show all of it); the rest of it stays."""
+def with_mask(b: dict, mask: list | None) -> dict:
+    """Quote block `b` with a new mask (a new block; None: show all of it); the rest of it stays."""
     rest = {k: v for k, v in b["content"].items() if k != "mask"}
-    b["content"] = {**rest, "mask": mask} if mask is not None else rest
+    return {**b, "content": {**rest, "mask": mask} if mask is not None else rest}
 
 
 def home_of(blocks: dict, ref: str) -> tuple:
@@ -469,7 +503,7 @@ def home_of(blocks: dict, ref: str) -> tuple:
 def regions(blocks: dict, ref: str, draft: str) -> list:
     """Where each block of `ref`'s draft is in it, in order: (id, start, end,
     whether it's a quote or an image, one place): a block of text's own text, a quote's or image's line."""
-    if isinstance(blocks[ref].get("content"), str):
+    if text_of(blocks[ref]) is not None:
         return [(ref, 0, len(draft), False)]
     out, pos, cur = [], 0, None
     for line in draft.split("\n"):
@@ -496,7 +530,7 @@ def backlinks(blocks: dict, ref: str) -> list:
     """The blocks pointing at `ref` itself, oldest first: each quote of it
     (masked or not: a masked quote of a block holding `ref` points at that
     block, not at `ref`) and each hyperlink to it, in a block some entry
-    reaches, each block marked as a paraphrase of it, and, for a kind, each
+    reaches, each paraphrase of it, and, for a kind, each
     block you said is one. Each a dict: kind ("quote", "masked quote",
     "link", "paraphrase", "kind": BACKLINK_NAMES says them), `by` (the
     pointing block), `home` and `at` (the entry it's in, and where in that
@@ -532,7 +566,7 @@ def backlink_summary(found: list) -> str:
 
 
 def families(blocks: dict) -> dict:
-    """The paraphrase families: the blocks joined by `paraphrases` marks (a
+    """The paraphrase families: the blocks joined by paraphrasing (a
     source, what paraphrases it, what paraphrases those, …), the same thing
     said more than one way. {member: [every member, oldest first]}, for the
     blocks in a family of two or more. Works on the store's blocks or the
@@ -636,22 +670,22 @@ def masks_in(blocks_list: list) -> list:
     return convert_masks(blocks_list, False)
 
 
-def with_inner(b: dict, inner: dict) -> None:
-    """Give Quote block `b` new masks for the quotes inside it (none: no `inner`)."""
+def with_inner(b: dict, inner: dict) -> dict:
+    """Quote block `b` with new masks for the quotes inside it (a new block; none: no `inner`)."""
     rest = {k: v for k, v in b["content"].items() if k != "inner"}
-    b["content"] = {**rest, "inner": inner} if inner else rest
+    return {**b, "content": {**rest, "inner": inner} if inner else rest}
 
 
-def with_show(b: dict, show: list) -> None:
-    """Choose what Quote block `b`'s top line shows (none: no `show`)."""
+def with_show(b: dict, show: list) -> dict:
+    """Quote block `b` with what its top line shows (a new block; none: no `show`)."""
     rest = {k: v for k, v in b["content"].items() if k != "show"}
-    b["content"] = {**rest, "show": [k for k in SHOWABLE if k in show]} if show else rest
+    return {**b, "content": {**rest, "show": [k for k in SHOWABLE if k in show]} if show else rest}
 
 
-def with_lock(b: dict, on: bool) -> None:
-    """Lock Quote block `b` (or unlock it: no `lock`)."""
+def with_lock(b: dict, on: bool) -> dict:
+    """Quote block `b` locked (a new block; or unlocked: no `lock`)."""
     rest = {k: v for k, v in b["content"].items() if k != "lock"}
-    b["content"] = {**rest, "lock": True} if on else rest
+    return {**b, "content": {**rest, "lock": True} if on else rest}
 
 
 def quote_items(blocks: dict, ref: str, mask: list | None, seen: frozenset = frozenset(),
@@ -838,12 +872,9 @@ def merge_visits(a: dict | None, b: dict | None, base: dict | None = None) -> di
     return out
 
 
-def with_visits(b: dict, v: dict | None) -> None:
-    """Give block `b` visits `v` (None: none)."""
-    if v:
-        b["visits"] = v
-    else:
-        b.pop("visits", None)
+def with_visits(b: dict, v: dict | None) -> dict:
+    """Block `b` with visits `v` (a new block; None: none)."""
+    return {**b, "visits": v} if v else without(b, "visits")
 
 
 def attend(live: dict, ids, flags: str, at: float) -> tuple[dict, dict]:
@@ -969,6 +1000,96 @@ def garden(blocks: dict, refs: list, now_min: int) -> list[tuple[str, str]]:
     return top[:TOP] + [x for x in r + f if x not in top[:TOP]] + [(i, "") for i in rest]
 
 
+HITS_JUMP = 0.15   # randomized HITS's chance of a jump anywhere (Ng, Zheng & Jordan 2001), so sparse writing, in
+HITS_ROUNDS = 100  # separate clusters, doesn't collapse onto one of them as plain HITS does
+
+
+def pericope_edges(blocks: dict, refs: list) -> set:
+    """(a, b): pericope `a` points at pericope `b`, a block in a quoting, linking to or paraphrasing a block of b
+    (b itself or one inside it), a != b. A quote of a picture isn't pointing (it shows it, an illustration)."""
+    tops, out = set(refs), set()
+    for i, b in blocks.items():
+        q = quoted(b)
+        targets = ([q[0]] if q else []) + [x["to"] for x in links(b)] + ([paraphrases(b)] if paraphrases(b) else [])
+        if not targets:
+            continue
+        a = home_of(blocks, i)[0]
+        for t in targets:
+            if t not in blocks or (q and t == q[0] and image_of(blocks[t])):
+                continue
+            h = t if t in tops else home_of(blocks, t)[0]
+            if a in tops and h in tops and a != h:
+                out.add((a, h))
+    return out
+
+
+def hits(refs: list, edges: set) -> tuple[dict, dict]:
+    """Randomized HITS (Ng, Zheng & Jordan, "Stable algorithms for link analysis", 2001) over `edges`: ({ref: hub},
+    {ref: authority}), each scaled so the average is 1. A hub points at good authorities (a way in: where to start);
+    an authority is pointed at by good hubs (where you end up). Derived, never stored."""
+    n = len(refs)
+    if not n:
+        return {}, {}
+    outd, ind = {}, {}
+    for a, b in edges:
+        outd[a] = outd.get(a, 0) + 1
+        ind[b] = ind.get(b, 0) + 1
+    hub = {r: 1 / n for r in refs}
+    auth = dict(hub)
+    for _ in range(HITS_ROUNDS):
+        auth = {r: HITS_JUMP / n for r in refs}
+        for a, b in edges:
+            auth[b] += (1 - HITS_JUMP) * hub[a] / outd[a]
+        total = sum(auth.values())
+        auth = {r: v / total for r, v in auth.items()}
+        hub = {r: HITS_JUMP / n for r in refs}
+        for a, b in edges:
+            hub[a] += (1 - HITS_JUMP) * auth[b] / ind[b]
+        total = sum(hub.values())
+        hub = {r: v / total for r, v in hub.items()}
+    return {r: v * n for r, v in hub.items()}, {r: v * n for r, v in auth.items()}
+
+
+def alongside(edges: set, here: str) -> list[tuple[str, int]]:
+    """The pericopes sitting with `here` in the structure, and how many ties each: pointed at by a pericope that
+    points at `here` too (co-citation), or pointing at one `here` points at too (coupling); most ties first. Not
+    `here`, nor what it points at or what points at it (those are tied to it directly)."""
+    out_of = {}
+    into = {}
+    for a, b in edges:
+        out_of.setdefault(a, set()).add(b)
+        into.setdefault(b, set()).add(a)
+    direct = out_of.get(here, set()) | into.get(here, set()) | {here}
+    ties = {}
+    for c in into.get(here, set()):                 # c points at here: what else does c point at
+        for o in out_of.get(c, set()) - direct:
+            ties[o] = ties.get(o, 0) + 1
+    for t in out_of.get(here, set()):               # here points at t: what else points at t
+        for o in into.get(t, set()) - direct:
+            ties[o] = ties.get(o, 0) + 1
+    return sorted(ties.items(), key=lambda x: (-x[1], x[0]))
+
+
+NEXT_WITHIN = 30   # minutes: the next visit, if it begins this soon after one to `here` begins
+
+
+def visited_next(blocks: dict, refs: list, here: str) -> list[tuple[str, int]]:
+    """Where you went right after `here`: for each visit to `here` (the last ten it keeps), the pericope whose visit
+    began next, within NEXT_WITHIN minutes (all of them, if several began that same minute); with how many of
+    here's visits each followed, most first, then the latest."""
+    theirs = {r: [m for m, _ in visits(blocks.get(r))] for r in refs if r != here}
+    count, last = {}, {}
+    for m in (m for m, _ in visits(blocks.get(here))):
+        after = {r: min((v for v in vs if m < v <= m + NEXT_WITHIN), default=None) for r, vs in theirs.items()}
+        soonest = min((v for v in after.values() if v is not None), default=None)
+        for r, v in after.items():
+            if v is not None and v == soonest:
+                count[r] = count.get(r, 0) + 1
+                last[r] = max(last.get(r, 0), v)
+    out = [(r, count[r], last[r]) for r in count]
+    return [(r, n) for r, n, _ in sorted(out, key=lambda x: (-x[1], -x[2]))]
+
+
 def ago(minute: int | None, now_min: int) -> str:
     """'just now', '5m ago', '3h ago', '4d ago', '2mo ago', '1y ago'."""
     if minute is None:
@@ -983,8 +1104,8 @@ def ago(minute: int | None, now_min: int) -> str:
 # --- kinds: what a block is (schema v16) ---------------------------------------
 #
 # A kind is a block (content Kind: {"kind": name, "blocks": its description}),
-# a top-level pericope. A block says what it is in `kinds`: {kind id: True |
-# False}, only the answers you gave (yes, it's a poem; no, it isn't a letter).
+# a top-level pericope. A pericope (only a pericope)
+# says what it is in `kinds`: {kind id: True | False}, only the answers you gave (yes, it's a poem; no, it isn't a letter).
 # A model's guesses (a model outside fw writes its file beside the store)
 # are kept apart, never stored: `guessed` keeps those that count, and they
 # meet your answers in merge_kinds, where yours win.
@@ -998,12 +1119,9 @@ def kinds_of(b: dict | None) -> dict:
     return dict(b.get("kinds") or {}) if b else {}
 
 
-def with_kinds(b: dict, answers: dict) -> None:
-    """Give block `b` these answers (none: no `kinds`)."""
-    if answers:
-        b["kinds"] = dict(answers)
-    else:
-        b.pop("kinds", None)
+def with_kinds(b: dict, answers: dict) -> dict:
+    """Block `b` with these answers (a new block; none: no `kinds`)."""
+    return {**b, "kinds": dict(answers)} if answers else without(b, "kinds")
 
 
 def merge_kinds(answers: dict, guesses: dict | None = None) -> dict:
@@ -1018,7 +1136,8 @@ def guessed(data, blocks: dict, at: float = GUESS_AT) -> dict:
     oldest first, out of a model's (`data`, kind-guesses.json as read:
     {guesses: {kind id: {block id: [p, kind's updated, block's updated]}}})
     and the blocks as they are now (the store's or the editor's library):
-    only kinds that still exist, about blocks that do, that the block has no
+    only kinds that still exist, about pericopes that do (only a pericope
+    has kinds), that the block has no
     answer about, still current (neither the kind nor the block changed
     since: both `updated` as the guess has them), and p at `at` (GUESS_AT)
     or over. Anything malformed counts for nothing."""
@@ -1033,7 +1152,7 @@ def guessed(data, blocks: dict, at: float = GUESS_AT) -> dict:
             b = block(bid)
             match g:
                 case [int() | float() as p, str() as ku, str() as bu] if (
-                        b is not None and p >= at and kid not in kinds_of(b)
+                        b is not None and b.get("entry") and p >= at and kid not in kinds_of(b)
                         and ku == k.get("updated") and bu == b.get("updated")):
                     out.setdefault(bid, {})[kid] = p
     return out
@@ -1060,8 +1179,7 @@ def is_applied(blocks: dict, bid: str, kid: str, learned_kinds) -> bool:
 def maybes(data, blocks: dict, kid: str) -> list:
     """Kind `kid`'s maybes, to review: the pericopes a model guesses are one,
     unanswered and current (`guessed`, from MAYBE_AT up, so the unsure ones
-    too), [(block id, p)], the likeliest first (then the oldest). Not blocks
-    inside a pericope (theirs are applied or dropped: `is_applied`), nor a
+    too), [(block id, p)], the likeliest first (then the oldest). Not
     guesses from GUESS_AT up (applied: is_applied)."""
     top = GUESS_AT
     entry = lambda i: (lambda b: isinstance(b, dict) and b.get("block", b).get("entry"))(blocks.get(i))

@@ -48,7 +48,7 @@ t.key(Q, ESC); t.done()
 fresh()
 def put_quote(data, blocks):
     S.add_block(data, blocks, QP, {"quote": N2}); blocks[ME]["content"].append(QP)
-S.transact(put_quote)
+S.transact(S.editing(put_quote))
 t = F.fw("mine", rows=30)   # at the end of "x"... below it, the quote
 same("a quote of the block, not its entry", kids(ME), ["x", ("quote", N2)])
 t.key(DOWN, DOWN); t.settle()

@@ -1,9 +1,11 @@
-// main.js — fw's web editor, the page. Two views, as the terminal's: home (the garden, and the search
-// typing hands over to) and a pericope open in the editor. The page never touches the store: it asks the
-// core (fw_web.py) for JSON and saves drafts back. Typing never waits on it: every key changes the
-// document here, and saves go out in the background once the keys stop.
-import { waiting } from "./editor.js";
+// main.js — fw's web editor, the page: one page (the user, 2026-11-19), App.svelte, drawn from where you are
+// (state.svelte.js `here`, `where` here), which the address sets (the routing: #/ home, #/p/<id>[@<block>] a pericope, #/keys, #/kinds).
+// One pericope on it, header and body, for every pericope; moving only changes what it shows. The page never
+// touches the store: it asks the core (fw_web.py) for JSON and saves drafts back. Typing never waits on it: every
+// key changes the document here, and saves go out in the background after every change (one at a time, each with all that changed by then).
+import { waiting, spotOf, restoreSpot } from "./editor.js";
 import { readClip } from "./clipboard.js";
+import * as visits from "./visits.js";
 import { loadKeys, pressed } from "./keys.js";
 import { api, TEST, inflight } from "./api.js";
 import { travel, moving } from "./motion.js";
@@ -11,33 +13,46 @@ import * as motion from "./motion.js";
 import { NodeSelection, TextSelection, Selection } from "prosemirror-state";
 import { mount, tick } from "svelte";
 import App from "./App.svelte";
-import { status as statusLine, ui, page } from "./state.svelte.js";
+import { say, ui, here as where } from "./state.svelte.js";
 import { review, reviewKey } from "./review.svelte.js";
 
-// the page's shell (Svelte 5, runes: App.svelte): what the page says at the top, the view below
-mount(App, { target: document.querySelector("#app") });
+// the page (Svelte 5, runes: App.svelte): what the page says at the top, the one pericope, home's parts below it
+const app = mount(App, { target: document.querySelector("#app"), props: { go: (hash, how) => go(hash, how) } });
 
 
 // --- what the page says (at the top, App.svelte; the old bottom bar's key hints are gone, 2026-11-18) ----------
 function bar(text) {
-  statusLine.text = text.trim();
+  say(text.trim());
 }
 
 // --- routing: #/ home, #/p/<id>[@<block>] a pericope (at a block) -----------------
 function route() {
   if (location.hash === "#/keys") return { view: "keys" };
-  const m = location.hash.match(/^#\/p\/([^@]+)(?:@(.+))?$/);
-  return m ? { view: "pericope", id: m[1], at: m[2] || null } : { view: "home" };
+  if (location.hash === "#/kinds") return { view: "kinds" };
+  const m = location.hash.match(/^#\/p\/([^@]+)(?:@([^~]+))?(?:~(\d+))?$/);
+  return m ? { view: "pericope", id: m[1], at: m[2] || null, off: m[3] != null ? +m[3] : null } : { view: "home" };
 }
-const go = (hash) => { if (location.hash !== hash) location.hash = hash; else show(); };
+let arriving = {};   // (how the next place opened arrives: {quiet}, from go's second argument)
+const go = (hash, how = {}) => { arriving = how; if (location.hash !== hash) location.hash = hash; else show(); };
 // the trail: each place this tab has been numbered in its history (history.state.n), so ⌘[ steps out only
 // within fw, never back past where it started
 let here = -1;
-function placed() {   // (a place not seen yet: one further along than where we came from; the first, 0)
+function placed() {   // (a place not seen yet: one further along than where we came from; the first, 0). Returns whether it's new.
   const fresh = history.state?.n == null;
   if (fresh) history.replaceState({ n: here + 1 }, "");
   here = history.state.n;
+  return fresh;
 }
+// ⌘[ and ⌘] (any step back or forward along the trail) land exactly where you were (the user, 2026-11-19, later: "command
+// bracket [ and ] should navigate you to exactly the place and cursor status you came from"): each place keeps, as you
+// leave it, where you were in it (editor.js spotOf: the caret, text selected, blocks selected whole, nothing drawn) and
+// how far down it was scrolled, both put back once it's drawn again (a step's motion then moves from there). The scroll
+// is the page's own: the browser's restoration, on back and forward, moved the page before a step out had measured it.
+// Kept by the trail's number (history.state.n); a reload keeps them in history.state.
+history.scrollRestoration = "manual";
+const kept = new Map();   // (history.state.n -> {y, spot})
+const keep = () => ({ y: scrollY, spot: spotOf(current?.editor) });
+window.addEventListener("beforeunload", () => history.replaceState({ ...history.state, ...keep() }, ""));
 const back = () => { if (here > 0) history.back(); };
 const forward = () => history.forward();
 
@@ -49,16 +64,24 @@ function show() {
   const next = async () => {
     switches++;
     try {
-      placed();
+      const from = here;
+      if (from >= 0) kept.set(from, keep());
+      const fresh = placed(), asLeft = fresh ? null : kept.get(here) ?? history.state ?? null;
+      const backward = here < from;   // (a step back along the trail: ⌘[, the browser's back, a swipe; motion.js steps out)
       const r = route(), dest = r.view === "pericope" ? r.id : null;
+      motion.unroom();   // (a step's room below is the page it was made for)
       // (moved there, animated: stepping in or out, motion.js)
       await travel(async () => {
         const was = current;
         current = null;
-        if (was) await was.leave();
-        current = r.view === "pericope" ? await openPericope(r.id, r.at) : r.view === "keys" ? await openKeys() : await openHome();
+        if (was) { await was.leave(); visits.left(); }
+        const how = arriving; arriving = {};
+        current = r.view === "pericope" ? await openPericope(r.id, r.at, r.off, how) : r.view === "keys" ? await openKeys()
+          : r.view === "kinds" ? await openKindsView() : await openHome();
+        if (r.view === "pericope") visits.opened(r.id);
         shown = dest;
-      }, { dest, left: shown });
+        if (asLeft) { restoreSpot(current?.editor, asLeft.spot); if (asLeft.y != null) scrollTo(0, asLeft.y); }   // (back or forward: as it was left)
+      }, { dest, left: shown, back: backward, editor: () => current?.editor });
     } finally {
       switches--;
     }
@@ -68,28 +91,33 @@ function show() {
 }
 window.addEventListener("hashchange", show);
 
-/** View `kind` drawn in #main with `props` (App.svelte), once Svelte has drawn it: {leave(), editor}. */
-async function open(kind, props) {
-  page.instance = null;
-  page.view = { kind, props };
+/** Where you are now `view`, the page's pericope showing `opening` (App.svelte draws it; nothing's made again but
+ * the pericope's editor), once Svelte has drawn it: {leave(), editor, blank()}, the pericope open. */
+async function place(view, opening) {
+  where.view = view;
+  where.written = false;
+  where.opening = opening;
   await tick();
-  const it = page.instance;
-  return { get editor() { return it?.editor?.() || null; }, leave: async () => { await it?.leave?.(); }, blank: () => it?.blank?.() ?? true };
+  const peri = app.pericope();
+  if (!opening) return { editor: null, leave: async () => {}, blank: () => true };
+  return { get editor() { return peri?.editor() || null; }, leave: async () => { await peri?.leave(); }, blank: () => peri?.blank() ?? true };
 }
 
-// --- home: Home.svelte (the search, the garden, the library) ------------------------------------------------------
-const openHome = () => open("home", { go });
+// --- home: the waiting pericope (blank: nothing's made until its first key), and Suggested.svelte under it --------------
+const BLANK = { id: null, title: null, shown: "", type: "pericope", kind: false, words: 0, created: null, updated: null, visited: null, kinds: "",
+  kindTokens: [], maybes: null, backlinks: "", base: null, children: [] };
+const openHome = () => place("home", { id: null, at: null, first: BLANK, home: true });
 
 // --- reviewing a kind's maybes: review.svelte.js (its keys, while it's at the pericope open) ------------------------
 document.addEventListener("keydown", (e) => reviewKey(e, current?.editor?.id), true);
 
 // --- a pericope -------------------------------------------------------------------
-async function openPericope(id, at) {   // Pericope.svelte (its header, the body's editor), once the core has said what it is
+async function openPericope(id, at, off = null, how = {}) {   // Pericope.svelte (its header, the body's editor), once the core has said what it is
   const r = await api(`/api/pericope/${id}`);
   if (!r.ok) { go("#/"); return { leave: async () => {} }; }
   const flash = review.flash;
   review.flash = "";
-  return open("pericope", { id, at, first: r.body, go, flash });
+  return place("pericope", { id, at, off, quiet: !!how.quiet, first: r.body, flash });
 }
 
 // --- for the tests (web/test): when the page has settled, and the cursor put where a test wants it ---------------
@@ -97,12 +125,14 @@ async function openPericope(id, at) {   // Pericope.svelte (its header, the body
 window.fw = {
   /** Nothing in flight: no request to the core, no save waiting to go, no page switching. */
   settled: () => inflight.n === 0 && waiting.size === 0 && switches === 0 && !moving(),
-  /** The cursor at the very end of the open pericope. */
+  /** The cursor at the very end of the open pericope (ending with a quote or picture: in the block below it, made as
+   * going down past it makes it). */
   end() {
-    const v = current?.editor?.view;
+    const ed = current?.editor, v = ed?.view;
     if (!v) return false;
     v.focus();
     v.dispatch(v.state.tr.setSelection(Selection.atEnd(v.state.doc)));
+    ed.roomBelow();
     return true;
   },
   /** The last move (motion.js): which way, what zoomed from and to. */
@@ -112,7 +142,7 @@ window.fw = {
   /** The open pericope's editor (at home, the waiting pericope's; null on the keys page). */
   editor: () => current?.editor || null,
   /** Home is the view open (its waiting pericope written in or not). */
-  home: () => page.view?.kind === "home",
+  home: () => where.view === "home",
   /** `text` selected (its `nth` place) in the open pericope, the cursor at its end if `collapse`; in an editor of
    * a quote inside when that's where it is. Returns whether it was found. */
   select(text, { collapse = false, start = false, nth = 0 } = {}) {
@@ -146,7 +176,7 @@ async function latest() {
   const now = `${r.body.code}/${r.body.page}`;
   if (running === null) { running = now; return; }
   if (now === running) return;
-  if (!window.fw.settled() || document.querySelector(".fw-menu, .fw-masking") || review.now) return;   // (later: nothing lost)
+  if (!window.fw.settled() || ui.menus || review.now) return;   // (later: nothing lost)
   const ed = current?.editor, block = ed?.context()?.block?.id;
   const m = location.hash.match(/^#\/p\/([^@]+)/);
   if (m && block && ed.id === m[1]) history.replaceState(history.state, "", `#/p/${m[1]}@${block}`);
@@ -162,28 +192,39 @@ document.addEventListener("keydown", (e) => {
   else if (pressed(e, "home")) { e.preventDefault(); go("#/"); }
   else if (pressed(e, "done")) { e.preventDefault(); sendAway(); }
   else if (pressed(e, "keys")) { e.preventDefault(); go("#/keys"); }
+  else if (pressed(e, "kinds")) { e.preventDefault(); go("#/kinds"); }
 });
 
 // --- send it away (the user, 2026-11-19: "a key to all pericopes to send it away off the top of the screen and go to
-// the garden, its different from back and more like 'done' for now"): saved, slid up off the top (motion.js away), then
-// home, a fresh waiting pericope. Home is a new place on the trail, so ⌘[ still reaches what was sent away. On a
-// blank pericope (empty, untitled), nothing.
+// the garden, its different from back and more like 'done' for now"): saved, the pericope (only it: the user,
+// 2026-11-21, "fly away only the pericope and fade in a new one, suggested should stay where it is") slid up off the
+// top (motion.js away), then home, a fresh waiting pericope fading in where it was, the suggestions below staying on
+// the page (gliding to where home puts them, if that's elsewhere) and following it. Home is a new place on the trail,
+// so ⌘[ still reaches what was sent away. On a blank pericope (empty, untitled), nothing.
 async function sendAway() {
-  if (!current?.editor || switches || document.querySelector(".fw-menu, .fw-masking")) return;
+  if (!current?.editor || switches || ui.menus) return;
   if (current.blank()) { bar("nothing here to send away"); return; }
-  const main = document.querySelector("#main"), ed = current.editor;
+  const peri = document.querySelector("#main .fw-peri"), ed = current.editor;
   ed.view.setProps({ editable: () => false });   // (nothing typed into what's going)
-  const slide = motion.away(main);
+  const slide = motion.away(peri);
   // saved as it goes (not left yet: leaving takes the editor down, and it's still sliding); left once it's gone, below
   await Promise.all([slide?.finished.catch(() => {}), ed.saveAll()]);
+  const foot = document.querySelector("#main .fw-suggested"), was = foot?.getBoundingClientRect().top;
   history.pushState(null, "", "#/");   // (a new place: ⌘[ steps back to it)
   await show();
-  slide?.cancel();   // (home drawn under it: the page back where it was)
+  slide?.cancel();
+  if (slide) motion.arrive(peri, foot, was);   // (the new one fading in; the suggestions from where they were)
 }
 
 // --- the keys page (#/keys): Keys.svelte -----------------------------------------------------------------------------
 async function openKeys() {
-  const it = await open("keys", { home: () => go("#/") });
+  const it = await place("keys", null);
+  bar("");
+  return it;
+}
+// --- the kinds view (#/kinds): KindsView.svelte -------------------------------------------------------------------------
+async function openKindsView() {
+  const it = await place("kinds", null);
   bar("");
   return it;
 }

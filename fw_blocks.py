@@ -320,24 +320,24 @@ class BlockPicking:
                 (l, b), n, i = parse_draft(draft), parse_nest(draft), src
                 nest.update(n)
             elif mode == "quote" and "quote" not in u and src in self.library:
-                made[i] = store.new_block(i, {"quote": src})
+                made[i] = store.new_block(i, {"quote": src}, now=store.now_local())
                 l, b = [quote_line(src, i)], [None]
             elif "blocks" in u:
                 made[i] = None  # (its id taken)
                 l, b, n, kids = self.lay_clip(u["blocks"], made, i, "static" if mode == "static" else "quote")
-                made[i] = store.new_block(i, kids)
+                made[i] = store.new_block(i, kids, now=store.now_local())
                 nest.update(n)
             elif u.get("image"):  # (a static copy, or one gone since: the same picture, a new block)
-                made[i] = store.new_block(i, {"image": u["image"]})
+                made[i] = store.new_block(i, {"image": u["image"]}, now=store.now_local())
                 l, b = [image_line(i)], [None]
             elif "quote" in u and mode != "static" and u["quote"]["quote"] in self.library:
-                made[i] = store.new_block(i, copy.deepcopy(u["quote"]))
+                made[i] = store.new_block(i, copy.deepcopy(u["quote"]), now=store.now_local())
                 l, b = [quote_line(u["quote"]["quote"], i)], [None]
             else:
                 text = u.get("text", u.get("shown", ""))
                 plain = "".join(c for c in text if c not in MARKS)
                 kept = [link for link in u.get("links", []) if link["to"] in self.library] if plain == text else []
-                made[i] = store.new_block(i, plain, links=kept)
+                made[i] = store.new_block(i, plain, links=kept, now=store.now_local())
                 l = plain.split("\n")
                 b = [i] * len(l)
             if outer:

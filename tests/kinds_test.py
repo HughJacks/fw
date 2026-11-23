@@ -23,13 +23,13 @@ def blk(i, content, title=None, entry=False, **more):
     return {"id": i, "title": title, **({"entry": True} if entry else {}), "content": content, "words": 0,
             "created": T, "updated": T, **more}
 def fresh(kinds=True):
-    """mine: two blocks of text (M1 a poem, when `kinds`); other: one; host: one; and the kind poem, described."""
+    """mine: two blocks of text (mine a poem, when `kinds`); other: one; host: one; and the kind poem, described."""
     blocks = [blk(MINE, [M1, M2], "mine", True), blk(M1, "roses are red\nviolets are blue"), blk(M2, "buy milk"),
               blk(OTHER, [O1], "other", True), blk(O1, "an old pond"),
               blk(HOST, [H1], "host", True), blk(H1, "host text")]
     if kinds:
         blocks += [blk(POEM, {"kind": "poem", "blocks": [PD]}, entry=True), blk(PD, "a short piece in lines")]
-        blocks[1]["kinds"] = {POEM: True}
+        blocks[0]["kinds"] = {POEM: True}
     json.dump({"schemaVersion": 16, "blocks": blocks}, open(os.environ["FW_DATA"], "w"))
     S.cmd_migrate(None)
     for f in ("t/mac.txt", S.CLIP_PATH):
@@ -51,10 +51,15 @@ SENTER = "\x1b[13;2u"
 fresh(kinds=False)
 d = json.load(open(os.environ["FW_DATA"]))
 v15 = {**d, "schemaVersion": 15}
-up = M.upgrade(copy.deepcopy(v15))
+up = M.upgrade(copy.deepcopy(v15), now=S.now_local(), new_id=S.new_id)
 check("v15 → v16 (and on): marked to be saved, the blocks as they were (no kinds yet)",
-      M.SCHEMA_VERSION >= 16 and up["schemaVersion"] == M.SCHEMA_VERSION and up.get("upgraded") and up["blocks"] == d["blocks"]
+      M.SCHEMA_VERSION >= 16 and up["schemaVersion"] == M.SCHEMA_VERSION and M.behind(v15) and up["blocks"] == d["blocks"]
       and not any("kinds" in b for b in up["blocks"]))
+v18 = {"schemaVersion": 18, "blocks": [blk(MINE, [M1, M2], "mine", True, kinds={POEM: False}), blk(M1, "x", kinds={POEM: True, OTHER: True}),
+       blk(M2, "y", kinds={HOST: False}), blk(OTHER, [O1], "other", True), blk(O1, "z", kinds={POEM: True})]}
+up = {b["id"]: b for b in M.upgrade(v18, now=None, new_id=None)["blocks"]}
+same("v18 → v19: only a pericope has kinds: a yes inside carried up, the pericope's own answer winning, the rest gone",
+     [up[i].get("kinds") for i in (MINE, M1, M2, OTHER, O1)], [{POEM: False, OTHER: True}, None, None, {POEM: True}, None])
 schema = S.load_schema()
 good = blk(POEM, {"kind": "poem", "blocks": [PD]}, entry=True, kinds={OTHER: False})
 same("the schema takes a Kind, and kinds on a block", S.validate_instance(good, schema), [])
@@ -70,33 +75,33 @@ same("merge_kinds: guesses under your answers, which win", S.merge_kinds({POEM: 
      {POEM: False, OTHER: True})
 fresh()
 b = B()
-same("of_kind: the blocks you said are one", S.of_kind(b, POEM), [M1])
-same("  with a model's guesses merged under them (a later step's)", S.of_kind(b, POEM, {O1: {POEM: True}, M1: {POEM: False}}),
-     [M1, O1])
+same("of_kind: the blocks you said are one", S.of_kind(b, POEM), [MINE])
+same("  with a model's guesses merged under them (a later step's)", S.of_kind(b, POEM, {OTHER: {POEM: True}, MINE: {POEM: False}}),
+     [MINE, OTHER])
 same("kind_named: case and spacing aside", (S.kind_named(b, " POEM "), S.kind_named(b, "letter")), (POEM, None))
 same("kind_of and display_title: its name", (S.kind_of(b[POEM]), S.display_title(b, POEM), S.kind_of(b[M1])), ("poem", "poem", None))
 
 # --- the store: the header's kinds, made and undone ------------------------------------------------------------
 fresh(kinds=False)
-rec = S.set_kinds(M1, "Poem, not letter")
+rec = S.set_kinds(MINE, "Poem, not letter")
 b = B()
 made = S.kind_ids(b)
 same("set_kinds: each new name a new kind, an entry of its own, empty", sorted((S.kind_of(b[k]), b[k].get("entry"), S.children(b[k])) for k in made),
      [("Poem", True, []), ("letter", True, [])])
-same("  the block's answers, yes and no", S.kinds_text(b, b[M1]), "Poem, not letter")
-check("  not an edit: the block's updated stays", b[M1]["updated"] == T, b[M1]["updated"])
-rec2 = S.set_kinds(O1, "POEM")
-same("  an existing name, any case: that kind, no new one", (len(S.kind_ids(B())), S.of_kind(B(), S.kind_named(B(), "poem"))), (2, [M1, O1]))
+same("  the block's answers, yes and no", S.kinds_text(b, b[MINE]), "Poem, not letter")
+check("  not an edit: the block's updated stays", b[MINE]["updated"] == T, b[MINE]["updated"])
+rec2 = S.set_kinds(OTHER, "POEM")
+same("  an existing name, any case: that kind, no new one", (len(S.kind_ids(B())), S.of_kind(B(), S.kind_named(B(), "poem"))), (2, [MINE, OTHER]))
 redo = S.restore(rec2)
-same("undo (restore its record): the answers as they were", S.kinds_of(B()[O1]), {})
+same("undo (restore its record): the answers as they were", S.kinds_of(B()[OTHER]), {})
 S.restore(rec)
-same("  and the kinds it made, gone: completely as before", (S.kinds_of(B()[M1]), S.kind_ids(B())), ({}, []))
+same("  and the kinds it made, gone: completely as before", (S.kinds_of(B()[MINE]), S.kind_ids(B())), ({}, []))
 fresh()
 try: S.set_kinds(POEM, "poem"); refused = False
 except S.StoreError: refused = True
 check("a kind can't be a kind of itself", refused)
-S.set_kinds(M1, "")
-same("set_kinds '': its answers go, the kind stays", (S.kinds_of(B()[M1]), S.kind_ids(B())), ({}, [POEM]))
+S.set_kinds(MINE, "")
+same("set_kinds '': its answers go, the kind stays", (S.kinds_of(B()[MINE]), S.kind_ids(B())), ({}, [POEM]))
 
 # --- everything is a block: draft, words, backlinks, empty, delete ------------------------------------------------
 fresh()
@@ -112,31 +117,37 @@ same("  edited through the draft (as the editor saves): still a kind, a block ad
 same("  and its words follow", b[POEM]["words"], 8)
 fields = {f["key"]: f for f in json.load(open(S.meta_path(S.stage(MINE)[1])))["fields"]}
 same("the header: kinds by name, editable; a kind's title stands in as its name",
-     (fields["kinds"]["value"], fields["kinds"]["editable"]), ("", True))
+     (fields["kinds"]["value"], fields["kinds"]["editable"]), ("poem", True))
 found = S.backlinks(B(), POEM)
-same("backlinks of a kind: the blocks of that kind", [(x["kind"], x["by"], x["home"]) for x in found], [("kind", M1, MINE)])
+same("backlinks of a kind: the blocks of that kind", [(x["kind"], x["by"], x["home"]) for x in found], [("kind", MINE, MINE)])
 same("  summed up", S.backlink_summary(found), "1 · 1 block of this kind")
-S.set_kinds(O1, "not poem")
+S.set_kinds(OTHER, "not poem")
 same("  a no isn't one", len(S.backlinks(B(), POEM)), 1)
 check("an empty kind isn't 'empty': kept (it has its name)", not S.is_empty_untitled({POEM: blk(POEM, {"kind": "x", "blocks": []})}, POEM))
 fresh()
-S.set_kinds(M1, "")
-S.transact(lambda data, blocks: blocks[POEM]["content"].update(blocks=[]))
+S.set_kinds(MINE, "")
+S.transact(S.editing(lambda data, blocks: blocks[POEM]["content"].update(blocks=[])))
 S.cmd_migrate(None)
 check("  migrate keeps an empty kind", POEM in B() and B()[POEM].get("entry"))
 fresh()
 S.delete_entry(POEM)
-same("deleting a kind drops the answers about it", (POEM in B(), S.kinds_of(B()[M1])), (False, {}))
+same("deleting a kind drops the answers about it", (POEM in B(), S.kinds_of(B()[MINE])), (False, {}))
 
-# --- Turn into a quote: what it is goes with what it holds; a kind's own blocks too -----------------------------
+# --- only a pericope has kinds; Turn into a quote leaves them where they were; a kind's own blocks too ---------------
 fresh()
+try: S.set_kinds(M1, "poem"); refused = False
+except S.StoreError: refused = True
+check("set_kinds on a block inside a pericope: refused (only a pericope has kinds)", refused)
+try: S.set_kind(M1, POEM, True); refused = False
+except S.StoreError: refused = True
+check("  set_kind too", refused)
+S.transact(S.editing(lambda data, blocks: blocks[M1].update(kinds={POEM: False})))
+same("  a block moved inside one (as a paste might) loses its answers on the write", S.kinds_of(B()[M1]), {})
 entry, _, rec = S.pop_out(M1)
 b = B()
-moved = S.children(b[entry])[0]
-same("Turn into a quote on a poem: its kinds go with its words, not onto the quote",
-     (S.kinds_of(b[moved]), S.kinds_of(b[M1]), S.quoted(b[M1])[0]), ({POEM: True}, {}, entry))
+same("Turn into a quote inside a poem: the pericope still a poem, the new one not",
+     (S.kinds_of(b[MINE]), S.kinds_of(b[entry]), S.quoted(b[M1])[0]), ({POEM: True}, {}, entry))
 S.restore(rec)
-same("  undone: the poem as it was", (S.kinds_of(B()[M1]), B()[M1]["content"]), ({POEM: True}, "roses are red\nviolets are blue"))
 entry, _, _ = S.pop_out(PD)
 same("  a block of a kind's description: quoted there, the kind still a kind",
      (S.kind_of(B()[POEM]), S.quoted(B()[PD])[0]), ("poem", entry))
@@ -159,24 +170,24 @@ same("  a kind's description both sides added to: merged, still a kind", F.loro_
 
 # --- search: a kind's name brings the kind first, then its blocks ------------------------------------------------
 fresh()
-S.set_kinds(O1, "poem")
+S.set_kinds(OTHER, "poem")
 lib = S.build_library(S.load_data())
 refs = sorted((r for r, e in lib.items() if e["entry"]), reverse=True)
 p = Picker(lib, refs, inside=blocks_inside(lib, refs))
 same("nothing typed: a kind's row, just its name (drawn blue)", [r[1] for r in p.rows() if r[0] == POEM], ["poem"])
 p.query = "Poem"
 same("its name typed (any case): the kind first, the blocks of that kind under it, oldest first",
-     [(r[0], r[1]) for r in p.rows()[:3]], [(POEM, "poem"), (M1, "  · roses are red"), (O1, "  · an old pond")])
-check("  each once", [r[0] for r in p.rows()].count(M1) == 1, p.rows())
+     [(r[0], r[1]) for r in p.rows()[:3]], [(POEM, "poem"), (MINE, "  · mine"), (OTHER, "  · other")])
+check("  each once", [r[0] for r in p.rows()].count(MINE) == 1, p.rows())
 p.query = "poe"
-check("  a part of it: an ordinary search (no blocks of that kind)", M1 not in [r[0] for r in p.rows()], p.rows())
+check("  a part of it: an ordinary search (no blocks of that kind)", MINE not in [r[0] for r in p.rows()], p.rows())
 link = Picker(lib, refs)
 link.query = "poem"
 check("  Link to an entry (not a search over blocks): no kind-first rows", [r[0] for r in link.rows()] == [POEM], link.rows())
 
 # --- the kinds line: tokens, the kinds picker, one undo each -------------------------------------------------
 fresh()
-S.set_kinds(H1, "letter"); S.set_kinds(H1, "")   # a kind "letter", no block of it
+S.set_kinds(HOST, "letter"); S.set_kinds(HOST, "")   # a kind "letter", no block of it
 LET = S.kind_named(B(), "letter")
 t = open_("other")   # one block: the cursor on its first line of text
 t.key(UP)
@@ -241,11 +252,11 @@ t.key(Q, ESC); t.done()
 
 # --- renaming a kind: its title field is its name --------------------------------------------------------------
 fresh()
-S.set_kinds(H1, "letter")
+S.set_kinds(HOST, "letter")
 rec = S.rename_kind(POEM, "  Free   verse ")
 same("rename_kind: the name, its spacing tidied", S.kind_of(B()[POEM]), "Free verse")
 check("  everything reads it: the title, the answers' text, a search", S.display_title(B(), POEM) == "Free verse"
-      and S.kinds_text(B(), B()[M1]) == "Free verse" and S.kind_named(B(), "free verse") == POEM)
+      and S.kinds_text(B(), B()[MINE]) == "Free verse" and S.kind_named(B(), "free verse") == POEM)
 S.restore(rec)
 same("  undone (restore): its old name", S.kind_of(B()[POEM]), "poem")
 for name, why in (("  ", "a kind needs a name"), ("LETTER", "there's a kind called letter already")):
@@ -255,9 +266,9 @@ for name, why in (("  ", "a kind needs a name"), ("LETTER", "there's a kind call
 S.rename_kind(POEM, "Poem")
 same("  its own name in another case: fine", S.kind_of(B()[POEM]), "Poem")
 fresh()
-S.set_kinds(H1, "letter"); S.set_kinds(OTHER, "poem")
-S.transact(lambda data, blocks: (S.add_block(data, blocks, "20261003T100000-c002", {"quote": POEM}),
-                                 blocks[HOST]["content"].append("20261003T100000-c002")))
+S.set_kinds(HOST, "letter"); S.set_kinds(OTHER, "poem")
+S.transact(S.editing(lambda data, blocks: (S.add_block(data, blocks, "20261003T100000-c002", {"quote": POEM}),
+                                 blocks[HOST]["content"].append("20261003T100000-c002"))))
 t = open_("poem")
 t.key(UP)
 y = row_of(t, "title")
@@ -282,18 +293,22 @@ t.key(Q, ESC); t.done()
 t = open_("host")
 check("  a quote of it, its top line", "kind: verse" in t.text(), t.text())
 t.key(ENTER, "/", ENTER, *"verse")
-check("  the quote search, by its new name (no prefix)", row_of(t, "· roses are red") is not None
-      and "verse" in t.row(row_of(t, "· roses are red") - 1), t.text())
+check("  the quote search, by its new name (no prefix)", row_of(t, "· mine") is not None
+      and "verse" in t.row(row_of(t, "· mine") - 1), t.text())
 t.key(ESC, ESC, Q, ESC); t.done()
 
 # --- every pericope's header says its type -----------------------------------------------------------------
 same("block_type over the content cases", [S.block_type(blk(M1, c)) for c in
      ("text", [], {"image": "a.png"}, {"quote": M1}, {"kind": "poem", "blocks": []})], ["text", "block", "image", "quote", "kind"])
 same("type_label: a kind's says which", [S.type_label(blk(M1, c)) for c in ({"kind": "poem", "blocks": []}, [PD])], ["kind: poem", "block"])
+b = B()
+same("  a pericope's, given the blocks: its one block's type, else 'pericope'",
+     [S.type_label(b[MINE], b), S.type_label(b[OTHER], b), S.type_label({**b[OTHER], "content": []}, b), S.type_label(b[M1], b)],
+     ["pericope", "text", "pericope", "text"])
 fresh()
 TX, QT = "20261006T100000-f000", "20261006T100000-f001"
-S.transact(lambda data, blocks: (S.add_block(data, blocks, TX, "just text", "tx", entry=True),
-                                 S.add_block(data, blocks, QT, {"quote": OTHER}, "qt", entry=True)))
+S.transact(S.editing(lambda data, blocks: (S.add_block(data, blocks, TX, "just text", "tx", entry=True),
+                                 S.add_block(data, blocks, QT, {"quote": OTHER}, "qt", entry=True))))
 for title, label in (("mine", " block "), ("poem", " kind: poem "), ("tx", " text "), ("qt", " quote ")):
     t = open_(title)
     check(f"{title}: its header's top line says {label.strip()}", label in t.row(0), t.row(0))
@@ -311,7 +326,7 @@ same("writing in it: its description", (S.kind_of(B()[POEM]), S.own_text(B(), PO
 check("  the backlinks field counts the blocks of this kind", "1 · 1 block of this kind" in t.text(), t.text())
 t.key(Q, ESC); t.done()
 check("quit: still a kind, still a pericope", S.kind_of(B()[POEM]) == "poem" and B()[POEM].get("entry"))
-S.transact(lambda data, blocks: blocks[POEM]["content"].update(blocks=[]))
+S.transact(S.editing(lambda data, blocks: blocks[POEM]["content"].update(blocks=[])))
 t = open_("poem"); t.key(Q, ESC); t.done()
 check("  an empty kind opened and left: kept (not an empty pericope)", POEM in B() and B()[POEM].get("entry"))
 
@@ -319,7 +334,7 @@ check("  an empty kind opened and left: kept (not an empty pericope)", POEM in B
 fresh()
 t = open_("host")
 t.key(ENTER, "/", ENTER, *"poem")
-y = row_of(t, "· roses are red")
+y = row_of(t, "· mine")
 check("the quote search: its name typed, the kind first, its blocks under it",
       y is not None and t.row(y - 1).split("│")[1].strip().startswith("poem") and "kind:" not in t.row(y - 1), t.text())
 same("  the kind's row blue, no prefix", t.cell(y - 1, t.row(y - 1).index("poem")).fg, BLUE)
@@ -343,8 +358,8 @@ t.key(Q, ESC); t.done()
 
 # --- selected whole, copy, paste, cut, and undo ---------------------------------------------------------------
 fresh()
-S.transact(lambda data, blocks: (S.add_block(data, blocks, "20261003T100000-c002", {"quote": POEM}),
-                                 blocks[HOST]["content"].append("20261003T100000-c002")))
+S.transact(S.editing(lambda data, blocks: (S.add_block(data, blocks, "20261003T100000-c002", {"quote": POEM}),
+                                 blocks[HOST]["content"].append("20261003T100000-c002"))))
 QK = "20261003T100000-c002"
 t = open_("host")
 t.key(UP)   # (from the end, onto the quote of the kind)
@@ -360,30 +375,14 @@ t.key(Q, ESC); t.done()
 
 fresh()
 t = open_("mine")   # the cursor at the end of "buy milk"; the poem above it
-t.key(UP, UP, ESC)
-check("a block of a kind selected whole", "block 1" in bar(t) or "blocks 1" in bar(t), bar(t))
-t.key(CUT); t.settle()
-check("cut: out of the pericope, kept while the clipboard holds it", M1 not in S.children(B()[MINE]) and M1 in B(), S.children(B()[MINE]))
+t.key(UP, UP, ESC, CUT); t.settle()
 t.key(Q); t.until(lambda: "pericope" in t.text())
 t.key(*"host", ENTER)   # home: open host
 t.until(lambda: "host text" in t.text())
 t.key(PASTE); t.settle()
-same("^V in another pericope moves it there, the same block, still a poem",
-     (M1 in S.children(B()[HOST]) or any(M1 in S.subtree(B(), k) for k in S.children(B()[HOST])), S.kinds_of(B()[M1])),
-     (True, {POEM: True}))
-t.key(Q, ESC); t.done()
-
-# --- Turn into a quote and open it, in the editor ------------------------------------------------------------
-fresh()
-t = open_("mine")
-t.key(UP, UP, CTRL_ST)
-check("ctrl+shift+t on a poem: turned into a quote and opened", t.until(lambda: "mine ›" in bar(t)) and "roses are red" in t.text(), bar(t))
-b = B()
-moved = next(k for k in S.of_kind(b, POEM))
-same("  what it is went with its words", (S.home_of(b, moved)[0] != MINE, S.kinds_of(b[M1])), (True, {}))
-t.key(Q); t.settle()
-t.key(Z); t.settle()
-same("  ^Z: back as it was, a poem in mine", (S.kinds_of(B()[M1]), B()[M1]["content"]), ({POEM: True}, "roses are red\nviolets are blue"))
+same("a block cut from a poem and pasted elsewhere: it moves, the poem's kinds stay with the poem",
+     (M1 in S.children(B()[HOST]) or any(M1 in S.subtree(B(), k) for k in S.children(B()[HOST])), S.kinds_of(B()[M1]),
+      S.kinds_of(B()[MINE]), S.kinds_of(B()[HOST])), (True, {}, {POEM: True}, {}))
 t.key(Q, ESC); t.done()
 
 # --- home: the kind and its blocks first; Enter opens -------------------------------------------------------
@@ -391,7 +390,7 @@ fresh()
 t = F.fw("open", rows=30, env=ENV)
 check("home lists a kind by its name, blue (no prefix)", "kind:" not in t.text() and fg(t, "poem")[0] == BLUE, t.text())
 t.key(*"poem")
-y = row_of(t, "· roses are red")
+y = row_of(t, "· mine")
 check("its name typed: the kind first, the poem under it", y is not None and "poem" in t.row(y - 1), t.text())
 t.key(DOWN, ENTER)
 check("Enter on the poem: opens where it lives", t.until(lambda: "buy milk" in t.text()) and "title      mine" in t.text(), t.text())

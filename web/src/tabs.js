@@ -2,9 +2,10 @@
 // top-level block down to the one you're in (or have selected whole), gets a tab level with its top, joined to its
 // box by a line: labelled by its place among its siblings, the top level numbered, then letters, then roman numerals,
 // then numbers again. Only the focus's tab is bright (filled when it's selected whole); the path's are faint. Each is
-// centred on its block's first line, the focus's always; one that would overlap another moves just above or below the
-// others, wherever its line still meets its own box (never a line pointing at nothing). Measured here from the DOM's
-// marks (editor.js: fw-current, fw-here, fw-chosen); drawn by Tabs.svelte.
+// centred on its block's first line, unless boxes start on that one line: then stacked, the outer ones above, as they
+// nest (worked out from the page alone, not from which tabs show), each line still meeting its own box. Which blocks
+// are on the path comes from the editors' states (editor.svelte.js focusOf, the audit of 2026-11-19: never read back
+// from the page's classes); only where their boxes are is measured here; drawn by Tabs.svelte.
 
 const BOX = ".fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image";
 const GAP = 3;   // px between tabs moved apart
@@ -29,7 +30,7 @@ function path(e, frame) {
 function firstLine(b) {
   const w = document.createTreeWalker(b, NodeFilter.SHOW_TEXT);
   for (let n; (n = w.nextNode());) {
-    if (!n.data.trim() || n.parentElement.closest(".fw-top, .fw-tabs")) continue;   // (its writing: not a quote's top line, its ↗)
+    if (!n.data.trim() || n.parentElement.closest(".fw-top, .fw-tabs, .fw-open")) continue;   // (its writing: not a quote's top line, its ↗)
     const r = document.createRange();
     r.setStart(n, 0); r.setEnd(n, 1);
     const rect = r.getBoundingClientRect();
@@ -44,64 +45,120 @@ function place(e) {
   return kids.indexOf(e) + 1;
 }
 
+/** Where you are (editor.svelte.js focusOf: the editor you're in, what's drawn there) as boxes on the page:
+ * {focus, first, last, chosen}, the block in focus (the first of blocks selected whole), the run's first and last, and
+ * whether they're selected whole; or null. Each box is its node's own element (the view's nodeDOM). */
+export function focusBoxes(f) {
+  if (!f || f.editor.gone) return null;
+  const view = f.editor.view;
+  if (f.from === null) {   // (in it, nothing of it drawn: a quote showing one block, the quote)
+    const q = f.editor.holder?.dom;
+    return q ? { focus: q, first: q, last: q, chosen: false } : null;
+  }
+  const first = view.nodeDOM(f.from), last = view.nodeDOM(f.to);
+  return first?.nodeType === 1 && last?.nodeType === 1 ? { focus: first, first, last, chosen: f.chosen } : null;
+}
+
 /** The tabs where you are on the page in `doc` (.fw-doc), measured: [{box, label, focus, filled, quote, left, top,
- * width, height, lineLeft, lineWidth}] in .fw-doc's coordinates (none when you're nowhere in it). Tabs.svelte
- * draws them. */
-export function tabsIn(doc) {
+ * width, height, lineLeft, lineWidth}] in .fw-doc's coordinates (none when you're nowhere in it). `here`: where you are
+ * (focusBoxes). Tabs.svelte draws them. */
+export function tabsIn(doc, here) {
   const frame = doc?.querySelector(":scope > .ProseMirror");
-  if (!frame) return [];
-  const focus = document.querySelector(".fw-current .fw-chosen") || document.querySelector(".fw-current .fw-here")
-    || document.querySelector(".fw-current")?.closest(".fw-quote");   // (in a quote showing one block: the quote)
+  if (!frame || !here) return [];
+  const focus = here.focus;
   if (!focus || !frame.contains(focus)) return [];
   const boxes = path(focus.matches(BOX) ? focus : focus.closest(BOX), frame);
   if (!boxes.length) return [];
   const d = doc.getBoundingClientRect(), f = frame.getBoundingClientRect();
   const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
   const tabW = 1.6 * rem, tabH = 1.45 * rem, left = f.left - d.left - 1.1 * rem - tabW;   // (the numbers' column; tall enough for any label)
-  // (never a tab whose line misses its box: each tab's middle stays within its own box's top and bottom, `pad` in from
-  // each (the user, 2026-11-19: padding at both ends, things pushed down to make it). The focus's goes on its line;
-  // each around it, from the inside out, takes the first of its own line, just above the tabs placed, just above them
-  // with them nudged down just enough to make room (an outer block starting on the inner one's line: the outer's tab
-  // above the inner's, as the boxes nest; only if every tab nudged still meets its own box, padded), just below them;
-  // that clears them and keeps its line on its box. Placed with the padding if every tab fits so; else tight, a line
-  // that then meets its box just under the corner coming in along the box's top edge instead)
-  const want = boxes.map((b) => firstLine(b) - d.top - tabH / 2);
-  const rects = boxes.map((b) => b.getBoundingClientRect());
-  function stack(pad) {
-    const tops = [], ranges = [];
-    let fits = true;
-    const placed = () => tops.map((t, k) => k).filter((k) => tops[k] !== undefined);
-    const clear = (t) => placed().every((k) => t + tabH + GAP <= tops[k] || t >= tops[k] + tabH + GAP);
-    for (let i = boxes.length - 1; i >= 0; i--) {
-      const r = rects[i], lo = r.top - d.top + pad - tabH / 2, hi = r.bottom - d.top - pad - tabH / 2;
-      ranges[i] = [lo, hi];
-      const onBox = (t) => t >= lo && t <= hi;
-      const ks = placed(), first = ks.length ? Math.min(...ks.map((k) => tops[k])) : want[i];
-      const above = first - GAP - tabH, below = ks.length ? Math.max(...ks.map((k) => tops[k])) + tabH + GAP : want[i];
-      let t = [want[i], above].find((x) => onBox(x) && clear(x));
-      if (t === undefined && ks.length && above < lo && lo <= hi) {   // above, the rest nudged down by what it lacks
-        const by = lo - above;
-        if (ks.every((k) => tops[k] + by <= ranges[k][1])) { for (const k of ks) tops[k] += by; t = lo; }
-      }
-      t ??= [below].find((x) => onBox(x) && clear(x));
-      if (t === undefined) { fits = false; t = Math.min(Math.max(want[i], lo), hi); }
-      tops[i] = t;
+  // Where each tab goes is worked out from the page alone, never from which other tabs show (the user, 2026-11-19:
+  // every block's tab "positioned, just not visible until they are needed"): boxes starting on one line (a box and its
+  // first box inside, and so on down: its first-line chain) stack their tabs, the innermost on the line, each outer one
+  // a tab above, as the boxes nest; the whole stack pushed down just enough for each line to stay on its own box, padded
+  // from its ends (PAD, or as much of it as fits); if not even that, tight (a line just under its box's corner coming in
+  // along its top edge).
+  const top = (b) => b.getBoundingClientRect().top - d.top, bottom = (b) => b.getBoundingClientRect().bottom - d.top;
+  const line = (b) => firstLine(b) - d.top;
+  const same = (a, b) => Math.abs(line(a) - line(b)) < 1;
+  const up = (b) => { const p = b.parentElement?.closest(BOX); return p && frame.contains(p) ? (ownBox(p) ? p : up(p)) : null; };
+  const firstIn = (b) => { const k = b.querySelector(BOX); return k && !ownBox(k) ? firstIn(k) : k; };
+  function chainOf(b) {   // the boxes starting on b's line, outermost first
+    let outer = b;
+    for (let p = up(outer); p && same(p, b); p = up(p)) outer = p;
+    const out = [outer];
+    for (let k = firstIn(outer); k && same(k, outer); k = firstIn(k)) out.push(k);
+    return out;
+  }
+  function stack(chain, pad) {   // the chain's tops: innermost on the line, outer ones above, pushed down to fit
+    const at = line(chain[chain.length - 1]) - tabH / 2;
+    const tops = chain.map((b, i) => at - (chain.length - 1 - i) * (tabH + GAP));
+    const by = Math.max(0, ...chain.map((b, i) => top(b) + pad - tabH / 2 - tops[i]));
+    const placed = tops.map((t) => t + by);
+    return { tops: placed, fits: chain.every((b, i) => placed[i] <= bottom(b) - pad - tabH / 2) };
+  }
+  const where = new Map();   // box → its tab's top
+  for (const b of boxes) {
+    if (where.has(b)) continue;
+    const chain = chainOf(b);
+    // (as much padding as fits, up to PAD: found by halving, so a box growing or shrinking moves its tabs smoothly,
+    // never from one rule to another at once)
+    let { tops: ts, fits } = stack(chain, PAD * tabH);
+    if (!fits && stack(chain, 2).fits) {
+      let lo = 2, hi = PAD * tabH;
+      for (let i = 0; i < 12; i++) { const mid = (lo + hi) / 2; if (stack(chain, mid).fits) lo = mid; else hi = mid; }
+      ({ tops: ts, fits } = stack(chain, lo));
     }
-    return { tops, fits };
+    if (!fits) {   // tight: each on its own box (clamped), a line just under its box's corner snapped to the top edge
+      ts = stack(chain, 2).tops.map((t, i) => Math.min(t, bottom(chain[i]) - 2 - tabH / 2));
+      const SNAP = 0.4 * tabH;
+      chain.forEach((b, i) => {
+        const edge = top(b), mid = ts[i] + tabH / 2, t = edge - tabH / 2;
+        if (mid > edge && mid - edge < SNAP && ts.every((u, k) => k === i || t + tabH + GAP <= u || t >= u + tabH + GAP)) ts[i] = t;
+      });
+    }
+    chain.forEach((c, i) => where.set(c, ts[i]));
   }
-  const padded = stack(PAD * tabH);
-  const tops = padded.fits ? padded.tops : stack(2).tops;
-  if (!padded.fits) {   // (tight: a line just under its box's corner comes in along the top edge, the user, 2026-11-19)
-    const SNAP = 0.4 * tabH;
-    boxes.forEach((b, i) => {
-      const edge = rects[i].top - d.top, mid = tops[i] + tabH / 2, t = edge - tabH / 2;
-      const others = tops.filter((u, k) => k !== i);
-      if (mid > edge && mid - edge < SNAP && others.every((u) => t + tabH + GAP <= u || t >= u + tabH + GAP)) tops[i] = t;
-    });
-  }
+  const tops = boxes.map((b) => where.get(b));
   return boxes.map((b, level) => {
     const r = b.getBoundingClientRect(), focusHere = b === boxes[boxes.length - 1];
-    return { box: b, label: label(place(b), level), focus: focusHere, filled: focusHere && b.matches(".fw-chosen"), quote: b.matches(".fw-quote"),
+    return { box: b, label: label(place(b), level), focus: focusHere, filled: focusHere && b === focus && here.chosen, quote: b.matches(".fw-quote, .fw-para"),
       left, top: tops[level], width: tabW, height: tabH, lineLeft: left + tabW, lineWidth: Math.max(0, r.left - d.left - left - tabW) };
   });
+}
+
+/** The lines linking the deepest block that's active (the one you're in, or selected whole; a quote showing one block,
+ * you in it, is that block) to the blocks just before and after it at its level (the user, 2026-11-19: every level a
+ * chain of blocks, linked; the lines seen only as the active block and its glow are): [{left, top, height, from, to}]
+ * in .fw-doc's coordinates, each a line at the text's column, from the neighbour's lit colour to the active one's. */
+export function linksIn(doc, here) {
+  const frame = doc?.querySelector(":scope > .ProseMirror");
+  if (!frame || !here) return [];
+  const focus = here.focus;
+  if (!focus || !frame.contains(focus)) return [];
+  const boxes = path(focus.matches(BOX) ? focus : focus.closest(BOX), frame);
+  let first = boxes.at(-1), last = first;
+  if (!first) return [];
+  const sib = (e, dir) => { let x = dir < 0 ? e.previousElementSibling : e.nextElementSibling; while (x && !x.matches(BOX)) x = dir < 0 ? x.previousElementSibling : x.nextElementSibling; return x; };
+  const chosen = here.chosen && first === focus;
+  if (chosen) { first = here.first; last = here.last; }   // (several selected whole: the run's ends)
+  // (every line on one x, the page's text column, as the header's line: not stepped in with the depth, the user, 2026-11-19)
+  const d = doc.getBoundingClientRect(), cs = getComputedStyle(first), root = getComputedStyle(document.documentElement);
+  const rem = parseFloat(root.fontSize), at = (v) => parseFloat(root.getPropertyValue(v)) * rem;
+  const x = frame.getBoundingClientRect().left - d.left + 3 * at("--u") + at("--pad");   // (--text-at)
+  // (each end its box's own lit colour, never its border as drawn: that may be easing in, and a line measured then kept
+  // its half-way colour, the user, 2026-11-22)
+  const level = chosen ? "--own-bright" : "--own-mid";
+  const own = (e) => getComputedStyle(e).getPropertyValue(level).trim() || cs.borderTopColor;
+  const lit = own(first);
+  const out = [], before = sib(first, -1), after = sib(last, 1);
+  if (before) {
+    const a = before.getBoundingClientRect().bottom, b = first.getBoundingClientRect().top;
+    if (b > a) out.push({ left: x, top: a - d.top, height: b - a, from: own(before), to: lit });
+  }
+  if (after) {
+    const a = last.getBoundingClientRect().bottom, b = after.getBoundingClientRect().top;
+    if (b > a) out.push({ left: x, top: a - d.top, height: b - a, from: lit, to: own(after) });
+  }
+  return out;
 }

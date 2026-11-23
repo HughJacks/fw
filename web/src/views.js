@@ -17,13 +17,25 @@ function textEl(text) {
   return d;
 }
 
-/** A quote's top line: what it shows of its source (its `show`), the lock, a way to open it. */
+/** A date as the headers show it ("Nov 19, 2026, 11:00 PM"). */
+export function prettyDate(iso) {
+  return iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+}
+
+/** A quote's top line: a mini header, in the main header's style (the user, 2026-11-19), of what it shows of its source
+ * (its `show`): a line of facts (the lock, its words, made, last update), then its title; empty, nothing shown. And a
+ * way to open it. */
 function topLine(q, open) {
   const top = el("div", "fw-top");
-  const words = [];
-  if (q.lock) words.push("⊘");
-  if (q.show && q.show.includes("title")) words.push(q.title);
-  top.appendChild(el("span", "fw-top-label", words.join(" ")));
+  const show = q.show || [], facts = [];
+  if (q.lock) facts.push("⊘");
+  if (show.includes("words")) facts.push(`words ${q.words ?? 0}`);
+  if (show.includes("created") && q.created) facts.push(`made ${prettyDate(q.created)}`);
+  if (show.includes("updated") && q.updated) facts.push(`updated ${prettyDate(q.updated)}`);
+  const label = el("span", "fw-top-label");   // (left empty, no whitespace, when there's nothing: the CSS hides it)
+  if (facts.length) label.appendChild(el("div", "fw-mini-facts", facts.join(" · ")));
+  if (show.includes("title")) label.appendChild(el("div", "fw-mini-title", q.title));
+  top.appendChild(label);
   if (open && q.target) {
     const go = el("button", "fw-open", "↗");
     go.title = "Open it (^O)";
@@ -37,10 +49,11 @@ function topLine(q, open) {
 export function drawBody(box, items, open) {
   for (const item of items || []) {
     if (item.t === "text") box.appendChild(textEl(item.text));
-    else if (item.t === "image" && item.file) {
-      const img = el("img", "fw-pic");
+    else if (item.t === "image" && item.file) {   // (in a block's box, as a picture anywhere: at the text's column, 2026-11-19)
+      const pic = el("div", "fw-image"), img = el("img", "fw-pic");
       img.src = `/images/${item.file}`;
-      box.appendChild(img);
+      pic.appendChild(img);
+      box.appendChild(pic);
     } else if (item.t === "quote") box.appendChild(quoteEl(item, open, true));
     else box.appendChild(el("div", "fw-note", item.text || ""));
   }
@@ -49,21 +62,12 @@ export function drawBody(box, items, open) {
 /** A quote's box: its top line, then what it shows. */
 export function quoteEl(q, open, inner = false) {
   const box = el("div", inner ? "fw-quote fw-inner" : "fw-quote");
-  if (q.home || q.target) box.dataset.pericope = q.home || q.target;   // (where Open it goes: motion.js zooms from or to it)
+  if (q.home || q.target) box.dataset.pericope = q.home || q.target;   // (where Open it goes: motion.js steps from or to it)
+  if (q.target) box.dataset.target = q.target;   // (what it quotes: the pericope, or a block in it, a step arrives at)
   if (q.lock) box.classList.add("fw-locked");
   box.appendChild(topLine(q, inner ? null : open));
   const body = el("div", "fw-body");
   drawBody(body, q.body, open);
   box.appendChild(body);
   return box;
-}
-
-/** The node view of a quote in the document: drawn from its data, never edited here. */
-export class QuoteView {
-  constructor(node, open) {
-    this.dom = quoteEl(node.attrs.data || { target: node.attrs.target, body: [] }, open);
-    this.dom.contentEditable = "false";
-  }
-  stopEvent() { return false; }
-  ignoreMutation() { return true; }
 }

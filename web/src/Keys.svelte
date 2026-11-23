@@ -7,7 +7,7 @@
   import { ui } from "./state.svelte.js";
 
   let { home } = $props();   // (Esc: home)
-  const where = { editor: "writing", home: "home", everywhere: "anywhere" };
+  const where = { editor: "writing", home: "home", everywhere: "anywhere", kinds: "a kind's list" };
   let note = $state("");
   let rows = [];   // (each row's element, to move the focus)
   let rowsShown = $derived(COMMANDS.map((c) => ({ ...c, key: pretty(keyOf(c.id)), mine: !!userKeys()[c.id] })));

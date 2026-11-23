@@ -24,8 +24,11 @@ export const COMMANDS = [
   { id: "forward", label: "Step in again: forward along the trail", where: "everywhere", key: "Mod-]" },
   { id: "home", label: "Home", where: "everywhere", key: "Mod-Shift-h" },
   { id: "keys", label: "This page: the keys", where: "everywhere", key: "Mod-Shift-," },
+  { id: "kinds", label: "The kinds view: every kind, and what's of it", where: "everywhere", key: "Mod-Shift-u" },
+  { id: "kindYes", label: "Yes, it's of this kind (a guess, in a kind's list)", where: "kinds", key: "y" },
+  { id: "kindNo", label: "No, it isn't (a guess, or one of yours taken out, in a kind's list)", where: "kinds", key: "n" },
+  { id: "kindDelete", label: "Delete the kind selected, in the kinds view (asked first)", where: "kinds", key: "Mod-Backspace" },
   { id: "deleteHome", label: "Delete the pericope selected, on home (asked first)", where: "home", key: "Mod-Backspace" },
-  { id: "list", label: "Home as a list or a grid of cards", where: "home", key: "Mod-g" },
 ];
 
 /** Keys a browser keeps for itself (a page can't have them, or shouldn't). */

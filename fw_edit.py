@@ -614,7 +614,7 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
         self.refresh_library()
         made = {}
         if bid not in self.library:  # (not saved: empty) loose for now, the save takes it in
-            made[bid] = store.new_block(bid, "")
+            made[bid] = store.new_block(bid, "", now=store.now_local())
         kept = store.subtree(self.library, self.cur_id) if self.cur_id in self.library else []
         undo = {"blocks": {**{i: None for i in made}, **{i: copy.deepcopy(self.library[i]["block"]) for i in kept}}}
         if made:
@@ -2024,7 +2024,7 @@ class Editor(Layout, MaskEditing, Commands, BlockPicking):
             return
         try:
             iid = store.new_id(self.taken())
-            store.restore({"blocks": {iid: store.new_block(iid, {"image": name}, entry=True)}}, tidy=False)
+            store.restore({"blocks": {iid: store.new_block(iid, {"image": name}, entry=True, now=store.now_local())}}, tidy=False)
             qid = self.fresh(self.outer(self.cy))  # (its quote, where the cursor is: the save makes it)
         except (store.StoreError, OSError, ValueError) as e:
             self.message = str(e)

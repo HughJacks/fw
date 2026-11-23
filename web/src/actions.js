@@ -22,8 +22,8 @@ export function commands(editor, ctx) {
   if (shows && !shows.data?.locked) out.push({ name: "mask", label: shows.data?.masked ? "Edit mask" : "Create mask", key: pretty(keyOf("mask")),
     note: "choose what it shows, with [ ]" });
   const para = !q && ctx.block?.para;
-  if (q || ctx.link || para || editor.exit) out.push({ name: "open", label: "Open it", key: pretty(keyOf("open")),
-    note: q ? "its source, as the pericope you're in" : ctx.link ? "the pericope it links to" : para ? "the block it paraphrases"
+  if (q || ctx.link || para || ctx.para || editor.exit) out.push({ name: "open", label: "Open it", key: pretty(keyOf("open")),
+    note: q ? "its source, as the pericope you're in" : ctx.link ? "the pericope it links to" : (para || ctx.para) ? "the block it paraphrases"
       : "the quote you're in, as the pericope, here" });
   if (para && !editor.lens) out.push({ name: "peek", label: editor.peeking.has(ctx.block.id) ? "Hide its source" : "Show its source",
     note: "its source's text, dim, inside it", stays: true });
@@ -91,9 +91,9 @@ export function actions({ root, reload, go, gone, title }) {
     const q = ctx.quote, shows = q || ctx.within;
     switch (name) {
       case "open":
-        if (q) editor.open(q.data || { target: q.target });
+        if (q) editor.open({ ...(q.data || { target: q.target }), whole: !ctx.within });
         else if (ctx.link) editor.open({ target: ctx.link.to });
-        else if (ctx.block?.para) editor.open({ target: ctx.block.para.id, home: ctx.block.para.home });
+        else if (ctx.para || ctx.block?.para) { const p = ctx.para || ctx.block.para; editor.open({ target: p.id, home: p.home }); }
         else if (editor.exit) editor.open({ target: editor.id, at: ctx.block && ctx.block.id });
         return false;
       case "detach":
@@ -112,8 +112,10 @@ export function actions({ root, reload, go, gone, title }) {
         }
         const got = await post({ do: "popout", block });
         if (!got) return false;
-        if (name === "popopen") { go(`#/p/${got.id}`); return false; }
-        await reload();
+        const at = await reload();   // (the cursor kept, through the quote now)
+        // … and open it: from there, as Open it does from inside a quote, a step into it (the same pop out, then the
+        // same step: 2026-11-19); the cursor not in it (the page left meanwhile), just opened
+        if (name === "popopen") { if (!at?.openHere?.()) go(`#/p/${got.id}`); return false; }
         say("a pericope of its own now, quoted here");
         return false;
       }
@@ -187,8 +189,7 @@ export function actions({ root, reload, go, gone, title }) {
         if (shows && (await post({ do: "showall", quote: shows.id }))) { await reload(shows.id); say("all of it shown"); }
         return false;
       case "lock":
-        if (shows && (await post({ do: "lock", quote: shows.id, on: !shows.data?.lock }))) await reload(shows.id);
-        return true;
+        return (shows && (await post({ do: "lock", quote: shows.id, on: !shows.data?.lock })) && (await reload(null, { focus: false }))) || true;
       case "delete": {
         if (editor !== root()) return false;
         if (!(await ask(`delete “${title()}”? quotes of it elsewhere keep its last text. this can't be undone.`))) { editor.view.focus(); return false; }
@@ -200,8 +201,8 @@ export function actions({ root, reload, go, gone, title }) {
         if (name.startsWith("show:") && shows) {
           const k = name.slice(5), now = shows.data?.show || [];
           const show = now.includes(k) ? now.filter((x) => x !== k) : [...now, k];
-          if (await post({ do: "show", quote: shows.id, show })) await reload(shows.id);
-          return true;
+          // (the menu stays open: the cursor kept where it was, the focus left in the menu; the editor it's in back)
+          return ((await post({ do: "show", quote: shows.id, show })) && (await reload(null, { focus: false }))) || true;
         }
         return false;
     }
@@ -210,8 +211,9 @@ export function actions({ root, reload, go, gone, title }) {
   function menu(editor) {   // ActionsMenu.svelte, at the cursor
     box?.dismiss(false);
     const view = editor.view;
-    box = float(ActionsMenu, view.coordsAtPos(view.state.selection.from), { editor, commands, run, root },
-      () => (editor.view.dom.isConnected ? editor : root()).view.focus());   // (back where it opened, if that's still there)
+    let at = editor;   // (where the focus goes back to: where it opened, or after a toggle, the editor the cursor's in now)
+    box = float(ActionsMenu, view.coordsAtPos(view.state.selection.from), { editor, commands, run, root, moved: (e) => { at = e; } },
+      () => (at.view.dom.isConnected ? at : root()).view.focus());   // (back there, if that's still there)
   }
 
   /** What an editor's key calls: the menu, an action, or ^Z on an action just taken. Returns whether it was handled. */

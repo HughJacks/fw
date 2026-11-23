@@ -23,11 +23,11 @@ S.cmd_migrate(None)
 name = S.add_image("t/pic.png")
 def setup(data, blocks):
     blocks[N3]["content"] = {"image": name}
-    blocks[P1]["paraphrases"] = N2   # P1 says N2 another way, and L1 says P1: one family of three
-    blocks[L1]["paraphrases"] = P1
-S.transact(setup)
+    blocks[P1]["content"] = {"paraphrase": N2, "text": blocks[P1]["content"]}   # P1 says N2 another way, and L1 says P1: one family of three
+    blocks[L1]["content"] = {"paraphrase": P1, "text": blocks[L1]["content"]}
+S.transact(S.editing(setup))
 B = S.index(S.load_data())
-same("families: the paraphrase marks joined, both ways, transitively", S.families(B).get(L1), [N2, P1, L1])
+same("families: paraphrases joined, both ways, transitively", S.families(B).get(L1), [N2, P1, L1])
 same("  a block in none has no family", S.families(B).get(N1), None)
 
 def bar(t): return t.row(t.scr.lines - 1)

@@ -26,8 +26,8 @@ def blk(i, content, title=None, entry=False, **more):
     return {"id": i, "title": title, **({"entry": True} if entry else {}), "content": content, "words": 0,
             "created": T, "updated": T, **more}
 def fresh():
-    """mine: M1 (a poem, said so) and M2; other: O1; host: H1; the kinds poem (described) and letter."""
-    blocks = [blk(MINE, [M1, M2], "mine", True), blk(M1, "roses are red\nviolets are blue", kinds={POEM: True}),
+    """mine (a poem, said so): M1 and M2; other: O1; host: H1; the kinds poem (described) and letter."""
+    blocks = [blk(MINE, [M1, M2], "mine", True, kinds={POEM: True}), blk(M1, "roses are red\nviolets are blue"),
               blk(M2, "buy milk"), blk(OTHER, [O1], "other", True), blk(O1, "an old pond"),
               blk(HOST, [H1], "host", True), blk(H1, "host text"),
               blk(POEM, {"kind": "poem", "blocks": [PD]}, entry=True), blk(PD, "a short piece in lines"),
@@ -57,32 +57,33 @@ def on(t):
 fresh()
 b = B()
 data = {"model": "m", "guesses": {
-    POEM: {M1: g(0.99), M2: g(0.95), O1: g(0.89), OTHER: g(0.9), PD: g(0.97, block_at=T2)},
-    LET: {M2: g(0.97, kind_at=T2), O1: g(1.0)},
-    "20261009T100000-gone": {M2: g(0.99)},     # a kind that's gone
-    M2: {O1: g(0.99)},                          # not a kind
+    POEM: {MINE: g(0.99), M2: g(0.99), HOST: g(0.95), OTHER: g(0.9), LET: g(0.97, block_at=T2)},
+    LET: {HOST: g(0.97, kind_at=T2), OTHER: g(1.0), O1: g(1.0)},
+    "20261009T100000-gone": {HOST: g(0.99)},   # a kind that's gone
+    M2: {OTHER: g(0.99)},                       # not a kind
 }}
 same("guessed: unanswered, current, p ≥ 0.9, kinds that exist; each block's kinds oldest first",
-     S.guessed(data, b), {M2: {POEM: 0.95}, OTHER: {POEM: 0.9}, O1: {LET: 1.0}})
-check("  M1's poem guess dropped: it's answered (answers win, a guess never shows over one)", M1 not in S.guessed(data, b))
-check("  stale: the block changed since (its updated) or the kind did", PD not in S.guessed(data, b) and LET not in S.guessed(data, b).get(M2, {}))
+     S.guessed(data, b), {HOST: {POEM: 0.95}, OTHER: {POEM: 0.9, LET: 1.0}})
+check("  mine's poem guess dropped: it's answered (answers win, a guess never shows over one)", MINE not in S.guessed(data, b))
+check("  a block inside a pericope: dropped (only a pericope has kinds)", M2 not in S.guessed(data, b) and O1 not in S.guessed(data, b))
+check("  stale: the block changed since (its updated) or the kind did", LET not in S.guessed(data, b) and LET not in S.guessed(data, b).get(HOST, {}))
 same("  the threshold is a constant: 0.9", S.GUESS_AT, 0.9)
 same("  works on the editor's library alike", S.guessed(data, S.build_library(S.load_data())), S.guessed(data, b))
 same("  a block that's gone: nothing", S.guessed({"guesses": {POEM: {"20261009T100000-x": g(0.99)}}}, b), {})
 same("  anything malformed counts for nothing",
      [S.guessed(x, b) for x in (None, {}, [], {"guesses": []}, {"guesses": {POEM: []}},
-                                 {"guesses": {POEM: {M2: [0.99, T]}}}, {"guesses": {POEM: {M2: ["0.99", T, T]}}},
-                                 {"guesses": {POEM: {M2: {"p": 0.99}}}})], [{}] * 8)
+                                 {"guesses": {POEM: {HOST: [0.99, T]}}}, {"guesses": {POEM: {HOST: ["0.99", T, T]}}},
+                                 {"guesses": {POEM: {HOST: {"p": 0.99}}}})], [{}] * 8)
 same("merge_kinds: a guess that counts is a yes, under the answers", S.merge_kinds({POEM: False}, {POEM: 0.99, LET: 0.95}),
      {POEM: False, LET: True})
-same("of_kind with them: said, and guessed", S.of_kind(b, POEM, S.guessed(data, b)), [M1, M2, OTHER])
+same("of_kind with them: said, and guessed", S.of_kind(b, POEM, S.guessed(data, b)), [MINE, OTHER, HOST])
 
 # --- I/O at the edge: the file beside the store ----------------------------------------------------------------------
 same("no file: no guesses", S.load_guesses(), {})
 open(GUESSES, "w").write('{"model": "m", "guesses": {')
 same("a broken file: no guesses", S.load_guesses(), {})
-write_guesses({POEM: {M2: g(0.95)}})
-same("the file read (again, when it changes)", S.guessed(S.load_guesses(), B()), {M2: {POEM: 0.95}})
+write_guesses({POEM: {HOST: g(0.95)}})
+same("the file read (again, when it changes)", S.guessed(S.load_guesses(), B()), {HOST: {POEM: 0.95}})
 open(GUESSES, "w").write("[1, 2]")
 same("  JSON, but not an object: none", S.load_guesses(), {})
 os.remove(GUESSES)
@@ -146,27 +147,27 @@ t.key(Q, ESC); t.done()
 
 # --- search: the kind, the blocks said to be one, then the guessed ones, dim -----------------------------------------
 fresh()
-write_guesses({POEM: {OTHER: g(0.96), M2: g(0.5)}})  # (a pericope: a guess about a block inside one is applied, review_test)
+write_guesses({POEM: {OTHER: g(0.96), HOST: g(0.5)}})
 lib = S.build_library(S.load_data())
 refs = sorted((r for r, e in lib.items() if e["entry"]), reverse=True)
 p = Picker(lib, refs, inside=blocks_inside(lib, refs), guesses=S.guessed(S.load_guesses(), lib))
 p.query = "poem"
 same("a kind's name typed: the kind, the block said to be one, then the guessed one (0.9 up: applied, so not dim)",
-     [(r[0], r[1], r[3:]) for r in p.rows()[:3]], [(POEM, "poem", ()), (M1, "  · roses are red", ()), (OTHER, "  · other", ())])
-check("  each once; under 0.9 not listed with them", [r[0] for r in p.rows()].count(OTHER) == 1 and M2 not in [r[0] for r in p.rows()[:4]], p.rows())
+     [(r[0], r[1], r[3:]) for r in p.rows()[:3]], [(POEM, "poem", ()), (MINE, "  · mine", ()), (OTHER, "  · other", ())])
+check("  each once; under 0.9 not listed with them", [r[0] for r in p.rows()].count(OTHER) == 1 and HOST not in [r[0] for r in p.rows()[:4]], p.rows())
 plain = Picker(lib, refs, inside=blocks_inside(lib, refs))
 plain.query = "poem"
 check("  without guesses: only the said", OTHER not in [r[0] for r in plain.rows()], plain.rows())
 t = F.fw("open", rows=30, env=ENV)
 t.key(*"poem")
 y = row_of(t, "· other")
-check("home: the guessed block under the poem said, applied (not dim)", y is not None and "roses are red" in t.row(y - 1) and "poem" in t.row(y - 2)
+check("home: the guessed block under the poem said, applied (not dim)", y is not None and "mine" in t.row(y - 1) and "poem" in t.row(y - 2)
       and not t.cell(y, t.row(y).index("· other") + 2).blink, t.text())
 t.key(ESC); t.done()
 t = F.fw("host", rows=30, cols=70, env=ENV)
 t.key(ENTER, "/", ENTER, *"poem")
 y = row_of(t, "· other")
-check("the quote search too", y is not None and "roses are red" in t.row(y - 1) and not t.cell(y, t.row(y).index("· other") + 2).blink, t.text())
+check("the quote search too", y is not None and "mine" in t.row(y - 1) and not t.cell(y, t.row(y).index("· other") + 2).blink, t.text())
 t.key(ESC, ESC, Q, ESC); t.done()
 
 check("the store validates throughout", not S.invalid(S.load_data(), S.load_schema()), S.invalid(S.load_data(), S.load_schema()))

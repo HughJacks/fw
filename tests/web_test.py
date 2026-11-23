@@ -26,18 +26,66 @@ def call(method, path, body=None):
         return e.code, json.loads(e.read())
 
 code, home = call("GET", "/api/home")
-same("home: every pericope, in the garden's order", (code, home["count"], sorted(r["key"] for r in home["rows"])), (200, 3, [A, B, C]))
+same("home: every pericope, a line each, in the recommendation's order", (code, home["count"], sorted(r["key"] for r in home["rows"])), (200, 3, [A, B, C]))
+# visits from the page's attention (POST /api/visit): kept by the core, written when they end or on leaving
+same("attention on a pericope and a block in it", [call("POST", "/api/visit", {"pericope": A})[0],
+     call("POST", "/api/visit", {"block": A1, "flags": "cw", "ago": 3})[0]], [200, 200])
+b = S.index(S.load_data())
+check("  not written yet (a visit under way)", not b[A1].get("visits"), b[A1].get("visits"))
+call("POST", "/api/visit", {"flush": True})
+b = S.index(S.load_data())
+check("  left: written, the block's flags as said, carried up to its pericope", "cw" in "".join(f for _, f in S.visits(b[A1]))
+      and "o" in "".join(f for _, f in S.visits(b[A])) and "c" in "".join(f for _, f in S.visits(b[A])), (b[A1].get("visits"), b[A].get("visits")))
+same("  not an edit: nothing else about them changed", S.content_hash(b, A) == S.content_hash(S.index(S.load_data()), A), True)
+code, ex = call("GET", f"/api/exits/{B}")
+same("exits from beta: alpha, which quotes it", (code, [r["key"] for r in ex["rows"]][:1]), (200, [A]))
+code, ex = call("GET", f"/api/exits/{A}")
+check("  from alpha: not beta, already on its page", code == 200 and B not in [r["key"] for r in ex["rows"]], ex)
+same("  not a pericope: 404", call("GET", "/api/exits/20991001T100000-0000")[0], 404)
 code, p = call("GET", f"/api/pericope/{A}")
 same("a pericope: its blocks as a tree", [(n["t"], n.get("id")) for n in p["children"]], [("text", A1), ("quote", QA), ("text", A2)])
 same("  a block of text, its lines", p["children"][0]["text"], "first line\nsecond line")
 q = p["children"][1]
 same("  a quote: its target, where it lives, what it shows", (q["target"], q["home"], q["body"]), (B, B, [{"t": "text", "text": "beta's words"}]))
-same("  the header", (p["shown"], p["type"], p["backlinks"], p["kinds"]), ("alpha", "block", "", ""))
+same("  the header", (p["shown"], p["type"], p["backlinks"], p["kinds"]), ("alpha", "pericope", "", ""))
+same("  every field, empty or not: last visited, created", ("visited" in p, "created" in p), (True, True))
 code, pb = call("GET", f"/api/pericope/{B}")
 same("  backlinks, when something points at it", pb["backlinks"], "1 · 1 quote")
 code, pc = call("GET", f"/api/pericope/{C}")
-same("  a container, its blocks inside", pc["children"], [{"t": "container", "id": C1, "para": None,
+same("  a container, its blocks inside", pc["children"], [{"t": "container", "id": C1,
                                                          "children": [{"t": "text", "id": C2, "text": "nested", "links": [], "para": None}]}])
+
+# the kinds view (2026-11-22): + new kind, a kind's members (your answers, newest first), on its page too
+code, nk = call("POST", "/api/act", {"do": "newkind", "name": "  song "})
+same("+ new kind: made, its name tidied", (code, S.kind_of(S.index(S.load_data())[nk["kind"]])), (200, "song"))
+same("  the same name again (case aside): that one, none made", call("POST", "/api/act", {"do": "newkind", "name": "Song"})[1]["kind"], nk["kind"])
+same("  no name: refused", call("POST", "/api/act", {"do": "newkind", "name": " "})[0] >= 400, True)
+call("POST", "/api/act", {"do": "kind", "block": A, "kind": nk["kind"], "answer": True})
+call("POST", "/api/act", {"do": "kind", "block": C, "kind": nk["kind"], "answer": True})
+code, said = call("POST", "/api/act", {"do": "kind", "block": C2, "kind": nk["kind"], "answer": True})
+same("  a block inside a pericope: refused (only a pericope has kinds)", (code >= 400, "pericope" in said.get("error", "")), (True, True))
+call("POST", "/api/act", {"do": "kind", "block": B, "kind": nk["kind"], "answer": False})
+code, kv = call("GET", "/api/kinds?members=1")
+song = next(k for k in kv["kinds"] if k["id"] == nk["kind"])
+same("  its members: yes answers only, newest first, each opening as itself",
+     [(m["key"], m["open"], m["dim"]) for m in song["members"]], [(C, C, False), (A, A, False)])
+same("  the pericopes of no kind: none of a yes, not a kind, newest first", [m["key"] for m in kv["unkinded"]],
+     sorted((i for i, b in S.index(S.load_data()).items() if b.get("entry") and i not in (A, C) and S.kind_of(b) is None), reverse=True))
+same("  without members=1: just names", "members" in call("GET", "/api/kinds")[1]["kinds"][0], False)
+same("  on the kind's own page too", [m["key"] for m in call("GET", f"/api/pericope/{nk['kind']}")[1]["members"]], [C, A])
+same("  not a kind: none", call("GET", f"/api/pericope/{A}")[1]["members"], None)
+up = {i: b.get("updated") for i, b in S.index(S.load_data()).items()}
+S.GUESSES_PATH.write_text(json.dumps({"model": "t", "guesses": {nk["kind"]: {B: [0.95, up[nk["kind"]], up[B]], C: [0.6, up[nk["kind"]], up[C]]}}}))
+call("POST", "/api/act", {"do": "kind", "block": B, "kind": nk["kind"], "answer": None})
+call("POST", "/api/act", {"do": "kind", "block": C, "kind": nk["kind"], "answer": None})
+up = {i: b.get("updated") for i, b in S.index(S.load_data()).items()}
+S.GUESSES_PATH.write_text(json.dumps({"model": "t", "guesses": {nk["kind"]: {B: [0.95, up[nk["kind"]], up[B]], C: [0.6, up[nk["kind"]], up[C]]}}}))
+song = next(k for k in call("GET", "/api/kinds?members=1")[1]["kinds"] if k["id"] == nk["kind"])
+same("  then the model's: sure (dim, its p), then maybes", [(m["key"], m["dim"], m.get("p"), m.get("maybe", False)) for m in song["members"]],
+     [(A, False, None, False), (B, True, 0.95, False), (C, True, 0.6, True)])
+S.GUESSES_PATH.unlink()
+for blk_ in (A, C, B):
+    call("POST", "/api/act", {"do": "kind", "block": blk_, "kind": nk["kind"], "answer": None})
 
 # saving: a draft, as the page writes it (web/src/draft.js)
 NEW = "20261117T090000-0001"
@@ -88,8 +136,7 @@ with urllib.request.urlopen(req) as r:
 b = S.index(S.load_data())
 check("a picture's bytes (dropped): a picture pericope", b[pic].get("entry") and S.image_of(b[pic]), b.get(pic))
 code, home = call("GET", "/api/home")
-check("  not in the garden (searching finds it)", all(r["key"] != pic for r in home["rows"]), home["rows"])
-same("  its preview: it", W.preview(b, pic), [{"t": "image", "file": S.image_of(b[pic])}])
+check("  in home's list", any(r["key"] == pic for r in home["rows"]), home["rows"])
 # a new quote: never refused (the user, 2026-11-19: the data model allows any quote; the drawing decides what shows)
 code, r = call("GET", f"/api/quote?target={B}&into={A}&depth=0")
 same("a quote of another pericope, here: made", code, 200)
@@ -105,12 +152,7 @@ code, found = call("GET", "/api/search?q=picture")
 check("  searching finds it", any(r.get("key") == pic or r.get("open") == pic for r in found["rows"]), found["rows"])
 many = {"blocks": [{"id": f"20261001T1000{n:02d}-0000", "entry": True, "content": f"pericope {n}", "created": "2026-10-01T10:00:00-04:00"}
                    for n in range(20)]}
-same("the garden: its first 12 only", len(W.home_json(S.build_library(many))), W.GARDEN)
-P, P1, PQ, P2 = "20261117T100000-e000", "20261117T100000-e001", "20261117T100000-e002", "20261117T100000-e003"
-pblocks = {**b, P: {"id": P, "content": [P1, PQ, P2]}, P1: {"id": P1, "content": "before  the\npicture"},
-           PQ: {"id": PQ, "content": {"quote": pic}}, P2: {"id": P2, "content": "after it"}}
-same("  a card's preview: its text and pictures in order, a quoted picture where it's quoted",
-     W.preview(pblocks, P), [{"t": "text", "text": "before the picture"}, {"t": "image", "file": S.image_of(b[pic])}, {"t": "text", "text": "after it"}])
+same("home's list: every pericope, not just the first few", len(W.home_json(S.build_library(many))), 20)
 code, bad = call("POST", "/api/picture", {"url": "not a link"})
 same("  a link that isn't one: refused, saying why", (code, "web address" in bad.get("error", "")), (409, True))
 
@@ -134,6 +176,46 @@ with urllib.request.urlopen(URL + "/") as r:
 check("the page itself", code == 200 and "/dist/app.js" in page)
 code, bad = call("GET", "/images/../freewrites.json")
 same("  pictures only from the images folder", code, 404)
+
+# only this machine's page may use it (the audit of 2026-11-19): Host, Origin, and JSON for what changes something
+PORT = httpd.server_address[1]
+def raw(method, path, body=b"", headers={}):
+    import http.client
+    c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=5)
+    c.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+    for k, v in {"Host": f"127.0.0.1:{PORT}", **headers}.items():
+        if v is not None:
+            c.putheader(k, v)
+    c.putheader("Content-Length", str(len(body)))
+    c.endheaders(body)
+    r = c.getresponse()
+    out = r.status, r.read()
+    c.close()
+    return out
+entries = lambda: sum(1 for b in S.load_data()["blocks"] if b.get("entry"))
+n = entries()
+make = json.dumps({"title": "from elsewhere"}).encode()
+same("a POST from another site's page (a foreign Origin): refused, nothing made",
+     (raw("POST", "/api/pericope", make, {"Content-Type": "application/json", "Origin": "https://evil.example"})[0], entries()), (403, n))
+same("  a plain-text POST (no preflight needed): refused, nothing made",
+     (raw("POST", "/api/pericope", make, {"Content-Type": "text/plain;charset=UTF-8"})[0], entries()), (403, n))
+same("  a form's POST: refused", raw("POST", "/api/act", b"do=delete", {"Content-Type": "application/x-www-form-urlencoded"})[0], 403)
+same("  no Content-Type: refused", raw("PUT", "/api/keys", b'{"keys": {}}', {"Content-Type": None})[0], 403)
+same("  a wrong Host (a rebound DNS name): refused, even to read", raw("GET", "/api/home", headers={"Host": f"evil.example:{PORT}"})[0], 403)
+same("  the right host on another port: refused", raw("GET", "/api/home", headers={"Host": f"127.0.0.1:{PORT + 1}"})[0], 403)
+same("  no Host at all: refused", raw("GET", "/api/home", headers={"Host": None})[0], 403)
+same("  Origin null (a sandboxed frame, a file): refused", raw("GET", "/api/home", headers={"Origin": "null"})[0], 403)
+same("  the page's own: 127.0.0.1 or localhost, with or without an Origin", [
+    raw("GET", "/api/home")[0], raw("GET", "/api/home", headers={"Host": f"localhost:{PORT}", "Origin": f"http://localhost:{PORT}"})[0],
+    raw("GET", "/api/home", headers={"Origin": f"http://127.0.0.1:{PORT}"})[0], raw("GET", "/")[0],
+    raw("POST", "/api/pericope", make, {"Content-Type": "application/json; charset=utf-8", "Origin": f"http://127.0.0.1:{PORT}"})[0]],
+    [200, 200, 200, 200, 200])
+same("  a dropped picture's bytes (image/*) still taken, at /api/picture only",
+     (raw("POST", "/api/picture", png(), {"Content-Type": "image/png", "X-Name": "dot.png"})[0],
+      raw("POST", "/api/pericope", png(), {"Content-Type": "image/png"})[0]), (200, 403))
+same("  refusal is pure: the reasons", [W.refusal("GET", "/", "127.0.0.1:1", None, None, 1), W.refusal("GET", "/", "x:1", None, None, 1),
+     W.refusal("GET", "/", "localhost:1", "http://x", None, 1), W.refusal("POST", "/api/act", "localhost:1", None, "text/plain", 1)],
+     [None, "not this machine's page (Host)", "not this machine's page (Origin)", "expected Content-Type: application/json"])
 httpd.shutdown()
 
 F.report("WEB")

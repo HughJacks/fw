@@ -459,4 +459,7 @@ def main(argv: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv)
+    try:
+        main(sys.argv)
+    except store.StoreError as e:  # (a store fw can't read: said, and stopped, as load_data used to)
+        store.die(str(e))

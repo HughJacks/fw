@@ -11,10 +11,11 @@ so two machines' edits interleave instead of one overwriting the other.
 Layout of the document (one root map, "blocks", id -> block map):
 
     block map    every scalar field as a value (title, entry, created,
-                 updated, words, links, paraphrases), "at" (the order it
-                 was added in), and
-    "case"       which content it has: "text" | "blocks" | "kind" | "value"
-    "text"       LoroText              content: a string
+                 updated, words, links; paraphrases, before v18, only
+                 read), "at" (the order it was added in), and
+    "case"       which content it has: "text" | "paraphrase" | "blocks" | "kind" | "value"
+    "text"       LoroText              content: a string, or a paraphrase's words
+    "paraphrase" the original's id     content: {"paraphrase": id, "text": "…"}
     "children"   LoroMovableList       content: [ids] (a kind's description too)
     "kind"       the kind's name       content: {"kind": name, "blocks": [...]}
     "value"      the content as is     content: a quote or a picture
@@ -45,7 +46,9 @@ from __future__ import annotations
 
 import loro
 
-FIELDS = ("title", "entry", "created", "updated", "words", "links", "paraphrases")  # values (links' spans as cursors)
+FIELDS = ("title", "entry", "created", "updated", "words", "links", "paraphrases")  # values (links' spans as cursors; paraphrases: a mark before v18, read for the migration, then gone)
+USES = {"text": ("text",), "paraphrase": ("text", "paraphrase"), "blocks": ("children",), "kind": ("kind", "children"),
+        "value": ("value",)}  # what each case keeps in the block's map (a text made a paraphrase keeps its LoroText: its cursors)
 VISITS_KEPT = 10
 
 
@@ -62,6 +65,8 @@ def content_of(m: dict, at=plain):
     case = m.get("case")
     if case == "text":
         return m.get("text", "")
+    if case == "paraphrase":
+        return {"paraphrase": m.get("paraphrase", ""), "text": m.get("text", "")}
     if case == "blocks":
         return list(m.get("children", []))
     if case == "kind":
@@ -168,16 +173,20 @@ def set_value(m: loro.LoroMap, key: str, value) -> None:
 
 def write_content(m: loro.LoroMap, content) -> None:
     case = ("text" if isinstance(content, str) else "blocks" if isinstance(content, list)
-            else "kind" if isinstance(content, dict) and "kind" in content else "value")
+            else "kind" if isinstance(content, dict) and "kind" in content
+            else "paraphrase" if isinstance(content, dict) and "paraphrase" in content else "value")
     if m.get_deep_value().get("case") != case:
-        for k in ("text", "children", "kind", "value"):
-            if m.get(k) is not None:
+        for k in ("text", "children", "kind", "value", "paraphrase"):
+            if k not in USES[case] and m.get(k) is not None:
                 m.delete(k)
         m.insert("case", case)
-    if case == "text":
+    if case in ("text", "paraphrase"):
+        text = content if case == "text" else content.get("text", "")
         t = child(m, "text", loro.LoroText)
-        if t.to_string() != content:
-            t.update(content)
+        if t.to_string() != text:
+            t.update(text)
+        if case == "paraphrase":
+            set_value(m, "paraphrase", content["paraphrase"])
     elif case == "blocks":
         same_list(child(m, "children", loro.LoroMovableList), content)
     elif case == "kind":
@@ -245,7 +254,7 @@ class Spans:
             t = None
             if self.blocks.get(bid) is not None:
                 m = child(self.blocks, bid, loro.LoroMap)
-                if m.get_deep_value().get("case") == "text":
+                if m.get_deep_value().get("case") in ("text", "paraphrase"):
                     t = child(m, "text", loro.LoroText)
             self.texts[bid] = t
         return self.texts[bid]
@@ -284,7 +293,7 @@ def write_spans(m: loro.LoroMap, b: dict, sp: Spans) -> None:
         if not same:
             m.insert("links", [{**l, "at": sp.encode(b["id"], l["at"])} for l in links])
     c = b["content"]
-    if isinstance(c, str) or isinstance(c, list) or isinstance(c, dict) and "kind" in c:
+    if isinstance(c, str) or isinstance(c, list) or isinstance(c, dict) and ("kind" in c or "paraphrase" in c):
         return
     stored = have.get("value")
     if masked(stored, sp.resolve) != c or any(sp.bare(bid, spans) for bid, spans in mask_spans(stored)):

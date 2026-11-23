@@ -52,12 +52,33 @@ from datetime import datetime
 from pathlib import Path
 
 # the pure parts, in layers: the draft format, the lens (masks), the block
-# type. Re-exported, so callers keep using store.<name> for all of them
-from fw_draft import *  # noqa: F401,F403
-from fw_lens import *  # noqa: F401,F403
-from fw_block import *  # noqa: F401,F403
+# type: by name, each what the store uses or what callers reach as
+# store.<name> (the audit of 2026-11-19: no wholesale `import *`, so what's
+# re-exported is listed; new code imports a pure helper from its own module)
+from fw_draft import (  # noqa: F401
+    QUOTE_RE, BLOCK_RE, IMAGE_RE, is_atom, atom_id, quote_line, image_line, block_line, chain, now_local,
+    new_id, draft_place, parse_draft, parse_nest, format_draft, atom_draft, draft_items, draft_digest,
+)
+from fw_lens import (  # noqa: F401
+    ELLIPSIS, CLOSE, OPEN, MARKS, pieces, snap, normalize, empties, with_empties, holes, view, put, spans_of,
+    intersect, minus, wrap, open_at, close_at, drop_anchor, tidy_edit, edit_mask, view_to_draft, draft_to_view,
+    rebase,
+)
+from fw_block import (  # noqa: F401
+    human_date, derive_title, word_count, index, children, kind_of, block_type, type_label, with_children,
+    quoted, raw_mask, MAX_DEPTH, SHOWABLE, is_whole, image_of, quote_show, quote_lock, locked_by, quote_inner,
+    merge_inner, seen_quote, paraphrases, text_of, with_text, links, move_span, move_links, draft_leaves, carry_links, with_links,
+    cut_links, pretty_time, own_text, block_items, items_text, full_text, shown_text, block_draft, child_lines,
+    ancestors, content_hash, with_mask, home_of, regions, mask_to, backlinks, BACKLINK_NAMES, backlink_summary,
+    families, per_block, flat_mask, masks_out, masks_in, with_inner, with_show, with_lock, quote_items, parents,
+    held, loose, is_empty_untitled, display_title, pictures_held, picture_quote_id, entry_ids, sorted_entries,
+    subtree, VISIT_GAP, VISIT_DWELL, visits, last_visit, minute_iso, add_visits, merge_visits, with_visits,
+    attend, note_visits, ended, TOP, iso_minute, memory, last_action, garden, ago, GUESS_AT, MAYBE_AT, kinds_of,
+    with_kinds, merge_kinds, guessed, learned, is_applied, maybes, kind_cover, open_proposals, kind_ids,
+    tidy_name, same_name, kind_named, of_kind, parse_kinds, kinds_text,
+)
 import fw_block
-from fw_migrate import SCHEMA_VERSION, BadStore, upgrade
+from fw_migrate import SCHEMA_VERSION, BadStore, behind, upgrade
 import fw_image
 import fw_loro
 
@@ -114,18 +135,25 @@ def on_disk() -> dict | None:
     return None
 
 
-def load_data() -> dict:
+def load_store() -> tuple[dict, bool]:
     """The store, read and brought up to date in memory (fw_migrate), its
-    masks as anchors for the lens (masks_in)."""
+    masks as anchors for the lens (masks_in); and whether it was behind the
+    current schema (then it's saved as it is, no `updated` stamped:
+    save_data's `upgrading`)."""
     data = on_disk()
     if data is None:
-        return {"schemaVersion": SCHEMA_VERSION, "blocks": []}
+        return {"schemaVersion": SCHEMA_VERSION, "blocks": []}, False
     if data.get("schemaVersion", SCHEMA_VERSION) >= 11 and isinstance(data.get("blocks"), list):
-        data["blocks"] = masks_in(data["blocks"])  # per block on disk, anchors for the lens
+        data = {**data, "blocks": masks_in(data["blocks"])}  # per block on disk, anchors for the lens
     try:
-        return upgrade(data)
-    except BadStore as e:
-        die(str(e))
+        return upgrade(data, now=now_local(), new_id=new_id), behind(data)
+    except BadStore as e:  # (raised, not an exit: a web request's thread answers it; the commands exit: main)
+        raise StoreError(str(e)) from e
+
+
+def load_data() -> dict:
+    """The store, read and brought up to date in memory (load_store)."""
+    return load_store()[0]
 
 
 def write_file(path: Path, data: bytes) -> None:
@@ -153,14 +181,15 @@ def save_doc(doc) -> str:
     return text
 
 
-def save_data(data: dict) -> None:
+def save_data(data: dict, upgrading: bool = False, rebased: frozenset = frozenset()) -> None:
     """The store written: the document edited to say `data` (fw_loro.write,
-    the fewest edits), then saved with its .json copy (the old .json kept as .bak)."""
-    upgrading = data.pop("upgraded", False)
-    rebased = data.pop("rebased", set())
+    the fewest edits), then saved with its .json copy (the old .json kept as
+    .bak). `updated` stamped on what changed (stamp_updated), unless the
+    store was `upgrading` (read behind the schema: load_store); `rebased`:
+    quotes whose anchors only moved along with an edit (rebase_quotes)."""
     data["schemaVersion"] = SCHEMA_VERSION
     old = on_disk()
-    stamp_updated(data, [] if upgrading or old is None else on_disk_read(old), rebased)
+    stamp_updated(data, [] if upgrading or old is None else on_disk_read(old), rebased, now_local())
     doc = fw_loro.load(LORO_PATH.read_bytes() if LORO_PATH.exists() else None, peer())
     fw_loro.name_peer(doc, os.uname().nodename)
     if DATA_PATH.exists():
@@ -180,22 +209,18 @@ def merge_file(path: str) -> str:
         doc = fw_loro.load(LORO_PATH.read_bytes() if LORO_PATH.exists() else None, peer())
         if json_changed() and DATA_PATH.exists():  # the .json changed beside the document: its edits first
             mine = load_data()
-            mine.pop("upgraded", None)
-            mine.pop("rebased", None)
             fw_loro.write(doc, {**mine, "blocks": masks_out(mine["blocks"])})
         before = fw_loro.to_data(doc)
         fw_loro.merge(doc, Path(path).read_bytes())
         data = fw_loro.to_data(doc)
         data["blocks"] = masks_in(data["blocks"])
-        data = upgrade(data)
+        data = upgrade(data, now=now_local(), new_id=new_id)
         listed_once(data)
         tidy_store(data, clip_holds())
         sync_words(data)
         errs = invalid(data, load_schema())
         if errs:
             raise StoreError("the merged store is invalid, nothing saved: " + "; ".join(errs))
-        data.pop("upgraded", None)
-        data.pop("rebased", None)
         fw_loro.write(doc, {**data, "blocks": masks_out(data["blocks"])})
         save_doc(doc)
         after = {b["id"]: b for b in fw_loro.to_data(doc)["blocks"]}
@@ -214,7 +239,7 @@ def listed_once(data: dict) -> None:
         kids = children(b)
         once = list(dict.fromkeys(kids))  # (and once in it: both machines put the same block in)
         if kids and (any(k in seen for k in once) or once != kids):
-            with_children(b, [k for k in once if k not in seen])
+            put_block(data, None, with_children(b, [k for k in once if k not in seen]))
         seen.update(kids)
 
 
@@ -269,7 +294,7 @@ def kind_from_proposal(p: dict) -> str:
         parts = ([add_block(data, blocks, new_id(blocks), p["description"])["id"]] if p.get("description") else [])
         parts += [add_block(data, blocks, new_id(blocks), {"quote": t})["id"] for t in p.get("typical") or [] if t in blocks]
         return add_block(data, blocks, new_id(blocks), {"kind": name, "blocks": parts}, entry=True)["id"]
-    return transact(change)
+    return transact(editing(change))
 
 
 def load_guesses() -> dict:
@@ -440,40 +465,44 @@ def apply_defaults(obj: dict, schema: dict) -> list[str]:
 
 # --- writing content ---------------------------------------------------------
 
-def rebase_quotes(data: dict, ref: str, old: str, new: str, skip: str | None = None) -> dict:
+def rebase_quotes(data: dict, ref: str, old: str, new: str, skip: str | None = None,
+                  blocks: dict | None = None) -> dict:
     """Keep the mask of every quote of `ref` in step with an edit of it
     (noted in data["rebased"]: moving anchors along isn't an update).
-    Returns a copy of each quote whose masks moved, as it was before: what
-    undoing the edit puts back once the text is back (`Editor.restore`)."""
+    `blocks`: the caller's index of `data`, kept in step (each quote moved is
+    a new block in its place). Returns a copy of each quote whose masks
+    moved, as it was before: what undoing the edit puts back once the text
+    is back (`Editor.restore`)."""
     if old == new:
         return {}
-    blocks, was = index(data), {}
+    blocks, was = (index(data) if blocks is None else blocks), {}
     for b in data["blocks"]:
         q = quoted(b)
         if not q:
             continue
         before = copy.deepcopy(b)
         if q[0] == ref and q[1] is not None and b.get("id") != skip:
-            with_mask(b, normalize(new, rebase(old, new, raw_mask(b)), keep_empty=True))
+            b = put_block(data, blocks, with_mask(b, normalize(new, rebase(old, new, raw_mask(b)), keep_empty=True)))
             data.setdefault("rebased", set()).add(b.get("id"))
         inner = quote_inner(b)
         moved = {k: normalize(new, rebase(old, new, m)) for k, m in inner.items()
                  if (quoted(blocks.get(k)) or (None,))[0] == ref}
         if moved:
-            with_inner(b, {**inner, **moved})
+            b = put_block(data, blocks, with_inner(b, {**inner, **moved}))
             data.setdefault("rebased", set()).add(b.get("id"))
         if b != before:
             was[b["id"]] = before
     return was
 
 
-def stamp_updated(data: dict, old_blocks: list, rebased: set = frozenset()) -> None:
+def stamp_updated(data: dict, old_blocks: list, rebased: set, now: datetime) -> None:
     """`updated`, now, on every block whose title or content changed since
     `old_blocks` (the store as it was on disk), and on each block it's part
     of, up to its entry; not on blocks that quote it (their text lives in the
     source). Not a change: a quote's anchors moved along with an edit of its
     source (`rebased`), or the words recounted. An `updated` the write set
-    itself stays (an undo putting a block back as it was)."""
+    itself stays (an undo putting a block back as it was). `now`: the time
+    stamped, from the edge (save_data)."""
     old = {b.get("id"): b for b in old_blocks}
     blocks = index(data)
     parents = {}
@@ -487,7 +516,7 @@ def stamp_updated(data: dict, old_blocks: list, rebased: set = frozenset()) -> N
         if i in rebased and quoted(o) and quoted(b) and quoted(o)[0] == quoted(b)[0]:
             return (quote_show(o), quote_lock(o)) != (quote_show(b), quote_lock(b))  # only the anchors moved, unless its line changed too
         return (o.get("title"), o.get("content")) != (b.get("title"), b.get("content"))
-    now = now_local().isoformat(timespec="seconds")
+    now = now.isoformat(timespec="seconds")
     todo, seen = [i for i in blocks if i in old and not kept(i) and changed(i)], set()
     while todo:
         i = todo.pop()
@@ -507,10 +536,9 @@ def set_content(data: dict, blocks: dict, b: dict, items: list) -> None:
     becomes Blocks: each run of text a child block, updated in place or
     created when new, each quote a Quote block. Children it no longer lists
     are erased later, if nothing else reaches them."""
-    if isinstance(b.get("content"), str) and all(i[0] == "text" for i in items) and len(items) <= 1:
+    if text_of(b) is not None and all(i[0] == "text" for i in items) and len(items) <= 1:
         text = items[0][2] if items else ""
-        with_links(b, move_links(b["content"], text, links(b)))
-        b["content"] = text
+        put_block(data, blocks, with_text(with_links(b, move_links(text_of(b), text, links(b))), text))  # (a paraphrase stays one)
         return
     mine = set(children(b))
     kids = []
@@ -528,35 +556,45 @@ def set_content(data: dict, blocks: dict, b: dict, items: list) -> None:
         _, bid, text = item
         if bid in blocks and bid not in mine and not loose(blocks, bid):
             bid = new_id(blocks)  # another block's id: this text is a copy, not that block
-        if bid in blocks:  # (a container named as text: the editor folded its one block back into it)
-            blocks[bid]["content"] = text
-            blocks[bid]["content"] = text
+        if bid in blocks:  # (a container named as text: the editor folded its one block back into it; a paraphrase stays one)
+            put_block(data, blocks, with_text(blocks[bid], text))
         else:
             add_block(data, blocks, bid, text)
         kids.append(bid)
-    with_children(b, kids)  # (a kind stays one: its description is these)
+    put_block(data, blocks, with_children(b, kids))  # (a kind stays one: its description is these)
 
 
-def new_block(bid: str, content, title=None, entry=False, links=()) -> dict:
-    now = now_local().isoformat(timespec="seconds")
+def new_block(bid: str, content, title=None, entry=False, links=(), *, now: datetime) -> dict:
+    """A new block, made `now` (the time, from the edge: add_block, the editor)."""
+    now = now.isoformat(timespec="seconds")
     block = {"id": bid, "title": title, **({"entry": True} if entry else {}),
              "content": content, "words": 0, "created": now, "updated": now}
-    with_links(block, list(links))
-    return block
+    return with_links(block, list(links))
 
 
 def add_block(data: dict, blocks: dict, bid: str, content, title=None, entry=False) -> dict:
-    block = new_block(bid, content, title, entry)
+    block = new_block(bid, content, title, entry, now=now_local())  # (the store's write: the clock read here)
     data["blocks"].append(block)
     blocks[bid] = block
     return block
+
+
+def put_block(data: dict, blocks: dict | None, new: dict) -> dict:
+    """Block `new` (from a with_* setter, say) in its old one's place, by id, in the store being written (`data`'s
+    list and its index `blocks`, when there is one). Returns it."""
+    bid = new.get("id")
+    old = blocks.get(bid) if blocks is not None else next((x for x in data["blocks"] if x.get("id") == bid), None)
+    data["blocks"] = [new if x is old else x for x in data["blocks"]] if old is not None else [*data["blocks"], new]
+    if blocks is not None:
+        blocks[bid] = new
+    return new
 
 
 def write_content(data: dict, blocks: dict, b: dict, items: list) -> None:
     """set_content, the hyperlinks of the blocks in `b` carried along with
     the edit as one edit of its whole draft (carry_links): text that moves
     to another block, as when Enter splits one, keeps its links."""
-    if isinstance(b.get("content"), str):
+    if text_of(b) is not None:
         set_content(data, blocks, b, items)
         return
     old = block_draft(blocks, b["id"])
@@ -564,8 +602,8 @@ def write_content(data: dict, blocks: dict, b: dict, items: list) -> None:
     set_content(data, blocks, b, items)
     if held:
         for bid, ls in carry_links(old, block_draft(blocks, b["id"]), held).items():
-            if bid in blocks and isinstance(blocks[bid].get("content"), str):
-                with_links(blocks[bid], ls)
+            if bid in blocks and text_of(blocks[bid]) is not None:
+                put_block(data, blocks, with_links(blocks[bid], ls))
 
 
 def set_container(data: dict, blocks: dict, cid: str | None, items: list, kids: list) -> str:
@@ -576,9 +614,9 @@ def set_container(data: dict, blocks: dict, cid: str | None, items: list, kids: 
         cid = add_block(data, blocks, new_id(set(blocks) | set(kids)), "")["id"]
     c = blocks[cid]
     if len(items) == 1 and items[0][0] == "text":
-        c["content"] = items[0][2]
+        put_block(data, blocks, with_text(c, items[0][2]))
     else:
-        if isinstance(c.get("content"), str):
+        if text_of(c) is not None:
             c["content"] = []  # (its text is in its children now, and its links with it: write_content)
             c.pop("links", None)
         set_content(data, blocks, c, items)
@@ -696,16 +734,29 @@ def pictures_apart(data: dict) -> int:
         if qid not in blocks:
             add_block(data, blocks, qid, {"quote": pic})
             blocks[qid]["created"] = blocks[pic].get("created", blocks[qid]["created"])
-        with_children(blocks[holder], [qid if k == pic else k for k in children(blocks[holder])])
+        put_block(data, blocks, with_children(blocks[holder], [qid if k == pic else k for k in children(blocks[holder])]))
         blocks[pic]["entry"] = True
     return len(held)
 
 
 def tidy_store(data: dict, keep=()) -> None:
     """What every write does before it's saved: pictures taken out to be
-    pericopes (pictures_apart), then what nothing reaches erased (collect)."""
+    pericopes (pictures_apart), kinds kept to pericopes (kinds_apart), then
+    what nothing reaches erased (collect)."""
     pictures_apart(data)
+    kinds_apart(data)
     collect(data, keep)
+
+
+def kinds_apart(data: dict) -> int:
+    """Only a pericope has kinds (the user, 2026-11-22): a block that's
+    inside one now (moved in, pasted) loses its answers. Returns how many."""
+    out = 0
+    for b in data["blocks"]:
+        if "kinds" in b and not b.get("entry"):
+            del b["kinds"]
+            out += 1
+    return out
 
 
 def collect(data: dict, keep=()) -> int:
@@ -755,8 +806,7 @@ EMPTY_KEPT_MIN = 60  # an empty untitled pericope is cleared by migrate only onc
 
 def cmd_migrate(_args) -> None:
     schema = load_schema()
-    data = load_data()
-    changed = data.get("upgraded", False)
+    data, changed = load_store()
     if changed:
         print(f"fw: upgraded freewrites.json to schema v{SCHEMA_VERSION}", file=sys.stderr)
     before = json.dumps(data, sort_keys=True)
@@ -790,7 +840,7 @@ def cmd_migrate(_args) -> None:
         sys.exit(1)
 
     if changed or json.dumps(data, sort_keys=True) != before or not DATA_PATH.exists() or not LORO_PATH.exists() or json_changed():
-        save_data(data)  # (also the first time, making the document from the .json, and after the .json was changed beside it)
+        save_data(data, upgrading=changed)  # (also the first time, making the document from the .json, and after the .json was changed beside it)
 
 
 def find_entry(data: dict, title: str | None = None, last: bool = False) -> str | None:
@@ -870,7 +920,7 @@ def stage(ref: str | None = None, title: str | None = None, append: bool = False
 
 def _stage(ref, title, append) -> tuple[str, str, int]:
     schema = load_schema()
-    data = load_data()
+    data, upgrading = load_store()
 
     if ref is None:
         created = now_local()
@@ -887,7 +937,7 @@ def _stage(ref, title, append) -> tuple[str, str, int]:
         if errs:
             raise StoreError("cannot create pericope: " + "; ".join(errs))
         data["blocks"].append(fw)
-        save_data(data)
+        save_data(data, upgrading=upgrading)
         return fw["id"], _write_tmp("", fw, schema, index(data)), 1
 
     blocks = index(data)
@@ -945,11 +995,9 @@ def commit(entry_id: str, draft: str | None, fields: list[dict], final: bool = F
     keeps the last of what it showed, as text (`let_go`). Returns (notes,
     the block's new content_hash, a record that puts back what that changed,
     or None, and the quotes whose masks moved along, as they were:
-    `rebase_quotes`); raises StoreError on refusal."""
-    with store_lock():
+    `rebase_quotes`); raises StoreError on refusal. One transaction (transact)."""
+    def change(data, blocks):
         schema = load_schema()
-        data = load_data()
-        blocks = index(data)
         fw = blocks.get(entry_id)
         if fw is None:
             raise StoreError(f"no block with id {entry_id}")
@@ -962,20 +1010,16 @@ def commit(entry_id: str, draft: str | None, fields: list[dict], final: bool = F
             notes = _apply_header(fw, fields, data, schema)
             old, was_held = block_draft(blocks, entry_id), set(subtree(blocks, entry_id))
             write_content(data, blocks, fw, draft_items(draft, blocks, marked(blocks)))
-            moved = rebase_quotes(data, entry_id, old, block_draft(blocks, entry_id))
+            fw = blocks[entry_id]  # (written: a new block in its place)
+            moved = rebase_quotes(data, entry_id, old, block_draft(blocks, entry_id), blocks=blocks)
             cut = {j for i in clip_holds() for j in subtree(blocks, i)}  # (cut, to be pasted: not gone)
             holders = held(blocks)
             record = let_go(data, blocks, {i for i in was_held if loose(blocks, i, holders) and i not in cut})
         if final and fw.get("entry") and is_empty_untitled(blocks, entry_id):
             fw.pop("entry")  # (erased by collect, below)
             notes.append("nothing written, discarded empty pericope")
-        tidy_store(data, clip_holds())
-        sync_words(data)
-        errs = invalid(data, schema)
-        if errs:
-            raise StoreError("refusing to save, a block became invalid: " + "; ".join(errs))
-        save_data(data)
-        return notes, content_hash(index(data), entry_id), record, moved
+        return notes, record, moved
+    return transact(editing(change), answer=lambda saved, r: (r[0], content_hash(index(saved), entry_id), r[1], r[2]))
 
 
 def let_go(data: dict, blocks: dict, gone: set) -> dict | None:
@@ -993,23 +1037,42 @@ def let_go(data: dict, blocks: dict, gone: set) -> dict | None:
     return undo
 
 
-def transact(change, tidy: bool = True):
-    """One write to the store: under the lock, load, `change(data, blocks)`,
-    tidy (erase what's unreachable, unless `tidy` is off), recount words,
-    validate, save. Returns what `change` returns; raises StoreError (and
-    saves nothing) on refusal."""
+def transact(change, tidy: bool = True, answer=None):
+    """One write to the store, in one shape: under the lock, the store loaded
+    and handed to `change(store)`, which returns (the new store, a result),
+    or (the new store, a result, the quotes whose anchors only moved along
+    with an edit: `editing`), and never changes the store it's given; the
+    new store tidied (what's unreachable erased, unless `tidy` is off), its
+    words recounted, validated and saved. Returns the result, or
+    `answer(the store as saved, the result)`; raises StoreError (and saves
+    nothing) on refusal."""
     with store_lock():
         schema = load_schema()
-        data = load_data()
-        result = change(data, index(data))
+        store, upgrading = load_store()
+        new, result, *flags = change(store)
+        new = copy.deepcopy(new)  # (finished below, tidied, recounted, stamped: a copy of its own, so nothing it shares with the store given changes)
         if tidy:
-            tidy_store(data, clip_holds())
-        sync_words(data)
-        errs = invalid(data, schema)
+            tidy_store(new, clip_holds())
+        sync_words(new)
+        errs = invalid(new, schema)
         if errs:
             raise StoreError("refusing to save, a block became invalid: " + "; ".join(errs))
-        save_data(data)
-        return result
+        save_data(new, upgrading, frozenset(flags[0]) if flags else frozenset())
+        return answer(new, result) if answer else result
+
+
+def editing(edit):
+    """A change for `transact` made from an edit in place, `edit(data,
+    blocks)` (the store's dict and its index, changed where they stand,
+    returning a result): it works on a copy of the store it's given, never
+    on that store, and returns (the copy, the edit's result, the quotes
+    whose anchors only moved along: rebase_quotes notes them on the copy,
+    and they're taken off it here, so the store saved never carries them)."""
+    def change(store: dict) -> tuple[dict, object, frozenset]:
+        data = copy.deepcopy(store)
+        result = edit(data, index(data))
+        return data, result, frozenset(data.pop("rebased", ()))
+    return change
 
 
 def hashes(data: dict, *refs: str) -> dict:
@@ -1032,10 +1095,10 @@ def restore(record: dict, tidy: bool = True) -> dict:
             data["blocks"] = [x for x in data["blocks"] if x.get("id") != i]
             if b is not None:
                 b = copy.deepcopy(b)
-                with_visits(b, merge_visits(b.get("visits"), (blocks.get(i) or {}).get("visits")))  # (not an edit: kept)
+                b = with_visits(b, merge_visits(b.get("visits"), (blocks.get(i) or {}).get("visits")))  # (not an edit: kept)
                 data["blocks"].append(b)
         return inverse
-    return transact(change, tidy)
+    return transact(editing(change), tidy)
 
 
 def clock() -> float:
@@ -1054,17 +1117,17 @@ def record_visits(seen: dict) -> None:
     words recounted; a block gone since is skipped. Raises StoreError."""
     with store_lock():
         schema = load_schema()
-        data = load_data()
+        data, upgrading = load_store()
         blocks = index(data)
         hit = [i for i in seen if i in blocks and seen[i]]
         if not hit:
             return
         for i in hit:
-            with_visits(blocks[i], add_visits(blocks[i].get("visits"), seen[i]))
+            put_block(data, blocks, with_visits(blocks[i], add_visits(blocks[i].get("visits"), seen[i])))
         errs = [e for i in hit for e in validate_instance(masks_out([blocks[i]])[0], schema)]
         if errs:
             raise StoreError("visits not recorded, a block became invalid: " + "; ".join(errs))
-        save_data(data)
+        save_data(data, upgrading=upgrading)
 
 
 def quote_of(blocks: dict, qid: str) -> tuple:
@@ -1094,15 +1157,15 @@ def commit_view(qid: str, text: str, opened: int | None = None, base: str | None
         write_content(data, blocks, blocks[target], draft_items(draft, blocks, marked(blocks)))
         stored = block_draft(blocks, target)
         if narrowed:
-            moved.update(rebase_quotes(data, target, old, stored))
+            moved.update(rebase_quotes(data, target, old, stored, blocks=blocks))
             moved.pop(qid, None)
         else:
             was = [x for t in empties(raw_mask(blocks[qid])) for x in (t, t)]  # its empty places, in hidden text
             new_mask = with_empties(new_mask, empties(rebase(old, draft, was)))  # (where the put moved them; one grown goes)
-            with_mask(blocks[qid], normalize(stored, rebase(draft, stored, new_mask), keep_empty=True))
-            moved.update(rebase_quotes(data, target, old, stored, skip=qid))
+            put_block(data, blocks, with_mask(blocks[qid], normalize(stored, rebase(draft, stored, new_mask), keep_empty=True)))
+            moved.update(rebase_quotes(data, target, old, stored, skip=qid, blocks=blocks))
         return target
-    target = transact(change)
+    target = transact(editing(change))
     data = load_data()
     return hashes(data, target, *parents(index(data), qid)), moved
 
@@ -1117,12 +1180,12 @@ def set_quote_mask(qid: str, draft: str | None, mask: list | None, inner: bool =
         target, _ = quote_of(blocks, qid)
         undo = {"blocks": {qid: copy.deepcopy(blocks[qid])}}
         stored = block_draft(blocks, target)
-        with_mask(blocks[qid], None if mask is None else
-                  with_empties(normalize(stored, rebase(draft, stored, mask)), empties(raw_mask(blocks[qid]))))
+        put_block(data, blocks, with_mask(blocks[qid], None if mask is None else
+                  with_empties(normalize(stored, rebase(draft, stored, mask)), empties(raw_mask(blocks[qid])))))
         if inner:
-            with_inner(blocks[qid], {})
+            put_block(data, blocks, with_inner(blocks[qid], {}))
         return undo
-    undo = transact(change)
+    undo = transact(editing(change))
     data = load_data()
     return hashes(data, *parents(index(data), qid)), undo
 
@@ -1137,9 +1200,9 @@ def mask_quote_to(qid: str, block: str) -> tuple[dict, dict]:
             raise StoreError("that block isn't in what it quotes")
         undo = {"blocks": {qid: copy.deepcopy(blocks[qid])}}
         draft = block_draft(blocks, target)
-        with_mask(blocks[qid], normalize(draft, mask_to(blocks, target, draft, block)))
+        put_block(data, blocks, with_mask(blocks[qid], normalize(draft, mask_to(blocks, target, draft, block))))
         return undo
-    undo = transact(change)
+    undo = transact(editing(change))
     data = load_data()
     return hashes(data, *parents(index(data), qid)), undo
 
@@ -1158,14 +1221,14 @@ def delete_entry(eid: str) -> int:
             if q and q[0] in gone and b.get("id") not in gone:
                 b["content"] = shown_text(blocks, b["id"])
                 kept += 1
-            with_links(b, [link for link in links(b) if link["to"] not in gone])  # a link to it goes with it
-            if b.get("paraphrases") in gone and b.get("id") not in gone:
-                b.pop("paraphrases")  # (and a paraphrase of it is just your words)
+            b = put_block(data, blocks, with_links(b, [link for link in links(b) if link["to"] not in gone]))  # a link to it goes with it
+            if paraphrases(b) in gone and b.get("id") not in gone:
+                b = put_block(data, blocks, {**b, "content": text_of(b)})  # (and a paraphrase of it is just your words)
             if any(k in gone for k in kinds_of(b)):
-                with_kinds(b, {k: v for k, v in kinds_of(b).items() if k not in gone})  # (a kind gone: no answers about it)
+                put_block(data, blocks, with_kinds(b, {k: v for k, v in kinds_of(b).items() if k not in gone}))  # (a kind gone: no answers about it)
         blocks[eid].pop("entry")  # (erased with what it holds once the change is tidied)
         return kept
-    return transact(change)
+    return transact(editing(change))
 
 
 def set_quote_masks(qid: str, own: tuple, inner: dict) -> tuple[dict, dict]:
@@ -1179,8 +1242,8 @@ def set_quote_masks(qid: str, own: tuple, inner: dict) -> tuple[dict, dict]:
         undo = {"blocks": {qid: copy.deepcopy(blocks[qid])}}
         stored = block_draft(blocks, target)
         text, mask = own
-        with_mask(blocks[qid], None if mask is None else
-                  with_empties(normalize(stored, rebase(text, stored, mask)), empties(raw_mask(blocks[qid]))))
+        put_block(data, blocks, with_mask(blocks[qid], None if mask is None else
+                  with_empties(normalize(stored, rebase(text, stored, mask)), empties(raw_mask(blocks[qid])))))
         kept = dict(quote_inner(blocks[qid]))
         for iq, (draft, m) in inner.items():
             q = quoted(blocks.get(iq))
@@ -1189,9 +1252,9 @@ def set_quote_masks(qid: str, own: tuple, inner: dict) -> tuple[dict, dict]:
                 continue
             st = block_draft(blocks, q[0])
             kept[iq] = normalize(st, rebase(draft, st, m))
-        with_inner(blocks[qid], kept)
+        put_block(data, blocks, with_inner(blocks[qid], kept))
         return undo
-    undo = transact(change)
+    undo = transact(editing(change))
     data = load_data()
     return hashes(data, *parents(index(data), qid)), undo
 
@@ -1203,9 +1266,9 @@ def set_quote_show(qid: str, show: list) -> tuple[dict, dict]:
     def change(data, blocks):
         quote_of(blocks, qid)
         undo = {"blocks": {qid: copy.deepcopy(blocks[qid])}}
-        with_show(blocks[qid], show)
+        put_block(data, blocks, with_show(blocks[qid], show))
         return undo
-    undo = transact(change)
+    undo = transact(editing(change))
     data = load_data()
     return hashes(data, *parents(index(data), qid)), undo
 
@@ -1217,9 +1280,9 @@ def set_quote_lock(qid: str, on: bool) -> tuple[dict, dict]:
     def change(data, blocks):
         quote_of(blocks, qid)
         undo = {"blocks": {qid: copy.deepcopy(blocks[qid])}}
-        with_lock(blocks[qid], on)
+        put_block(data, blocks, with_lock(blocks[qid], on))
         return undo
-    undo = transact(change)
+    undo = transact(editing(change))
     data = load_data()
     return hashes(data, *parents(index(data), qid)), undo
 
@@ -1234,7 +1297,7 @@ def detach(qid: str) -> tuple[str, dict, dict]:
         text = shown_text(blocks, qid)
         blocks[qid]["content"] = text
         return text, undo
-    text, undo = transact(change)
+    text, undo = transact(editing(change))
     data = load_data()
     return text, hashes(data, *parents(index(data), qid)), undo
 
@@ -1245,71 +1308,100 @@ def pop_out(ref: str) -> tuple[str, dict, dict]:
     own (titled from it), quoted where it was. Returns (the new entry's id,
     new hashes of the blocks holding it, a record that undoes it with
     restore: the new blocks gone, as if it never happened)."""
-    def change(data, blocks):
-        b = blocks.get(ref)
-        if b is None or quoted(b):
-            raise StoreError("that's a quote already" if b else "that block is gone")
-        if kind_of(b) is not None:
-            raise StoreError("a kind is a pericope of its own already")
-        undo = {"blocks": {ref: copy.deepcopy(b)}}
-        moved = new_id(blocks)
-        with_links(add_block(data, blocks, moved, copy.deepcopy(b["content"])), links(b))
-        b.pop("links", None)
-        if "paraphrases" in b:  # (a quote can't carry it: it goes with what it marks)
-            blocks[moved]["paraphrases"] = b.pop("paraphrases")
-        with_visits(blocks[moved], b.pop("visits", None))  # (likewise: they were visits to what it held)
-        with_kinds(blocks[moved], kinds_of(b))  # (and what it is: it's what it holds that's a poem)
-        b.pop("kinds", None)
-        entry = add_block(data, blocks, new_id(blocks), [moved], entry=True)
-        b["content"] = {"quote": entry["id"]}
-        undo["blocks"].update({moved: None, entry["id"]: None})
-        return entry["id"], undo
-    entry, undo = transact(change)
+    entry, undo = transact(editing(lambda data, blocks: _pop_out(data, blocks, ref)))
     data = load_data()
     return entry, hashes(data, *parents(index(data), ref)), undo
 
 
+def _pop_out(data: dict, blocks: dict, ref: str) -> tuple[str, dict]:
+    """pop_out's edit, on the store being written: (the new entry's id, its record)."""
+    b = blocks.get(ref)
+    if b is None or quoted(b):
+        raise StoreError("that's a quote already" if b else "that block is gone")
+    if kind_of(b) is not None:
+        raise StoreError("a kind is a pericope of its own already")
+    undo = {"blocks": {ref: copy.deepcopy(b)}}
+    moved = new_id(blocks)
+    put_block(data, blocks, with_links(add_block(data, blocks, moved, copy.deepcopy(b["content"])), links(b)))
+    b.pop("links", None)
+    put_block(data, blocks, with_visits(blocks[moved], b.pop("visits", None)))  # (likewise: they were visits to what it held)
+    entry = add_block(data, blocks, new_id(blocks), [moved], entry=True)
+    b["content"] = {"quote": entry["id"]}
+    undo["blocks"].update({moved: None, entry["id"]: None})
+    return entry["id"], undo
+
+
 def marked(blocks: dict) -> set:
-    """The blocks marked as paraphrases (kept even while empty: draft_items)."""
-    return {i for i, b in blocks.items() if b.get("paraphrases")}
+    """The paraphrases (kept even while empty: draft_items)."""
+    return {i for i, b in blocks.items() if paraphrases(b)}
 
 
 def new_paraphrase(source: str, record: dict | None = None) -> tuple[str, dict]:
-    """A new, empty block marked as a paraphrase of `source`, loose (the
+    """A new, empty paraphrase of `source`, loose (the
     save that lists it takes it in). Returns (its id, a record that undoes
     it, merged into `record` if given: what was there before stays first)."""
-    def change(data, blocks):
-        if source not in blocks:
-            raise StoreError("that block is gone")
-        pid = new_id(blocks)
-        add_block(data, blocks, pid, "")["paraphrases"] = source
-        return pid
-    pid = transact(change, tidy=False)
+    pid = transact(editing(lambda data, blocks: _paraphrase_of(data, blocks, source)), tidy=False)
     undo = {"blocks": {pid: None, **((record or {}).get("blocks", {}))}}
     return pid, undo
 
 
+def _paraphrase_of(data: dict, blocks: dict, source: str) -> str:
+    """new_paraphrase's edit, on the store being written: the new block's id."""
+    if source not in blocks:
+        raise StoreError("that block is gone")
+    pid = new_id(blocks)
+    add_block(data, blocks, pid, {"paraphrase": source, "text": ""})
+    return pid
+
+
+def paraphrase_it(ref: str) -> tuple[str, dict]:
+    """Paraphrase it (the terminal's, and the web editor's): on quote `ref`, an
+    empty paraphrase of what it quotes takes its place; on a block written
+    here (or a picture), it moves to a pericope of its own (as pop_out) and
+    an empty paraphrase of that takes its place. One transaction: all of it
+    or nothing. Returns (the paraphrase's id, a record that undoes it all)."""
+    def change(data, blocks):
+        b = blocks.get(ref)
+        if b is None:
+            raise StoreError("write something first")
+        record = None
+        if quoted(b):
+            source = quoted(b)[0]
+        else:
+            source, record = _pop_out(data, blocks, ref)  # (ref is a quote of it now, where it was)
+        pid = _paraphrase_of(data, blocks, source)
+        undo = {"blocks": {pid: None, **((record or {}).get("blocks", {}))}}
+        for holder in parents(blocks, ref):  # the paraphrase where the quote was
+            undo["blocks"].setdefault(holder, copy.deepcopy(blocks[holder]))
+            put_block(data, blocks, with_children(blocks[holder], [pid if k == ref else k for k in children(blocks[holder])]))
+        undo["blocks"].setdefault(ref, copy.deepcopy(blocks[ref]))
+        return pid, undo
+    return transact(editing(change))
+
+
 def set_paraphrase(ref: str, source: str | None) -> dict:
-    """Mark block `ref` as a paraphrase of block `source` (None: not one).
-    Any block but a quote, of any block but itself. Returns a record that
-    undoes it with restore."""
+    """Block of text `ref` made a paraphrase of block `source`, its words
+    kept (None: a paraphrase made plain text again). Only a block of text
+    inside a pericope, never the pericope itself (a paraphrase is a block
+    like a quote: it lives in one), of any block but itself. Returns a
+    record that undoes it with restore."""
     def change(data, blocks):
         b = blocks.get(ref)
         if b is None:
             raise StoreError("that block isn't saved yet: write something first")
-        if quoted(b):
-            raise StoreError("a quote can't be a paraphrase (its content is a pointer already)")
+        if text_of(b) is None:
+            raise StoreError("only a block of text can be a paraphrase")
+        if source is not None and b.get("entry"):
+            raise StoreError("a pericope can't be a paraphrase: a paraphrase is a block inside one")
         if source is not None and source not in blocks:
             raise StoreError("that block is gone")
         if source == ref:
             raise StoreError("a block can't paraphrase itself")
         undo = {"blocks": {ref: copy.deepcopy(b)}}
-        if source is None:
-            b.pop("paraphrases", None)
-        else:
-            b["paraphrases"] = source
+        text = text_of(b)
+        put_block(data, blocks, {**b, "content": {"paraphrase": source, "text": text} if source else text})
         return undo
-    return transact(change)
+    return transact(editing(change))
 
 
 def _kind_called(data: dict, blocks: dict, name: str, undo: dict) -> str:
@@ -1325,6 +1417,9 @@ def _kind_called(data: dict, blocks: dict, name: str, undo: dict) -> str:
     return kid
 
 
+ONLY_PERICOPES = "only a pericope has kinds"
+
+
 def set_kinds(ref: str, text: str) -> dict:
     """What block `ref` is, said as text (`text`, fw_block.parse_kinds: "poem,
     not letter"; as a script says it): each name an existing kind's (case aside),
@@ -1334,15 +1429,17 @@ def set_kinds(ref: str, text: str) -> dict:
         b = blocks.get(ref)
         if b is None:
             raise StoreError("that block isn't saved yet: write something first")
+        if not b.get("entry"):
+            raise StoreError(ONLY_PERICOPES)
         undo, answers = {"blocks": {ref: copy.deepcopy(b)}}, {}
         for name, yes in parse_kinds(text):
             kid = _kind_called(data, blocks, name, undo)
             if kid == ref:
                 raise StoreError(f"a kind can't be a kind of itself: {name}")
             answers[kid] = yes
-        with_kinds(b, answers)
+        put_block(data, blocks, with_kinds(b, answers))
         return undo
-    return transact(change)
+    return transact(editing(change))
 
 
 def set_kind(ref: str, kind: str | None, answer: bool | None, name: str = "") -> tuple[str, dict]:
@@ -1355,6 +1452,8 @@ def set_kind(ref: str, kind: str | None, answer: bool | None, name: str = "") ->
         b = blocks.get(ref)
         if b is None:
             raise StoreError("that block isn't saved yet: write something first")
+        if not b.get("entry"):
+            raise StoreError(ONLY_PERICOPES)
         undo = {"blocks": {ref: copy.deepcopy(b)}}
         kid = kind if kind is not None else _kind_called(data, blocks, name, undo)
         if kind_of(blocks.get(kid)) is None:
@@ -1366,9 +1465,19 @@ def set_kind(ref: str, kind: str | None, answer: bool | None, name: str = "") ->
             answers.pop(kid, None)
         else:
             answers[kid] = answer  # (an answer changed keeps its place)
-        with_kinds(b, answers)
+        put_block(data, blocks, with_kinds(b, answers))
         return kid, undo
-    return transact(change)
+    return transact(editing(change))
+
+
+def new_kind(name: str) -> tuple[str, dict]:
+    """The kind called `name` (case and spacing aside), made if there's none,
+    as a pericope of its own (the kinds view's "+ new kind"). Returns (the
+    kind, a record that undoes it with restore: the kind made gone)."""
+    def change(data, blocks):
+        undo = {"blocks": {}}
+        return _kind_called(data, blocks, name, undo), undo
+    return transact(editing(change))
 
 
 def rename_kind(ref: str, name: str) -> dict:
@@ -1390,7 +1499,7 @@ def rename_kind(ref: str, name: str) -> dict:
         b["content"] = {**b["content"], "kind": name}
         b["title"] = None  # (its name is its title)
         return undo
-    return transact(change)
+    return transact(editing(change))
 
 
 def new_link(to: str, at: list) -> dict:
@@ -1405,7 +1514,7 @@ def link_text(ref: str, text: str, span: list, to: str | None, title: str | None
     undoes it with restore)."""
     def change(data, blocks):
         b = blocks.get(ref)
-        if b is None or not isinstance(b.get("content"), str):
+        if b is None or text_of(b) is None:
             raise StoreError("only text can be linked")
         undo = {"blocks": {ref: copy.deepcopy(b)}}
         target = to
@@ -1414,11 +1523,11 @@ def link_text(ref: str, text: str, span: list, to: str | None, title: str | None
             undo["blocks"][target] = None
         elif not blocks.get(target, {}).get("entry"):
             raise StoreError("that pericope is gone")
-        at = move_span(text, b["content"], span)  # (the stored text may differ at its edges)
+        at = move_span(text, text_of(b), span)  # (the stored text may differ at its edges)
         kept = [link for link in links(b) if not (link["at"][0] < at[1] and link["at"][1] > at[0])]
-        with_links(b, sorted(kept + [new_link(target, at)], key=lambda link: link["at"]))
+        put_block(data, blocks, with_links(b, sorted(kept + [new_link(target, at)], key=lambda link: link["at"])))
         return target, undo
-    return transact(change)
+    return transact(editing(change))
 
 
 def add_links(ref: str, text: str, new: list) -> dict:
@@ -1427,14 +1536,14 @@ def add_links(ref: str, text: str, new: list) -> dict:
     left out), as a paste brings them. Returns a record that undoes it with restore."""
     def change(data, blocks):
         b = blocks.get(ref)
-        if b is None or not isinstance(b.get("content"), str):
+        if b is None or text_of(b) is None:
             raise StoreError("only text can be linked")
         undo = {"blocks": {ref: copy.deepcopy(b)}}
-        added = [new_link(link["to"], move_span(text, b["content"], link["at"])) for link in new
+        added = [new_link(link["to"], move_span(text, text_of(b), link["at"])) for link in new
                  if blocks.get(link["to"], {}).get("entry")]
-        with_links(b, sorted(links(b) + added, key=lambda link: link["at"]))
+        put_block(data, blocks, with_links(b, sorted(links(b) + added, key=lambda link: link["at"])))
         return undo
-    return transact(change)
+    return transact(editing(change))
 
 
 def save_clip(clip: dict | None) -> None:
@@ -1477,9 +1586,9 @@ def unlink_text(ref: str, to: str, at: list) -> dict:
         if b is None:
             raise StoreError(f"no block with id {ref}")
         undo = {"blocks": {ref: copy.deepcopy(b)}}
-        with_links(b, [link for link in links(b) if not (link["to"] == to and link["at"] == at)])
+        put_block(data, blocks, with_links(b, [link for link in links(b) if not (link["to"] == to and link["at"] == at)]))
         return undo
-    return transact(change)
+    return transact(editing(change))
 
 
 def nest_out(ref: str, before: str, middle: str, after: str) -> tuple[str, dict, dict]:
@@ -1492,7 +1601,7 @@ def nest_out(ref: str, before: str, middle: str, after: str) -> tuple[str, dict,
     def change(data, blocks):
         b = blocks.get(ref)
         if b is None or not isinstance(b.get("content"), str):
-            raise StoreError("only text can be turned into a quote")
+            raise StoreError("only text can be turned into a quote" if text_of(b) is None else "not inside a paraphrase: Turn into text first")
         outer = next((p for p in parents(blocks, ref) if not blocks[p].get("entry")), None)
         top = ancestors(blocks, ref)  # (each of them drafts differently now)
         old = {t: block_draft(blocks, t) for t in top}
@@ -1506,7 +1615,7 @@ def nest_out(ref: str, before: str, middle: str, after: str) -> tuple[str, dict,
         def new(content, piece=None, entry=False):
             block = add_block(data, blocks, new_id(blocks), content, entry=entry)
             if piece:
-                with_links(block, cut_links(ls, *pieces[piece]))
+                block = put_block(data, blocks, with_links(block, cut_links(ls, *pieces[piece])))
             undo["blocks"][block["id"]] = None
             return block["id"]
         entry = new([new(middle, "middle")], entry=True)
@@ -1516,14 +1625,14 @@ def nest_out(ref: str, before: str, middle: str, after: str) -> tuple[str, dict,
             b.pop("links", None)
         else:  # already in one: `ref` keeps the text before, if any
             b["content"] = before
-            with_links(b, cut_links(ls, *pieces["before"]))
+            put_block(data, blocks, with_links(b, cut_links(ls, *pieces["before"])))
             kids = children(blocks[outer])
             i = kids.index(ref)
             kids[i:i + 1] = ([ref] if before else []) + [quote] + ([new(after, "after")] if after else [])
         for t in top:
-            rebase_quotes(data, t, old[t], block_draft(blocks, t))
+            rebase_quotes(data, t, old[t], block_draft(blocks, t), blocks=blocks)
         return entry, top, undo
-    entry, top, undo = transact(change)
+    entry, top, undo = transact(editing(change))
     return entry, hashes(load_data(), *top), undo
 
 
@@ -1538,7 +1647,7 @@ def new_entry(title: str | None, host: str) -> tuple[str, dict]:
         entry = add_block(data, blocks, new_id(blocks), [], title or None, entry=True)
         undo["blocks"][entry["id"]] = None
         return entry["id"], undo
-    return transact(change)
+    return transact(editing(change))
 
 
 def finish(ref: str, tmp: str) -> list[str]:
@@ -1602,11 +1711,14 @@ def main(argv=None) -> None:
             die(str(e))
         return
     handler = {"migrate": cmd_migrate, "list": cmd_list}[args.cmd]
-    if args.cmd == "migrate":  # it writes the store (the editor's writes lock themselves)
-        with store_lock():
+    try:
+        if args.cmd == "migrate":  # it writes the store (the editor's writes lock themselves)
+            with store_lock():
+                handler(args)
+        else:
             handler(args)
-    else:
-        handler(args)
+    except StoreError as e:  # (a store fw can't read: said, and stopped, as before)
+        die(str(e))
 
 
 if __name__ == "__main__":
