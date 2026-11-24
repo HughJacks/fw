@@ -1,0 +1,8 @@
+(executable
+ (name fwbridge)
+ (flags
+  (:standard -open Core))
+ (libraries core haz3lcore js_of_ocaml)
+ (modes js)
+ (preprocess
+  (pps js_of_ocaml-ppx ppx_deriving.show ppx_yojson_conv ppx_sexp_conv)))

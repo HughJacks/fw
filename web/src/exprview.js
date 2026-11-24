@@ -1,0 +1,215 @@
+// exprview.js — an expression block on the page (the expr branch, 2026-11-23; the user: "the block shows its result,
+// selecting it and hitting a hot key shows the code with the result dim below"; "a computed block can be selected but
+// not edited"). At rest: what it evaluates to (hazel.js, views.drawValue): a value of fw's Block type as real blocks,
+// any other value printed, a function its type, dim. ⌘⇧X on it selected (`toggle`): its code, written in a box of its
+// own, the result dim below it and Hazel's errors under that, following every key; ⌘⇧X or Esc again: back to the
+// result, the block selected. Each change to the code is a change to the document (its `source`), saved as any is. The
+// result follows the snapshot of the store (snapshot.svelte.js), so it follows every key anywhere on the page.
+import { NodeSelection, Plugin } from "prosemirror-state";
+import { levelKey } from "./blocks.js";
+import * as hazel from "./hazel.js";
+import { drawValue, quoteOf } from "./views.js";
+import { onSnapshot } from "./snapshot.svelte.js";
+import { codeBox, setText, labelOf, refsIn } from "./codebox.js";
+import { pressed } from "./keys.js";
+
+/** Hazel's errors, a line each (under a result, its code shown). */
+export function errorsEl(r) {
+  const d = document.createElement("div");
+  d.className = "fw-expr-errors";
+  for (const e of r?.errors || []) {
+    const line = document.createElement("div");
+    line.textContent = `${e.term}: ${e.message}`;
+    d.appendChild(line);
+  }
+  return d;
+}
+
+/** A Block value (the bridge's tree) as the blocks a browsed editor holds (the core's tree's shape, draft.pmNode): a
+ * text, a paraphrase's words, a container, a quote (as the core draws a new one: quoteOf), a hole a "?". Blocks at the
+ * top are the expression's own blocks, as a quote's are its target's. A promise (quotes are asked for). */
+export async function valueTree(block) {
+  const conv = async (t) => {
+    switch (t.t) {
+      case "text": return { t: "text", id: null, text: t.text, links: (t.links || []).map((l) => ({ ...l, title: labelOf(l.to) || "" })) };
+      case "paraphrase": return { t: "text", id: null, text: t.text, para: { id: t.target, title: labelOf(t.target) || "", text: "", home: t.target } };
+      case "blocks": return { t: "container", id: null, children: await Promise.all(t.children.map(conv)) };
+      case "from": {   // (blocks that came from a pericope unchanged: drawn as a quote of it, green, TYPE.md; what it
+        // holds Hazel's value, so it follows every key as the rest does; its top line the core's)
+        const q = await quoteOf(t.target);
+        const kids = t.child.t === "blocks" ? t.child.children : [t.child];
+        return { ...q, t: "quote", id: null, target: t.target, fromExpr: true, lens: null, masked: false, body: [],
+          tree: await Promise.all(kids.map(conv)) };
+      }
+      default: return { t: "text", id: null, text: "?" };
+    }
+  };
+  return block.t === "blocks" ? Promise.all(block.children.map(conv)) : [await conv(block)];
+}
+
+export class ExprView {
+  constructor(node, view, getPos, open = null, parent = null) {
+    this.node = node; this.view = view; this.outer = view; this.getPos = getPos; this.open = open; this.parent = parent;
+    this.dom = document.createElement("div");
+    this.dom.className = "fw-expr";
+    this.dom.contentEditable = "false";
+    this.dom.fwExpr = this;   // (the ⌘⇧X command finds it from the block selected)
+    this.code = null;
+    // its ƒ tab, in the right margin (where a paraphrase's ↗ is): it's code, ⌘⇧X or a click shows it (the user,
+    // 2026-11-24: "we need something which indicates to the user they can edit it")
+    this.fn = document.createElement("button");
+    this.fn.className = "fw-fn";
+    this.fn.textContent = "ƒ";
+    this.fn.title = "its code (⌘⇧X)";
+    this.fn.addEventListener("mousedown", (e) => { e.preventDefault(); this.code ? this.close() : this.showCode(); });
+    this.dom.append(this.fn);
+    this.inner = null;   // (a Block value: a browsed editor, BlockEditor.valueEditor; entered and left as a quote's)
+    this.shown = null;   // (the value it shows, as JSON: a new one redraws it)
+    this.draw();
+    this.stop = onSnapshot(() => this.draw());   // (drawn now, and again as anything it could read changes)
+    hazel.load(() => this.draw());   // (the engine loaded after the page opens: drawn again once it's here)
+  }
+
+  /** What it shows: its value (a Block value as blocks you can move through, not change), or why it can't yet; its
+   * code shown, Hazel's errors under it. */
+  draw() {
+    const r = hazel.run(this.node.attrs.source || "", this.node.attrs.id);
+    this.top = r?.kind === "block" && r.block.t === "from" ? r.block.target : null;   // (its value one From: ⌘O opens that)
+    if (r?.kind === "block" && this.parent) this.showBlocks(r);
+    else {
+      this.dropInner();
+      this.out = drawValue(this.dom, r, this.open);
+    }
+    this.dom.querySelector(":scope > .fw-expr-errors")?.remove();
+    if (this.code && r?.errors?.length) this.dom.appendChild(errorsEl(r));
+    this.dom.classList.toggle("fw-expr-coding", !!this.code);
+  }
+
+  async showBlocks(r) {
+    const key = JSON.stringify(r.block);
+    if (key === this.shown) return;
+    this.shown = key;
+    const children = await valueTree(r.block);
+    if (this.shown !== key || this.gone) return;   // (a newer value meanwhile)
+    if (!this.inner) {
+      const out = document.createElement("div");
+      out.className = "fw-expr-out fw-expr-block";
+      const host = document.createElement("div");
+      host.className = "fw-body";
+      out.appendChild(host);
+      const was = this.dom.querySelector(":scope > .fw-expr-out");
+      if (was) was.replaceWith(out); else this.dom.appendChild(out);
+      this.out = out;
+      this.inner = this.parent.valueEditor(host, children, this);
+    } else this.parent.revalue(this.inner, children);
+    this.out.title = r.type || "";
+  }
+
+  dropInner() {
+    if (!this.inner) return;
+    this.parent.dropValue(this.inner);
+    this.inner = null;
+    this.shown = null;
+  }
+
+  /** Into its value, at its start or end (from the arrows, as into a quote). */
+  enter(where) { return !!this.inner && this.parent.enterValue(this, where); }   // (no caret in a value; one block: unwrapped)
+
+  /** What ⌘O can open from it (TYPE.md, "if you can reference it, you can open it"): its value's source if that's one
+   * From, then each @reference in its code, in order, each once. */
+  refs() {
+    const out = this.top ? [this.top] : [];
+    for (const id of refsIn(this.node.attrs.source || "")) if (!out.includes(id)) out.push(id);
+    return out;
+  }
+
+  /** Out of its value: to the block before (-1), after (1), or it selected whole (0), as out of a quote. */
+  exit(dir) { this.inner?.exit(dir); }
+
+  /** Its code shown, from inside its value (the `code` key there): out of the value, the block selected, the code open. */
+  showCode() {
+    const pos = this.getPos();
+    if (pos == null) return;
+    this.view.focus();
+    this.view.dispatch(this.view.state.tr.setSelection(NodeSelection.create(this.view.state.doc, pos)));
+    this.toggle();
+  }
+
+  /** Its code shown (or hidden again): written in a box (codebox.js, CodeMirror), the result dim below. */
+  toggle() {
+    if (this.code) { this.close(); return; }
+    const holder = document.createElement("div");
+    holder.className = "fw-expr-codebox fw-expr-code";
+    this.dom.prepend(holder);
+    this.code = codeBox(holder, this.node.attrs.source || "", {
+      changed: (text) => {
+        const pos = this.getPos();
+        if (pos == null || text === this.node.attrs.source) return;
+        this.view.dispatch(this.view.state.tr.setNodeMarkup(pos, null, { ...this.node.attrs, source: text }));
+      },
+      close: () => this.close(),
+      isClose: (e) => pressed(e, "code"),
+    });
+    this.holder = holder;
+    this.draw();
+    this.code.focus();
+    this.code.dispatch({ selection: { anchor: this.code.state.doc.length } });
+  }
+
+  /** Back to its result, the block selected. */
+  close() {
+    // (the editor focused first, the block selected whole, and only then the code box taken away: a focused box
+    // removed leaves the browser a selection at the page's top, which the editor would read back as where you are;
+    // put back once more after the browser's settled)
+    const select = () => {
+      const pos = this.getPos();
+      if (pos == null || this.view.isDestroyed) return;
+      const sel = this.view.state.selection;
+      if (!(sel instanceof NodeSelection && sel.from === pos && levelKey.getState(this.view.state)))   // (at block level, as Esc leaves a block)
+        this.view.dispatch(this.view.state.tr.setSelection(NodeSelection.create(this.view.state.doc, pos)).setMeta(levelKey, true));
+    };
+    select();
+    this.view.fwExprClosed = Date.now();   // (exprGuard: the browser's stray selection, just after, not read back)
+    this.view.focus();
+    this.code?.destroy();
+    this.holder?.remove();
+    this.code = null; this.holder = null;
+    this.draw();
+    requestAnimationFrame(select);
+  }
+
+  update(node) {
+    if (node.type !== this.node.type) return false;
+    this.node = node;
+    if (this.code) setText(this.code, node.attrs.source || "");   // (an undo, say)
+    this.draw();
+    return true;
+  }
+  stopEvent(e) { return !!((this.holder && this.holder.contains(e.target)) || (this.inner && this.inner.view.dom.contains(e.target))); }   // (the code box's keys and clicks are its own)
+  ignoreMutation() { return true; }
+  selectNode() { this.dom.classList.add("ProseMirror-selectednode"); }
+  deselectNode() { this.dom.classList.remove("ProseMirror-selectednode"); }
+  destroy() { this.gone = true; this.stop?.(); this.code?.destroy(); this.dropInner(); }
+}
+
+/** The browser's selection read back just after an expression's code box closed (a focused box removed leaves the
+ * browser's selection at the page's top) refused: the block stays selected whole. Only that read (ProseMirror's own,
+ * "pointer"), only off an expression selected whole, only for a moment. */
+export function exprGuard() {
+  return new Plugin({
+    filterTransaction(tr, state) {
+      const view = tr.getMeta("pointer") && !tr.docChanged && tr.selectionSet ? globalThis.__fwViews?.find((v) => v.state === state) : null;
+      const sel = state.selection;
+      return !(view && Date.now() - (view.fwExprClosed || 0) < 400 && sel instanceof NodeSelection && sel.node.type.name === "expr");
+    },
+    view: (v) => { (globalThis.__fwViews ||= []).push(v); return { destroy: () => { globalThis.__fwViews = globalThis.__fwViews.filter((x) => x !== v); } }; },
+  });
+}
+
+/** ⌘⇧X: on an expression block selected, its code shown or hidden. */
+export function toggleCode(view) {
+  const sel = view.state.selection;
+  if (!(sel instanceof NodeSelection) || sel.node.type.name !== "expr") return false;
+  view.nodeDOM(sel.from)?.fwExpr?.toggle();
+  return true;
+}

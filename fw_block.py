@@ -9,7 +9,7 @@ import json
 import re
 from datetime import datetime
 
-from fw_draft import BLOCK_RE, IMAGE_RE, QUOTE_RE, block_line, draft_digest, image_line, is_atom, parse_draft, quote_line
+from fw_draft import BLOCK_RE, IMAGE_RE, QUOTE_RE, block_line, draft_digest, expr_line, image_line, is_atom, parse_draft, quote_line
 from fw_lens import ELLIPSIS, intersect, normalize, shown_only, spans_of, view
 
 def _ordinal(n: int) -> str:
@@ -110,6 +110,8 @@ def block_type(b: dict | None) -> str:
             return "kind"
         case {"quote": str()}:
             return "quote"
+        case {"expr": str()}:
+            return "expression"
     return "block"
 
 
@@ -121,7 +123,7 @@ def type_label(b: dict | None, blocks: dict | None = None) -> str:
     block", never "block"): its one block's type (text, quote, image), else
     "pericope" (several, none, or one that holds blocks)."""
     if kind_of(b) is not None:
-        return f"kind: {kind_of(b)}"
+        return f"tag: {kind_of(b)}"   # (called a tag, the user, 2026-11-24; kinds in the code)
     if blocks is None or not (b or {}).get("entry") or block_type(b) != "block":
         return block_type(b)
     kids = [k for k in children(b) if k in blocks]
@@ -168,6 +170,26 @@ def is_whole(b: dict | None) -> bool:
     any such case added later goes here too): selected whole, never gone
     into, even through a quote of it."""
     return image_of(b) is not None
+
+
+def expr_of(b: dict | None) -> str | None:
+    """An expression block's source (the expr branch: {"expr": source}, a program the page evaluates), else None."""
+    match b.get("content") if b else None:
+        case {"expr": str(src)}:
+            return src
+    return None
+
+
+EXPR_REF = re.compile(r"@([0-9]{8}T[0-9]{6}-[0-9a-f]{4})")
+
+
+def expr_refs(b: dict | None) -> list:
+    """The pericopes and blocks an expression block's source refers to (`@<id>`), in order, each once."""
+    out = []
+    for m in EXPR_REF.finditer(expr_of(b) or ""):
+        if m.group(1) not in out:
+            out.append(m.group(1))
+    return out
 
 
 def image_of(b: dict | None) -> str | None:
@@ -352,7 +374,7 @@ def own_text(blocks: dict, ref: str, seen: frozenset = frozenset()) -> str:
     if b is None or ref in seen:
         return ""
     match b.get("content", ""):
-        case str(text) | {"paraphrase": str(), "text": str(text)}:
+        case str(text) | {"paraphrase": str(), "text": str(text)} | {"expr": str(text)}:   # (an expression's: its source)
             return text
         case list() | {"kind": str(), "blocks": list()}:
             return "\n".join(own_text(blocks, k, seen | {ref}) for k in children(b)
@@ -379,6 +401,8 @@ def block_items(blocks: dict, ref: str, seen: frozenset = frozenset(), inner: di
                     out.append(seen_quote(blocks, k, inner))
                 elif image_of(blocks.get(k)):
                     out.append(("image", k))
+                elif expr_of(blocks.get(k)) is not None:   # (an expression: what it shows is worked out in the page)
+                    out.append(("expr", k))
                 else:
                     out += block_items(blocks, k, seen | {ref}, inner)
             return out
@@ -449,6 +473,8 @@ def child_lines(blocks: dict, kids: list, within: tuple = ()) -> list:
             out.append(quote_line(q[0], k, within))
         elif image_of(blocks.get(k)):
             out.append(image_line(k, within))
+        elif expr_of(blocks.get(k)) is not None:
+            out.append(expr_line(k, expr_of(blocks[k]), within))
         elif children(blocks.get(k)) and k not in within:
             out += child_lines(blocks, children(blocks[k]), (k, *within))
         elif k in blocks:
@@ -543,6 +569,7 @@ def backlinks(blocks: dict, ref: str) -> list:
         points += [("link", link.get("created"), link["at"][0]) for link in links(b) if link["to"] == ref]
         points += [("paraphrase", b.get("created"), 0)] if paraphrases(b) == ref else []
         points += [("kind", b.get("created"), 0)] if kinds_of(b).get(ref) is True else []
+        points += [("expression", b.get("created"), 0)] if ref in expr_refs(b) else []   # (TYPE.md: any @ref counts)
         if not points:
             continue
         home, start = home_of(blocks, i)
@@ -554,7 +581,8 @@ def backlinks(blocks: dict, ref: str) -> list:
 
 BACKLINK_NAMES = {"quote": ("quote", "quotes"), "masked quote": ("masked quote", "masked quotes"),
                   "link": ("link", "links"), "paraphrase": ("paraphrase", "paraphrases"),
-                  "kind": ("block of this kind", "blocks of this kind")}  # (one, more than one)
+                  "kind": ("pericope with this tag", "pericopes with this tag"),
+                  "expression": ("expression", "expressions")}  # (one, more than one)
 
 
 def backlink_summary(found: list) -> str:

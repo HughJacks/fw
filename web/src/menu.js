@@ -2,7 +2,7 @@
 // cursor; what's typed after the / filters it (typing what matches no command leaves it as text); ↑↓ move,
 // Enter runs, Esc closes. Its commands: Quote a block (a search, then the block quoted here) and Add a
 // picture from a link. A picture file dropped or pasted on the page is quoted the same way.
-import { Plugin, PluginKey, TextSelection } from "prosemirror-state";
+import { Plugin, PluginKey, TextSelection, NodeSelection } from "prosemirror-state";
 import { schema } from "./schema.js";
 import { api } from "./api.js";
 import { float } from "./float.svelte.js";
@@ -14,7 +14,25 @@ const key = new PluginKey("slash");
 const COMMANDS = [
   { name: "quote", label: "Quote a block", note: "find a block, quoted here" },
   { name: "image", label: "Add a picture from a link", note: "downloaded into fw, kept here" },
+  { name: "expr", label: "Expression", note: "a program: the block shows what it works out to · ⌘⇧X its code" },
 ];
+/** An expression block put in at `at` (in place of an empty block, else after the text there), its code open to
+ * write in (the expr branch). */
+function insertExpr(editor, at) {
+  const view = editor.view;
+  const node = schema.nodes.expr.create({ id: null, source: "" });
+  let tr = view.state.tr.setSelection(TextSelection.create(view.state.doc, at));
+  const { $from } = tr.selection;
+  const empty = $from.parent.type.name === "text_block" && $from.parent.content.size === 0;
+  if (empty) tr.replaceWith($from.before(), $from.after(), node); else tr.replaceSelectionWith(node);
+  let pos = null;
+  tr.doc.descendants((n, p) => { if (pos === null && n.type.name === "expr" && !n.attrs.id) pos = p; });
+  if (pos === null) return;
+  if (!(tr.doc.nodeAt(pos + node.nodeSize)?.type.name === "text_block")) tr.insert(pos + node.nodeSize, schema.nodes.text_block.create());
+  tr.setSelection(NodeSelection.create(tr.doc, pos));
+  view.dispatch(tr.scrollIntoView());
+  setTimeout(() => view.nodeDOM(view.state.selection.from)?.fwExpr?.toggle());   // (its code open: write it)
+}
 /** A quote of block `target` put in at the cursor: in place of an empty block, else after the text there
  * (split); the cursor in a block below it. Returns where the quote went. */
 export async function insertQuote(editor, target, at = null) {
@@ -126,6 +144,7 @@ export function slashMenu(editor, enterNew) {
     view.dispatch(view.state.tr.delete(from, view.state.selection.head).setMeta(key, { close: true }));
     if (cmd.name === "quote") quoteSearch(editor, from, enterNew);
     else if (cmd.name === "image") pictureLink(editor, from);
+    else if (cmd.name === "expr") insertExpr(editor, from);
   };
   return new Plugin({
     key,

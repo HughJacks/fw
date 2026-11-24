@@ -12,7 +12,7 @@ import { BlockSelection, blocksPlugin, selectAround, grow, removeSelected, remov
 import { history, undo, redo } from "prosemirror-history";
 import { schema } from "./schema.js";
 import { pmDoc, draftOf, freshIds, pmLens, lensOf } from "./draft.js";
-import { quoteEl, drawBody } from "./views.js";
+import { quoteEl, drawBody, drawValue } from "./views.js";
 import { ui } from "./state.svelte.js";
 import { EditorRunes } from "./editor-state.svelte.js";
 import { stopMasking } from "./masking.js";
@@ -26,6 +26,10 @@ export const waiting = new Set();     // the editors with a save scheduled, not 
 
 import { api, TEST } from "./api.js";
 import { slashMenu } from "./menu.js";
+import { ExprView, toggleCode, exprGuard, valueTree } from "./exprview.js";
+import * as hazel from "./hazel.js";
+import { onSnapshot } from "./snapshot.svelte.js";
+import { setLive } from "./snapshot.svelte.js";
 import { clipboardPlugin } from "./clipboard.js";
 import { keyOf, pressed } from "./keys.js";
 const TRAVEL = ["back", "forward", "home", "done", "keys"];   // (the keys that only move you elsewhere)
@@ -64,7 +68,7 @@ const views = new WeakMap();
 /** `sel` (where an arrow would go, Selection.findFrom's) a quote that can be gone into: into it, at its start going
  * down (`dir` 1), its end going up, and true; else false (a picture, a stand-in: selected whole as before). */
 function enterQuote(view, sel, dir) {
-  if (!(sel instanceof NodeSelection) || sel.node.type.name !== "quote") return false;
+  if (!(sel instanceof NodeSelection) || !["quote", "expr"].includes(sel.node.type.name)) return false;   // (an expression's value: into it too)
   const qv = views.get(view.nodeDOM(sel.from));
   return !!(qv && qv.inner && qv.enter(dir < 0 ? "end" : "start"));
 }   // a quote's DOM -> its QuoteView (to go into it from the keys)
@@ -223,28 +227,78 @@ function keepInView(view) {
   return true;
 }
 
+/** An expression's value, browsed (BlockEditor's `browse`): nothing changes its document but a new value (meta
+ * "fw-value"); typing, deleting, Enter, pasting, cutting, undo, Turn into a quote refused. The arrows, selecting,
+ * copying, Esc (out, the expression selected) and Open it work; the `code` key shows the expression's code. */
+const EDITS = new Set(["Backspace", "Delete", "Tab"]);   // (Enter: a level in, as anywhere at block level; nothing else)
+function browsing(ed) {
+  return new Plugin({
+    filterTransaction: (tr) => !tr.docChanged || !!tr.getMeta("fw-value"),
+    // (no caret in it, the user, 2026-11-24: "dont let the user put the caret in the text but they can select the
+    // blocks, it should WORK THE EXACT SAME AS OTHER NESTING": a caret or a span of text, from a click or the arrows,
+    // becomes the block it's in, selected whole, at block level)
+    appendTransaction: (trs, _, state) => {
+      const sel = state.selection;
+      if (!(sel instanceof TextSelection)) return null;
+      const $p = sel.$from;
+      for (let d = $p.depth; d > 0; d--) {
+        if ($p.node(d).isTextblock) return state.tr.setSelection(selectBlock(state.doc, $p.before(d))).setMeta(levelKey, true);
+      }
+      return null;
+    },
+    props: {
+      handleTextInput: () => true,
+      handleClick: (v, pos) => {   // (a click: the block under it, selected whole)
+        const $p = v.state.doc.resolve(pos);
+        for (let d = $p.depth; d > 0; d--) {
+          if (!$p.node(d).isTextblock) continue;
+          if (!v.hasFocus()) v.focus();
+          v.dispatch(v.state.tr.setSelection(selectBlock(v.state.doc, $p.before(d))).setMeta(levelKey, true));
+          if (d === 1 && v.state.doc.childCount === 1) ed.levelOut();   // (a value's one block is its holder's box: the holder, selected whole)
+          return true;
+        }
+        return false;
+      },
+      handlePaste: () => true,
+      handleDrop: () => true,
+      handleDOMEvents: { beforeinput: (v, e) => { e.preventDefault(); return true; } },
+      handleKeyDown: (v, e) => {
+        if (pressed(e, "code")) { ed.holder?.showCode?.(); return true; }
+        const mod = e.metaKey || e.ctrlKey;
+        if (EDITS.has(e.key)) return true;
+        if (mod && ["x", "v", "z", "y", "e", "k", "d"].includes(e.key.toLowerCase())) return true;
+        return false;
+      },
+    },
+  });
+}
+
 export class BlockEditor extends EditorRunes {   // (what the page derives from, as runes: editor-state.svelte.js)
   /** `host`: where it's drawn; `id`: the block it writes into; `children`: what it holds (the core's tree);
    * `base`: the content it was built on; `around`: the editors this one's inside (outermost last), whose
    * shown text a save here changes; `exit(dir)`: leave it (a quote's editor: -1 up, 1 down, 0 select it);
    * `open(target, at)`: Open it; `status()`: something changed worth saying. */
-  constructor(host, { id, children, base, readOnly = false, around = [], exit = null, open, status = () => {}, act = () => false, holder = null, top = null, lens = null,
+  constructor(host, { id, children, base, readOnly = false, browse = false, around = [], exit = null, open, status = () => {}, act = () => false, holder = null, top = null, lens = null,
     fields = () => ({}), saved = () => {}, bottom = null, begin = null }) {
     super();
     // (bottom(): ↓ past the last line, home's search; begin(): no id yet (home's waiting pericope, 2026-11-19): its
     // pericope made in the background on the first change, a promise of the core's {id, base}; saves wait for it)
     // (top(): ↑ from the first line, the page's header; lens: {qid, segments, hole}, written through a masked quote;
     // fields(): what else goes with its next save, the header's (its title, when changed); saved(sent): a save done, what went with it)
-    Object.assign(this, { id, base, readOnly, around, exit, open, status, act, holder, top, lens, fields, onSaved: saved, bottom, begin });
+    // (browse: an expression's value, the user, 2026-11-24: "we should be able to use the cursor to step through the blocks
+    // of an evaluation just not delete or edit": the cursor, selecting and copying work, nothing changes it but its value)
+    readOnly = readOnly || browse;
+    Object.assign(this, { id, base, readOnly, browse, around, exit, open, status, act, holder, top, lens, fields, onSaved: saved, bottom, begin });
     this.making = null;   // (the pericope being made, begin()'s promise: until then nothing's written)   // (act: the Ctrl+/ menu's; holder: the QuoteView it's in)
     this.peeking = new Set();    // the paraphrases whose source shows inside them (Show its source), this session
     this.saving = null;   // (a save in flight: a promise, settled when it's done)
     this.timer = null;
     this.view = new EditorView(host, {
       state: this.make(children),
-      editable: () => !readOnly,
+      editable: () => !readOnly || browse,
+      attributes: browse ? { class: "fw-value" } : {},   // (a value: its one block, if it has only one, unwrapped: app.css)
       handleScrollToSelection: (view) => keepInView(view),   // (the cursor kept on screen, never the whole block)
-      nodeViews: { quote: (node, view, getPos) => new QuoteView(node, view, getPos, this), rawline: (node) => keptView(node, this.open) },
+      nodeViews: { quote: (node, view, getPos) => new QuoteView(node, view, getPos, this), expr: (node, view, getPos) => new ExprView(node, view, getPos, this.open, this), rawline: (node) => keptView(node, this.open) },
       handleClick: (view, pos, e) => {   // ⌘- or ^-click on a link: Open it
         if (!(e.metaKey || e.ctrlKey)) return false;
         const m = view.state.doc.resolve(pos).marks().find((x) => x.type.name === "link")
@@ -262,6 +316,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
         this.view.updateState(this.view.state.apply(tr));
         this.pm = this.view.state;
         if (tr.docChanged) {
+          this.tellLive();
           visits.changed(this);
           this.schedule();
           if (tr.getMeta("addToHistory") !== false) this.act(this, "changed");   // (what was undone can't be redone now)
@@ -271,6 +326,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
     });
     this.giveIds();
     this.pm = this.view.state;
+    this.tellLive();
     this.since = wordsIn(this.pm.doc);
     this.saved = this.draft();
     // (the one you're in: as the focus comes to it; left for anything but a menu or a question, or another window)
@@ -294,6 +350,49 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
       if (!to || to.closest?.(".fw-menu, .fw-ask, .ProseMirror")) return;
       if (current === this) setCurrent(null);
     });
+  }
+
+  /** The pericope open on the page (not a quote's editor, nor a masked one's): its document handed to the expression
+   * engine's snapshot as it is now (snapshot.svelte.js), so every expression on the page follows each key. */
+  /** An expression's value (`children`, the core's tree's shape) as a browsed editor in `host`, inside this one,
+   * held by `holder` (an ExprView, entered and left as a quote's editor is). */
+  valueEditor(host, children, holder) {
+    const ed = new BlockEditor(host, { id: null, children, base: null, browse: true, around: [this, ...this.around],
+      exit: (dir) => QuoteView.prototype.exit.call(holder, dir), open: this.open, status: this.status, act: this.act, holder });
+    this.kids.add(ed);
+    views.set(holder.dom, holder);
+    ed.view.dom.addEventListener("focus", () => holder.dom.classList.add("fw-in"));
+    ed.view.dom.addEventListener("blur", () => holder.dom.classList.remove("fw-in"));
+    return ed;
+  }
+  /** Into the value `holder` (an ExprView, a call, a window in a value) holds, at its first block or its last, selected
+   * whole. A value of one block is unwrapped (the user, 2026-11-24: "we should always unwrap wrappings with just one
+   * block"): one block of text (or a picture) is the holder's own box, nothing to go into (false: the holder stays
+   * selected whole); one container or window, its blocks, as if they were the value's. */
+  enterValue(holder, where) {
+    const ed = holder.inner;
+    if (!ed) return false;
+    const d = ed.view.state.doc;
+    if (d.childCount !== 1) { ed.selectLevel(where === "start" ? 0 : d.content.size - d.lastChild.nodeSize); return true; }
+    const c = d.firstChild;
+    if (c.type.name === "quote") { const qv = views.get(ed.view.nodeDOM(0)); return !!qv && this.enterValue(qv, where); }
+    if (c.isTextblock || c.isAtom || !c.childCount) return false;
+    ed.selectLevel(where === "start" ? 1 : 1 + c.content.size - c.lastChild.nodeSize);
+    return true;
+  }
+
+  /** Value editor `ed` showing `children` now (a new value: the cursor kept where it was, as near as it can be). */
+  revalue(ed, children) {
+    const v = ed.view, doc = schema.nodeFromJSON(pmDoc(children));
+    const at = Math.min(v.state.selection.from, doc.content.size);
+    const tr = v.state.tr.replaceWith(0, v.state.doc.content.size, doc.content).setMeta("fw-value", true).setMeta("addToHistory", false);
+    try { tr.setSelection(Selection.near(tr.doc.resolve(Math.min(at, tr.doc.content.size)))); } catch {}
+    v.dispatch(tr);
+  }
+  dropValue(ed) { this.kids.delete(ed); ed.destroy(); }
+
+  tellLive() {
+    if (!this.holder && !this.lens && this.id) setLive(this.id, this.view.state.doc.toJSON());
   }
 
   make(children) {
@@ -383,7 +482,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
       },
     });
     return EditorState.create({ doc: schema.nodeFromJSON(pmDoc(children)),
-      plugins: [slash, blocksPlugin(), clipboardPlugin(this), this.keys(), keymap(baseKeymap), history(), ids, here, guide, marking] });
+      plugins: [...(this.browse ? [browsing(this)] : []), slash, exprGuard(), blocksPlugin(), clipboardPlugin(this), this.keys(), keymap(baseKeymap), history(), ids, here, guide, marking] });
   }
 
   keys() {
@@ -446,10 +545,16 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
         const qv = views.get(this.view.nodeDOM(pos)), inner = qv?.inner;
         if (!inner) return false;
         const d = inner.view.state.doc;
+        if (qv.node.attrs.data?.expr || this.browse) return qv.enter("start");   // (a level in: its first block, as any)
         if (d.childCount === 1 && d.firstChild.isTextblock) return qv.enter(where);
         inner.selectLevel(0);
         return true;
       }
+      if (n?.type.name === "expr") {   // (an expression's value: its first block, as a container's)
+        const ev = views.get(this.view.nodeDOM(pos));
+        return !!ev?.inner && ev.enter("start");
+      }
+      if (n?.isTextblock && this.browse) return true;   // (a value's text: never written in)
       if (n?.isTextblock) { dispatch?.(state.tr.setSelection(TextSelection.create(state.doc, where === "start" ? pos + 1 : pos + n.nodeSize - 1)).scrollIntoView()); return true; }
       if (n && !n.isAtom && n.childCount) { this.selectLevel(pos + 1); return true; }
       return false;
@@ -459,7 +564,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
       if (!atLevel(state)) return false;
       const doc = state.doc, pos = state.selection.from, n = doc.nodeAt(pos);
       if (n.type.name === "quote") { const qv = views.get(this.view.nodeDOM(pos)); return !!(qv?.inner && qv.enter("start")); }
-      if (n.isAtom) return false;   // (a picture: the caret beside it, as ever)
+      if (n.isAtom || this.browse) return this.browse;   // (a picture: the caret beside it, as ever; a value: no caret)   // (a picture: the caret beside it, as ever)
       dispatch?.(state.tr.setSelection(Selection.near(doc.resolve(pos + 1), 1)).scrollIntoView());
       return true;
     };
@@ -508,9 +613,12 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
       ...Object.fromEntries(["menu", "popout", "popopen", "detach", "lock", "mask", "showall", "delete", "link", "unlink"]
         .map((id) => [keyOf(id), () => this.act(this, id)])),
       [keyOf("nest")]: nestIn,
+      [keyOf("code")]: (state, dispatch, view) => toggleCode(view),   // (the expr branch: an expression's code)
       [keyOf("open")]: (state) => {   // Open it: a quote selected whole; a link; in a quote's editor, its source at the cursor
         const q = quoteAt(state);
         if (q) { this.open({ ...(q.node.attrs.data || { target: q.node.attrs.target }), whole: true }); return true; }   // (selected whole: arrives quiet)
+        const sel = state.selection;   // (an expression selected whole: what it refers to)
+        if (sel instanceof NodeSelection && sel.node.type.name === "expr") return this.openRefs(this.view.nodeDOM(sel.from)?.fwExpr);
         const link = this.context().link;
         if (link) { this.open({ target: link.to }); return true; }
         const para = paraAt(state);   // (a paraphrase: its source, as a quote's, the innermost first)
@@ -520,9 +628,19 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
     });
   }
 
+  /** ⌘O on expression `ev` (an ExprView): with one thing to open (its value's From, or one @reference), that; with
+   * several, the ⌘/ menu at the list of them (TYPE.md: two references are never ambiguous, you pick). */
+  openRefs(ev) {
+    const refs = ev?.refs() || [];
+    if (refs.length === 1) this.open({ target: refs[0] });
+    else if (refs.length > 1) this.act(this, "menu:openrefs");
+    return true;
+  }
+
   /** Open it from inside a quote's editor: its source, as the pericope, at the cursor (the block it's in, how far in).
    * Not a quote's editor: false. */
   openHere() {
+    if (this.browse) return this.openRefs(this.holder);   // (in a value: a computed block opens what its expression refers to)
     if (!this.exit) return false;
     const { $from } = this.view.state.selection;
     let at = null, off = null;
@@ -537,6 +655,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
   context() {
     const sel = this.view.state.selection;
     const quote = sel instanceof NodeSelection && sel.node.type.name === "quote" ? sel.node.attrs : null;
+    const expr = sel instanceof NodeSelection && sel.node.type.name === "expr" ? sel.node.attrs : null;   // (the expr branch)
     let block = null, link = null, span = null;
     if (!(sel instanceof NodeSelection)) {
       const $from = sel.$from;
@@ -562,7 +681,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
         }
       }
     }
-    return { quote, within: this.holder ? this.holder.node.attrs : null, block, link, span, para: paraAt(this.view.state) };
+    return { quote, expr, within: this.holder ? this.holder.node.attrs : null, block, link, span, para: paraAt(this.view.state) };
   }
 
   /** Where a new quote at the cursor would go, for the core to draw it from there (GET /api/quote's `into`, `depth`:
@@ -677,10 +796,12 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
     let keep = null;
     for (let d = $from.depth; d > 0 && !keep; d--) if ($from.node(d).attrs.id) keep = { id: $from.node(d).attrs.id, off: $from.pos - $from.start(d) };
     const at = this.view.state.selection.from;
+    const whole = this.view.state.selection instanceof NodeSelection ? this.view.state.selection.node.attrs.id : null;   // (a block selected whole: kept so)
     // (the quotes' editors are their views': ProseMirror keeps a view whose node is the same, and a view it
     // drops takes its editor with it, QuoteView.destroy)
     this.view.updateState(this.make(children));
     this.giveIds();
+    this.tellLive();
     this.since = wordsIn(this.pm.doc);   // (its words as the store has them now)
     this.base = base;
     this.saved = this.draft();
@@ -688,7 +809,12 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
     if (keep) this.view.state.doc.descendants((n, p) => {
       if (n.attrs.id === keep.id && n.isTextblock) pos = Math.min(p + 1 + keep.off, p + 1 + n.content.size);
     });
-    try { this.view.dispatch(this.view.state.tr.setSelection(Selection.near(this.view.state.doc.resolve(pos)))); } catch {}
+    let node = null;
+    if (whole) this.view.state.doc.descendants((n, p) => { if (node === null && n.attrs.id === whole && !n.isTextblock) node = p; });
+    try {
+      this.view.dispatch(this.view.state.tr.setSelection(node !== null ? NodeSelection.create(this.view.state.doc, node)
+        : Selection.near(this.view.state.doc.resolve(pos))));
+    } catch {}
   }
 
   /** Where the cursor goes, and the view (the user, 2026-11-18): at block `at` (its start, or `off` characters in:
@@ -720,13 +846,14 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
   /** At block level, out a level: the block around the selected one(s) selected whole; at this editor's top, a quote's,
    * the quote (one showing one block: that block's box is the quote's, so on out past it); the page's top: false. */
   levelOut() {
-    const $f = this.view.state.selection.$from;
-    if ($f.depth > 0) { this.selectLevel($f.before()); return true; }
+    const doc = this.view.state.doc, $f = this.view.state.selection.$from;
+    const bare = this.browse && doc.childCount === 1;   // (a value of one block: that block has no box of its own, unwrapped)
+    if ($f.depth > 0 && !(bare && $f.depth === 1)) { this.selectLevel($f.before()); return true; }
     const q = this.holder;
     if (!q || q.parent.gone) return false;
-    const doc = this.view.state.doc, one = doc.childCount === 1 && doc.firstChild.isTextblock;
+    const one = doc.childCount === 1 && doc.firstChild.isTextblock && !this.browse;   // (a quote of one block is that block's box: on out past it)
     q.exit(0);
-    if (one) q.parent.levelOut();
+    if (one || (q.parent.browse && q.parent.view.state.doc.childCount === 1)) q.parent.levelOut();   // (an unwrapped box: out past it too)
     return true;
   }
 
@@ -808,11 +935,20 @@ export class QuoteView {
     const data = node.attrs.data || { target: node.attrs.target, body: [] };
     this.dom = quoteEl({ ...data, body: data.tree || data.lens ? [] : data.body }, parent.open);
     this.dom.contentEditable = "false";
+    if (data.fromExpr) this.dom.classList.add("fw-from");   // (an expression's From: green, TYPE.md)
+    if (data.expr) {   // a quote of one expression is a call (TYPE.md): evaluated where this quote sits, its result its
+      // blocks, as a quote's are, red; moved through, not written in (for now)
+      this.host = this.dom.querySelector(".fw-body");
+      this.host.replaceChildren();
+      this.stop = onSnapshot(() => this.call());
+      hazel.load(() => this.call());
+      return;
+    }
     views.set(this.dom, this);
     if (data.tree || data.lens) {   // (written through: what it holds, or through its mask, the lens)
       const host = this.dom.querySelector(".fw-body");
       this.inner = new BlockEditor(host, {
-        id: data.target, children: data.tree, base: data.base, around: [parent, ...parent.around],
+        id: data.target, children: data.tree, base: data.base, around: [parent, ...parent.around], browse: !!parent.browse,
         exit: (dir) => this.exit(dir), open: parent.open, status: parent.status, act: parent.act, holder: this,
         lens: data.lens ? { qid: data.id, segments: data.lens, hole: data.hole } : null,
       });
@@ -822,8 +958,27 @@ export class QuoteView {
     }
   }
 
+  /** A call (a quote of one expression): its result, worked out where this quote sits, drawn in its body. */
+  async call() {
+    const r = hazel.run(this.node.attrs.data.expr.source, this.node.attrs.id);
+    if (r?.kind !== "block") {   // (not blocks: its value, as an expression shows one)
+      if (this.inner) { this.parent.dropValue(this.inner); this.inner = null; this.host.replaceChildren(); }
+      this.shown = null;
+      drawValue(this.host, r, this.parent.open);
+      return;
+    }
+    const key = JSON.stringify(r.block);
+    if (key === this.shown) return;
+    this.shown = key;
+    const children = await valueTree(r.block.t === "from" ? r.block.child : r.block);   // (the call's own From: this quote)
+    if (this.shown !== key || this.gone) return;
+    if (!this.inner) { this.host.replaceChildren(); this.inner = this.parent.valueEditor(this.host, children, this); }
+    else this.parent.revalue(this.inner, children);
+  }
+
   /** Into it, at its start or its end; one that starts (or ends) with a quote: on into that one, as far as it goes. */
   enter(where) {
+    if (this.node.attrs.data?.expr || this.parent.browse) return this.parent.enterValue(this, where);   // (a call, or a window in a value)
     const v = this.inner.view;
     const at = where === "start" ? Selection.atStart(v.state.doc) : Selection.atEnd(v.state.doc);
     if (enterQuote(v, at, where === "start" ? 1 : -1)) return true;
@@ -860,6 +1015,9 @@ export class QuoteView {
   }
   destroy() {
     stopMasking(this.dom);   // (masking it, its box going: the panel too)
+    this.gone = true;
+    this.stop?.();
+    if (this.node.attrs.data?.expr && this.inner) { this.parent.dropValue(this.inner); this.inner = null; return; }
     if (!this.inner) return;
     this.parent.kids.delete(this.inner);
     if (this.inner.dirty()) this.inner.save();   // (what was written through it, kept)

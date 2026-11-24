@@ -42,6 +42,7 @@ Standard library only (and loro, through fw_store). Listens on 127.0.0.1.
     POST /api/restore               {record}: an action taken back (store.restore); its inverse comes back
     GET  /api/masking?quote=        what masking a quote works on: its target's draft, the mask, the lines
     POST /api/maskop                {draft, mask, op, a, b, i}: one key while masking, the mask back
+    GET  /api/snapshot              every pericope as the expression engine reads it (snapshot_json)
     GET  /api/stamp                 when the store last changed (the page follows it)
     GET  /api/keys, PUT /api/keys   the user's key bindings for the web editor (web-keys.json beside the store)
     GET  /images/<file>             a picture
@@ -213,6 +214,8 @@ def items_json(library: dict, items: list, depth: int, path: tuple) -> list:
                 out.append({"t": "text", "text": shown_text(text)})
             case ("image", iid):
                 out.append({"t": "image", "file": store.image_of(library.get(iid, {}).get("block"))})
+            case ("expr", eid):   # (the expr branch: its source; the page evaluates it)
+                out.append({"t": "expr", "source": store.expr_of(library.get(eid, {}).get("block")) or ""})
             case ("quote", target, mask, show, inner):
                 out.append(quote_json(library, None, target, mask, show, inner, depth + 1, path))
     return out
@@ -280,6 +283,16 @@ def lens_json(library: dict, target: str, mask: list, depth: int = 1, path: tupl
     return out
 
 
+def quoted_expr(blocks: dict, target: str) -> str | None:
+    """The one expression block a quote of `target` shows: `target` itself, or a pericope (or container) holding just
+    it; else None. Pure."""
+    b = blocks.get(target)
+    if store.expr_of(b) is not None:
+        return target
+    kids = store.children(b) if b else []
+    return kids[0] if len(kids) == 1 and store.expr_of(blocks.get(kids[0])) is not None else None
+
+
 def quote_json(library: dict, qid: str | None, target: str, mask, show, inner, depth: int, path: tuple,
                locked: bool = False) -> dict:
     """A quote of `target` (its own block `qid`, if it's one of the pericope's), with what it shows; and,
@@ -296,6 +309,9 @@ def quote_json(library: dict, qid: str | None, target: str, mask, show, inner, d
          "created": entry["block"].get("created") if entry else None,
          "updated": entry["block"].get("updated") if entry else None,
          "words": entry["block"].get("words", 0) if entry else 0}
+    one = quoted_expr(blocks, target) if entry else None
+    if one:   # (a quote of one expression is a call: the page evaluates it where the quote sits, TYPE.md)
+        q["expr"] = {"id": one, "source": store.expr_of(blocks[one])}
     if entry is None:
         q["body"] = [{"t": "note", "text": f"missing block {target}"}]
     elif target in path:
@@ -328,6 +344,8 @@ def node_json(library: dict, ref: str, depth: int = 1, path: tuple = (), locked:
         return quote_json(library, ref, target, mask, show, inner, depth, path, locked)
     if store.image_of(b):
         return {"t": "image", "id": ref, "file": store.image_of(b)}
+    if store.expr_of(b) is not None:   # (the expr branch: its source; the page evaluates it)
+        return {"t": "expr", "id": ref, "source": store.expr_of(b)}
     kids = store.children(b)
     if kids:
         return {"t": "container", "id": ref, "children": [node_json(library, k, depth, path, locked) for k in kids]}
@@ -566,6 +584,61 @@ def search_json(library: dict, query: str, meaning: list | None = None) -> list:
 
 # --- the server ----------------------------------------------------------------
 
+def snap_node(blocks: dict, ref: str, seen: frozenset = frozenset()) -> dict:
+    """Block `ref` as the expression engine reads it (the snapshot: fw's stored cases, TYPE.md's Case): text,
+    a paraphrase, a quote, a picture (a quote of its pericope), an expression (its source), or blocks (a kind's
+    description too); one gone, or met again inside itself, as nothing."""
+    b = blocks.get(ref)
+    if b is None or ref in seen:
+        return {"id": ref, "t": "unknown"}
+    if store.quoted(b):
+        return {"id": ref, "t": "quote", "target": store.quoted(b)[0]}
+    if store.paraphrases(b):
+        return {"id": ref, "t": "paraphrase", "target": store.paraphrases(b), "text": store.text_of(b) or ""}
+    if store.text_of(b) is not None:   # (its links too: a computed text keeps them, TYPE.md's Inline)
+        return {"id": ref, "t": "text", "text": store.text_of(b), "links": [{"to": l["to"], "at": list(l["at"])} for l in store.links(b)]}
+    if store.image_of(b):
+        return {"id": ref, "t": "picture", "target": ref}
+    if store.expr_of(b) is not None:
+        return {"id": ref, "t": "expr", "source": store.expr_of(b)}
+    return {"id": ref, "t": "blocks", "children": [snap_node(blocks, k, seen | {ref}) for k in store.children(b)]}
+
+
+def snapshot_json(library: dict) -> dict:
+    """The store as the page hands it to the expression engine (hazelRun's snapshot): every pericope, its title, its
+    kinds (yes answers), its facts (created, updated, how many visits, the pericopes pointing at it: quotes, links,
+    paraphrases, oldest first, as the backlinks above its header) and its body as stored. Pure. The page puts the open
+    pericope's own, live, over it."""
+    blocks = blocks_of(library)
+    up = {k: i for i, b in blocks.items() for k in store.children(b)}
+    def home(i):
+        seen = set()
+        while i in up and i not in seen:
+            seen.add(i)
+            i = up[i]
+        return i if i in library else None
+    pointing = {}   # target -> [(created, the pericope pointing)]
+    for i, b in blocks.items():
+        q = store.quoted(b)
+        targets = ([q[0]] if q else []) + [link["to"] for link in store.links(b)] + ([store.paraphrases(b)] if store.paraphrases(b) else []) + store.expr_refs(b)
+        h = home(i) if targets else None
+        for t in targets if h else []:
+            pointing.setdefault(t, []).append((b.get("created") or "", h))
+    def backs(i):
+        out = []
+        for _, h in sorted(pointing.get(i, [])):
+            if h != i and h not in out:
+                out.append(h)
+        return out
+    return {"pericopes": [{"id": i, "title": e["title"] or "",
+                           "kinds": [k for k, yes in store.kinds_of(e["block"]).items() if yes],
+                           "created": e["block"].get("created") or "", "updated": e["block"].get("updated") or "",
+                           "visits": (e["block"].get("visits") or {}).get("total", 0),
+                           "backlinks": backs(i),
+                           "body": snap_node(blocks, i)}
+                          for i, e in library.items() if e["entry"]]}
+
+
 def library() -> dict:
     return store.build_library(store.load_data())
 
@@ -655,6 +728,8 @@ class Handler(BaseHTTPRequestHandler):
                 lib = library()
                 ids = [i for i in (ask.get("ids") or [""])[0].split(",") if i in lib]
                 return self.send(200, {"blocks": [node_json(lib, i) for i in ids]})
+            if path == "/api/snapshot":   # the store as the expression engine reads it (snapshot_json)
+                return self.send(200, snapshot_json(library()))
             if path == "/api/kinds":   # every kind: {id, name}, oldest first (the kinds picker)
                 lib = library()
                 if (ask.get("members") or ["0"])[0] == "1":   # (the kinds view: each kind's members too)

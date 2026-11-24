@@ -44,6 +44,7 @@ export function pmNode(node) {
       content: node.children.length ? node.children.map(pmNode) : [{ type: "text_block", attrs: { id: null } }] };
     case "quote": return { type: "quote", attrs: { id: node.id, target: node.target, data: node } };
     case "image": return { type: "image", attrs: { id: node.id, file: node.file } };
+    case "expr": return { type: "expr", attrs: { id: node.id, source: node.source || "" } };
     default: return { type: "text_block", attrs: { id: null }, content: inline(node.text || "") };
   }
 }
@@ -76,11 +77,47 @@ export function draftOf(doc) {
         walk(n.content, [n.attrs.id, ...outer]);
       } else if (n.type === "quote") {
         lines.push(`{{quote ${n.attrs.target} ${n.attrs.id}${within(outer)}}}`);
+      } else if (n.type === "expr") {   // (its source as a JSON string: one line, fw_draft.EXPR_RE)
+        lines.push(`{{expr ${n.attrs.id}${within(outer)} ${JSON.stringify(n.attrs.source || "")}}}`);
       }
     }
   };
   walk(doc.content, []);
   return lines.join("\n");
+}
+
+/** The editor's document (JSON), or one node of it, as the expression engine reads a block (the snapshot's node, as
+ * fw_web.snap_node makes them from the store): text, a paraphrase, a quote, a picture, an expression, or blocks. */
+export function snapNode(n) {
+  const id = n.attrs?.id || "";
+  switch (n.type) {
+    case "doc": {
+      const kids = n.content || [];
+      if (kids.length === 1 && kids[0].type === "text_block" && kids[0].attrs.own) return snapNode(kids[0]);   // (a pericope that's one text)
+      return { id, t: "blocks", children: kids.map(snapNode) };
+    }
+    case "text_block": return n.attrs.para ? { id, t: "paraphrase", target: n.attrs.para.id, text: textOf(n) } : { id, t: "text", text: textOf(n), links: linksOf(n) };
+    case "container": return { id, t: "blocks", children: (n.content || []).map(snapNode) };
+    case "quote": return { id, t: "quote", target: n.attrs.target };
+    case "image": return { id, t: "picture", target: id };
+    case "expr": return { id, t: "expr", source: n.attrs.source || "" };
+    default: return { id, t: "unknown" };
+  }
+}
+
+/** A block of text's (JSON) links: [{to, at: [start, end]}], offsets into its text (a line break one), runs joined. */
+function linksOf(node) {
+  const out = [];
+  let at = 0;
+  for (const c of node.content || []) {
+    const len = c.type === "hard_break" ? 1 : (c.text || "").length;
+    const to = (c.marks || []).find((m) => m.type === "link")?.attrs.to;
+    const last = out[out.length - 1];
+    if (to && last && last.to === to && last.at[1] === at) last.at[1] = at + len;
+    else if (to) out.push({ to, at: [at, at + len] });
+    at += len;
+  }
+  return out;
 }
 
 /** Ids a document needs: every block of text, container and quote with one, none twice (an Enter splits
@@ -89,7 +126,7 @@ export function draftOf(doc) {
 export function freshIds(blocks, make = newId) {
   const seen = new Set(), out = new Map();
   blocks.forEach(({ type, id }, n) => {
-    if (!["text_block", "container", "quote"].includes(type)) return;
+    if (!["text_block", "container", "quote", "expr"].includes(type)) return;
     if (id && !seen.has(id)) { seen.add(id); return; }
     let fresh = make();
     while (seen.has(fresh)) fresh = make();

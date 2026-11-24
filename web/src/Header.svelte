@@ -70,7 +70,7 @@
           </div>
         {/if}
       </div>
-      <div class="fw-field"><span class="fw-key">kinds</span>
+      <div class="fw-field"><span class="fw-key">tags</span>
         <Kinds bind:this={kinds} {id} tokens={p.kindTokens || []} done={kindsDone} open={(k) => go(`#/p/${k}`)} down={focusTitle}
           up={hasBacks ? () => backsChip?.focus() : null} /></div>
     </div>

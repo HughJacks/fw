@@ -57,7 +57,7 @@ from pathlib import Path
 # re-exported is listed; new code imports a pure helper from its own module)
 from fw_draft import (  # noqa: F401
     QUOTE_RE, BLOCK_RE, IMAGE_RE, is_atom, atom_id, quote_line, image_line, block_line, chain, now_local,
-    new_id, draft_place, parse_draft, parse_nest, format_draft, atom_draft, draft_items, draft_digest,
+    new_id, draft_place, parse_draft, parse_nest, format_draft, atom_draft, draft_items, draft_digest, expr_line, EXPR_RE,
 )
 from fw_lens import (  # noqa: F401
     ELLIPSIS, CLOSE, OPEN, MARKS, pieces, snap, normalize, empties, with_empties, holes, view, put, spans_of,
@@ -66,7 +66,7 @@ from fw_lens import (  # noqa: F401
 )
 from fw_block import (  # noqa: F401
     human_date, derive_title, word_count, index, children, kind_of, block_type, type_label, with_children,
-    quoted, raw_mask, MAX_DEPTH, SHOWABLE, is_whole, image_of, quote_show, quote_lock, locked_by, quote_inner,
+    quoted, raw_mask, MAX_DEPTH, SHOWABLE, is_whole, image_of, expr_of, expr_refs, quote_show, quote_lock, locked_by, quote_inner,
     merge_inner, seen_quote, paraphrases, text_of, with_text, links, move_span, move_links, draft_leaves, carry_links, with_links,
     cut_links, pretty_time, own_text, block_items, items_text, full_text, shown_text, block_draft, child_lines,
     ancestors, content_hash, with_mask, home_of, regions, mask_to, backlinks, BACKLINK_NAMES, backlink_summary,
@@ -288,9 +288,9 @@ def kind_from_proposal(p: dict) -> str:
     def change(data, blocks):
         name = tidy_name(p.get("name") or "")
         if not name:
-            raise StoreError("a kind needs a name")
+            raise StoreError("a tag needs a name")
         if kind_named(blocks, name) is not None:
-            raise StoreError(f"there's a kind called {name} already")
+            raise StoreError(f"there's a tag called {name} already")
         parts = ([add_block(data, blocks, new_id(blocks), p["description"])["id"]] if p.get("description") else [])
         parts += [add_block(data, blocks, new_id(blocks), {"quote": t})["id"] for t in p.get("typical") or [] if t in blocks]
         return add_block(data, blocks, new_id(blocks), {"kind": name, "blocks": parts}, entry=True)["id"]
@@ -548,6 +548,15 @@ def set_content(data: dict, blocks: dict, b: dict, items: list) -> None:
             continue
         if item[0] == "image":
             kids += image_block(data, blocks, b, item[1], kids)
+            continue
+        if item[0] == "expr":   # an expression block (the expr branch): its source, in place; a new or copied one made
+            _, eid, src = item
+            if eid in blocks and eid not in kids and (eid in mine or loose(blocks, eid)):
+                put_block(data, blocks, {**blocks[eid], "content": {"expr": src}})
+            else:
+                eid = eid if eid not in blocks and eid not in kids else new_id(set(blocks) | set(kids))
+                add_block(data, blocks, eid, {"expr": src})
+            kids.append(eid)
             continue
         if item[0] == "blocks":
             cid = item[1] if item[1] in mine or loose(blocks, item[1]) else None
@@ -1319,7 +1328,7 @@ def _pop_out(data: dict, blocks: dict, ref: str) -> tuple[str, dict]:
     if b is None or quoted(b):
         raise StoreError("that's a quote already" if b else "that block is gone")
     if kind_of(b) is not None:
-        raise StoreError("a kind is a pericope of its own already")
+        raise StoreError("a tag is a pericope of its own already")
     undo = {"blocks": {ref: copy.deepcopy(b)}}
     moved = new_id(blocks)
     put_block(data, blocks, with_links(add_block(data, blocks, moved, copy.deepcopy(b["content"])), links(b)))
@@ -1411,13 +1420,13 @@ def _kind_called(data: dict, blocks: dict, name: str, undo: dict) -> str:
     kid = kind_named(blocks, name)
     if kid is None:
         if not tidy_name(name):
-            raise StoreError("a kind needs a name")
+            raise StoreError("a tag needs a name")
         kid = add_block(data, blocks, new_id(blocks), {"kind": tidy_name(name), "blocks": []}, entry=True)["id"]
         undo["blocks"][kid] = None
     return kid
 
 
-ONLY_PERICOPES = "only a pericope has kinds"
+ONLY_PERICOPES = "only a pericope has tags"
 
 
 def set_kinds(ref: str, text: str) -> dict:
@@ -1435,7 +1444,7 @@ def set_kinds(ref: str, text: str) -> dict:
         for name, yes in parse_kinds(text):
             kid = _kind_called(data, blocks, name, undo)
             if kid == ref:
-                raise StoreError(f"a kind can't be a kind of itself: {name}")
+                raise StoreError(f"a tag can't be a tag of itself: {name}")
             answers[kid] = yes
         put_block(data, blocks, with_kinds(b, answers))
         return undo
@@ -1457,9 +1466,9 @@ def set_kind(ref: str, kind: str | None, answer: bool | None, name: str = "") ->
         undo = {"blocks": {ref: copy.deepcopy(b)}}
         kid = kind if kind is not None else _kind_called(data, blocks, name, undo)
         if kind_of(blocks.get(kid)) is None:
-            raise StoreError("that kind is gone")
+            raise StoreError("that tag is gone")
         if kid == ref:
-            raise StoreError("a kind can't be a kind of itself")
+            raise StoreError("a tag can't be a tag of itself")
         answers = kinds_of(b)
         if answer is None:
             answers.pop(kid, None)
@@ -1489,12 +1498,12 @@ def rename_kind(ref: str, name: str) -> dict:
     def change(data, blocks):
         b = blocks.get(ref)
         if kind_of(b) is None:
-            raise StoreError("only a kind has a name to change")
+            raise StoreError("only a tag has a name to change")
         if not name:
-            raise StoreError("a kind needs a name")
+            raise StoreError("a tag needs a name")
         other = kind_named(blocks, name)
         if other not in (None, ref):
-            raise StoreError(f"there's a kind called {kind_of(blocks[other])} already")
+            raise StoreError(f"there's a tag called {kind_of(blocks[other])} already")
         undo = {"blocks": {ref: copy.deepcopy(b)}}
         b["content"] = {**b["content"], "kind": name}
         b["title"] = None  # (its name is its title)

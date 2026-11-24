@@ -57,3 +57,20 @@ test("the derived title, as fw_block.derive_title", () => {
   const long = "word ".repeat(20);
   assert.equal(deriveTitle(long), "word ".repeat(12).trim() + "…");
 });
+
+test("snapNode: the editor's document as the expression engine reads it", async () => {
+  const { snapNode } = await import("../src/draft.js");
+  const doc = { type: "doc", content: [
+    { type: "text_block", attrs: { id: "t1" }, content: [{ type: "text", text: "one" }, { type: "hard_break" },
+      { type: "text", text: "two", marks: [{ type: "link", attrs: { to: "L" } }] }] },
+    { type: "container", attrs: { id: "c1" }, content: [
+      { type: "quote", attrs: { id: "q1", target: "P" } },
+      { type: "text_block", attrs: { id: "p1", para: { id: "S", title: "s", text: "" } }, content: [{ type: "text", text: "said" }] }] },
+    { type: "expr", attrs: { id: "e1", source: "1 + 2" } }] };
+  assert.deepEqual(snapNode(doc), { id: "", t: "blocks", children: [
+    { id: "t1", t: "text", text: "one\ntwo", links: [{ to: "L", at: [4, 7] }] },   // (its links: offsets, a line break one)
+    { id: "c1", t: "blocks", children: [{ id: "q1", t: "quote", target: "P" }, { id: "p1", t: "paraphrase", target: "S", text: "said" }] },
+    { id: "e1", t: "expr", source: "1 + 2" }] });
+  const own = { type: "doc", content: [{ type: "text_block", attrs: { id: "X", own: true }, content: [{ type: "text", text: "just" }] }] };
+  assert.deepEqual(snapNode(own), { id: "X", t: "text", text: "just", links: [] });
+});

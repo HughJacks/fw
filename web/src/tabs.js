@@ -7,7 +7,7 @@
 // are on the path comes from the editors' states (editor.svelte.js focusOf, the audit of 2026-11-19: never read back
 // from the page's classes); only where their boxes are is measured here; drawn by Tabs.svelte.
 
-const BOX = ".fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image";
+const BOX = ".fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr";   // (.fw-expr: an expression block, the expr branch)
 const GAP = 3;   // px between tabs moved apart
 const PAD = 0.35;   // of a tab's height: how far inside its box, from its top and bottom, a tab's line keeps when it can
 
@@ -17,7 +17,8 @@ const alpha = (n) => { let s = ""; for (; n > 0; n = Math.floor((n - 1) / 26)) s
 const label = (n, level) => [String(n), alpha(n), roman(n)][level % 3];
 
 /** A quote showing one block: that block is the block it quotes, its box the quote's (no tab of its own). */
-const ownBox = (e) => !(e.matches(".fw-text") && e.parentElement?.matches(".fw-quote > .fw-body > .ProseMirror") && e.parentElement.childElementCount === 1);
+const ownBox = (e) => !((e.matches(".fw-text") && e.parentElement?.matches(".fw-quote > .fw-body > .ProseMirror") && e.parentElement.childElementCount === 1)
+  || (e.parentElement?.matches(".fw-value") && e.parentElement.childElementCount === 1));   // (a value's one block: unwrapped, its holder's box)
 
 /** The boxes from the top-level block down to `e`, outermost first. */
 function path(e, frame) {
@@ -122,7 +123,7 @@ export function tabsIn(doc, here) {
   const tops = boxes.map((b) => where.get(b));
   return boxes.map((b, level) => {
     const r = b.getBoundingClientRect(), focusHere = b === boxes[boxes.length - 1];
-    return { box: b, label: label(place(b), level), focus: focusHere, filled: focusHere && b === focus && here.chosen, quote: b.matches(".fw-quote, .fw-para"),
+    return { box: b, label: label(place(b), level), focus: focusHere, filled: focusHere && b === focus && here.chosen, quote: b.matches(".fw-quote:not(.fw-from), .fw-para"), expr: b.matches(".fw-expr, .fw-from"),
       left, top: tops[level], width: tabW, height: tabH, lineLeft: left + tabW, lineWidth: Math.max(0, r.left - d.left - left - tabW) };
   });
 }

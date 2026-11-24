@@ -17,6 +17,7 @@ export const COMMANDS = [
   { id: "mask", label: "Create or edit mask (a quote)", where: "editor", key: "Mod-Shift-m" },
   { id: "showall", label: "Remove mask", where: "editor", key: "Mod-Alt-m" },
   { id: "lock", label: "Lock or unlock writing through (a quote)", where: "editor", key: "Mod-Shift-l" },
+  { id: "code", label: "An expression's code: shown and edited, the result dim below (again: hidden)", where: "editor", key: "Mod-Shift-x" },
   { id: "nest", label: "A block inside the block (split at the cursor, a level down)", where: "editor", key: "Mod-Enter" },
   { id: "delete", label: "Delete this pericope (asked first)", where: "editor", key: "Mod-Shift-Backspace" },
   { id: "done", label: "Send it away: saved, off the top of the screen, and home (done for now; not back)", where: "editor", key: "Mod-Shift-Enter" },
@@ -24,10 +25,10 @@ export const COMMANDS = [
   { id: "forward", label: "Step in again: forward along the trail", where: "everywhere", key: "Mod-]" },
   { id: "home", label: "Home", where: "everywhere", key: "Mod-Shift-h" },
   { id: "keys", label: "This page: the keys", where: "everywhere", key: "Mod-Shift-," },
-  { id: "kinds", label: "The kinds view: every kind, and what's of it", where: "everywhere", key: "Mod-Shift-u" },
-  { id: "kindYes", label: "Yes, it's of this kind (a guess, in a kind's list)", where: "kinds", key: "y" },
-  { id: "kindNo", label: "No, it isn't (a guess, or one of yours taken out, in a kind's list)", where: "kinds", key: "n" },
-  { id: "kindDelete", label: "Delete the kind selected, in the kinds view (asked first)", where: "kinds", key: "Mod-Backspace" },
+  { id: "kinds", label: "The tags view: every tag, and what's tagged", where: "everywhere", key: "Mod-Shift-u" },
+  { id: "kindYes", label: "Yes, it has this tag (a guess, in a tag's list)", where: "kinds", key: "y" },
+  { id: "kindNo", label: "No, it hasn't (a guess, or one of yours taken out, in a tag's list)", where: "kinds", key: "n" },
+  { id: "kindDelete", label: "Delete the tag selected, in the tags view (asked first)", where: "kinds", key: "Mod-Backspace" },
   { id: "deleteHome", label: "Delete the pericope selected, on home (asked first)", where: "home", key: "Mod-Backspace" },
 ];
 

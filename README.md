@@ -10,7 +10,10 @@ fw runs on 127.0.0.1, and no model. Everything you write is made of
 - **masked**: a quote that shows only the parts of the original you pick,
 - **linked** from a span of text to another entry, with **backlinks** shown on the target,
 - marked as a **paraphrase** of another block (the same thing said another way),
-- said to be of a **kind** (a poem, a to-do list…), kinds being blocks too.
+- **tagged** (a poem, a letter, a class you're taking…), tags being blocks too,
+- or an **expression**: a small program that shows what it works out to, live,
+  from the blocks around it or from anything you've written (`/` → Expression,
+  ⌘⇧X for its code). Quote one and it's worked out where the quote sits.
 
 Home has an empty pericope waiting in the middle: start typing and it's
 yours. Below it are the search and the **garden** (cards of what you've been
@@ -143,6 +146,10 @@ its answers into the search.
 
 ## Developing
 
-`DESIGN.md` is the technical map. Tests: `tests/run.sh` (needs `pyte` and `loro`
+`DESIGN.md` is the technical map; `TYPE.md` is the theory of blocks and
+expressions. Expressions are written in fw's dialect of
+[Hazel](https://github.com/hazelgrove/hazel) (MIT; its licence is in
+`web/vendor/HAZEL-LICENSE`): `web/vendor/hazel.js` is Hazel's engine compiled to
+JavaScript with fw's prelude and bridge (their sources in `hazel-bridge/`). Tests: `tests/run.sh` (needs `pyte` and `loro`
 in `tests/.venv`; the script says how). Its suite "web" builds the page, runs
 `npm test` and the browser suite (`web/test/e2e.mjs`, headless Chrome).

@@ -6,8 +6,8 @@
   import { onMount, untrack } from "svelte";
   // editor: where it opened; commands(editor, ctx); run(editor, name, ctx); root(): the page's editor (after a toggle)
   // moved(editor): a toggle redrew the page, the cursor now in `editor` (the focus goes back there)
-  let { left, top, editor, commands, run, root, dismiss, moved = () => {} } = $props();
-  let query = $state(""), sel = $state(0), group = $state(null), rev = $state(0), input = $state();
+  let { left, top, editor, commands, run, root, dismiss, start = null, moved = () => {} } = $props();
+  let query = $state(""), sel = $state(0), group = $state(untrack(() => start)), rev = $state(0), input = $state();
   let ed = untrack(() => editor), ctx = ed.context();   // (where it is: the page's again after a toggle)
   let shown = $derived.by(() => {
     rev;

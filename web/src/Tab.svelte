@@ -10,7 +10,8 @@
   // (comes and goes in place; at once when nothing moves: the tests, reduced motion)
   const show = (node) => fade(node, { duration: 0 });   // (no fades for now, the user, 2026-11-19: it's there or it isn't)
   const cls = (base) => base + (t.focus ? (base === "fw-tab" ? " fw-tab-focus" : " fw-line-focus") : "")
-    + (t.filled ? (base === "fw-tab" ? " fw-tab-filled" : " fw-line-filled") : "") + (t.quote ? (base === "fw-tab" ? " fw-tab-quote" : " fw-line-quote") : "");
+    + (t.filled ? (base === "fw-tab" ? " fw-tab-filled" : " fw-line-filled") : "") + (t.quote ? (base === "fw-tab" ? " fw-tab-quote" : " fw-line-quote") : "")
+    + (t.expr ? (base === "fw-tab" ? " fw-tab-expr" : " fw-line-expr") : "");
 </script>
 
 <div class={cls("fw-tab-line")} style:left="{t.lineLeft}px" style:top="{t.top + t.height / 2}px" style:width="{t.lineWidth}px" transition:show></div>

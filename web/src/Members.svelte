@@ -34,7 +34,7 @@
 </script>
 
 <div class="fw-rows fw-library fw-members" tabindex="-1" bind:this={box} onkeydown={onkey} onblur={() => (sel = -1)} role="listbox">
-  <div class="fw-hint">{rows.length - sure - maybe} of this kind{sure ? `, ${sure} the model's sure of` : ""}{maybe ? `, ${maybe} maybe` : ""}</div>
+  <div class="fw-hint">{rows.length - sure - maybe} tagged{sure ? `, ${sure} the model's sure of` : ""}{maybe ? `, ${maybe} maybe` : ""}</div>
   {#each rows as m, n (m.key)}
     <div class={"fw-row" + (n === sel ? " fw-sel" : "") + (m.dim ? " fw-dim" : "") + (m.maybe ? " fw-maybe" : "")} data-pericope={m.open} role="option" aria-selected={n === sel}
       tabindex="-1" onmousedown={(e) => { e.preventDefault(); open(m); }}>

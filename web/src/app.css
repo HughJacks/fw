@@ -24,6 +24,9 @@
 :root {
   --bg: #111111; --fg: #dddad3; --dim: #8c8984; --faint: #3a3a3a; --rule: #2a2a2a;
   --quote: #9a6a6a; --quote-hi: #d76f6f; --blue: #6f93db; --sel: #dddad3;
+  /* an expression block's green (the user, 2026-11-24: "expression blocks, evaluated or not should be rendered in green,
+     pick a very pleasant one"): a soft sage-mint, as bright as the quotes' red when lit */
+  --expr: #6f9e82; --expr-hi: #7ccb9a; --expr-mid: rgba(124, 203, 154, .55); --path-expr: rgba(111, 158, 130, .4);
   --text: "Source Sans 3", system-ui, -apple-system, sans-serif;
   --measure: 40rem;   /* the writing's width: about 68 characters */
   --small: .8rem;     /* what's around the writing */
@@ -132,13 +135,13 @@ html.fw-still .fw-more { transition: none; }
   width: calc(var(--fp) + 1.1rem + var(--tab)); padding-right: calc(var(--fp) + 1.1rem); box-sizing: border-box; text-align: center;
   color: #4a4845; font-size: .7rem; height: 1.2rem; line-height: 1.2rem; top: .42rem; cursor: pointer; }
 /* each block's depth (--d): how many boxes it's inside */
-.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image) { --d: 0; }
-.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image) { --d: 1; }
-.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image) { --d: 2; }
-.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image) { --d: 3; }
+.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) { --d: 0; }
+.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) { --d: 1; }
+.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) { --d: 2; }
+.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) { --d: 3; }
 /* (the right side mirrors the left, the user, 2026-11-18: a box steps out on both sides, so text runs between the same
    two edges at every depth) */
-.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image { border: 1px solid var(--box);
+.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr { border: 1px solid var(--box);
   padding: .3rem calc((3 - var(--d, 0) + var(--lift)) * var(--u) + var(--pad) - 1px); }
 .fw-text { min-height: 1.6em; }
 .fw-container { padding: .15rem calc(var(--u) - 1px); }   /* (what it holds: boxes a step in) */
@@ -148,7 +151,7 @@ html.fw-still .fw-more { transition: none; }
    whole, shows its box, its text full and a little room easing out around it; the rest packed together, their boxes
    unseen (a quote's a faint red edge), their text lighter and dimmer. While stepping in or out, every box shows. */
 :root { --rest: #a9a6a0; }
-.fw-text, .fw-qtext, .fw-container, .fw-image { border-color: transparent; }
+.fw-text, .fw-qtext, .fw-container, .fw-image, .fw-expr { border-color: transparent; }
 .fw-doc .fw-text, .fw-doc .fw-qtext { color: var(--rest); }   /* (one weight throughout: activating a block never re-breaks its lines) */
 /* the room round the block you're in eases out, and the room round the one you left eases back (the user, 2026-11-19:
    animate the spread of the active block); the tabs follow it as it moves (Tabs.svelte measures each frame while it
@@ -157,7 +160,7 @@ html.fw-still .fw-more { transition: none; }
 .fw-text, .fw-qtext { padding-top: .1rem; padding-bottom: .1rem;
   transition: border-color .18s ease, color .18s ease, padding-top var(--spread), padding-bottom var(--spread), var(--lit-fade); }
 html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, color .18s ease, var(--lit-fade); }
-.fw-container, .fw-quote, .fw-image { transition: border-color .18s ease, var(--lit-fade); }
+.fw-container, .fw-quote, .fw-image, .fw-expr { transition: border-color .18s ease, var(--lit-fade); }
 .fw-doc .fw-here { border-color: var(--box-hi); color: var(--fg); padding-top: .35rem; padding-bottom: .35rem; }
 .fw-doc :is(.fw-text, .fw-qtext).fw-chosen { padding-top: .35rem; padding-bottom: .35rem; }   /* (selected whole is the focus too: the same room) */
 /* the path, the boxes round the one you're in (the user, 2026-11-19: "the path can be fainter and thinner"): a hairline
@@ -210,7 +213,7 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 .fw-quote:is(.fw-chosen, :has(> .fw-body > .ProseMirror > :is(.fw-here, .fw-chosen):first-child)) > .fw-top > .fw-top-label:not(:empty)::after {
   content: ""; position: absolute; left: 0; top: calc(100% + .3rem + 1px); height: var(--gap); border-left: 1px solid var(--faint); }
 .fw-doc .fw-quote.fw-chosen:has(> .fw-top > .fw-top-label:not(:empty))
-  > .fw-body > .ProseMirror > :is(.fw-text, .fw-container, .fw-quote, .fw-image):first-child:not(.fw-here, .fw-chosen, :only-child),
+  > .fw-body > .ProseMirror > :is(.fw-text, .fw-container, .fw-quote, .fw-image, .fw-expr):first-child:not(.fw-here, .fw-chosen, :only-child),
 .fw-doc .fw-quote.fw-chosen:has(> .fw-top > .fw-top-label:not(:empty))
   > .fw-body > :is(.fw-qtext, .fw-quote, .fw-image):first-child:not(:only-child) {
   --lit-up: var(--faint);
@@ -236,6 +239,38 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
    2026-11-22) */
 .fw-image img, .fw-pic { display: block; width: 100%; height: auto; max-height: 65vh; object-fit: contain; }
 .fw-image.fw-chosen { border-color: var(--fg); }
+.fw-expr.fw-chosen { border-color: var(--expr-hi); }
+/* a value of blocks: held as a container holds its blocks (the user, 2026-11-24: nesting in a value "should work the
+   same as any other blocks"): its blocks a step in, the container's gap between them */
+.fw-expr:has(> .fw-expr-out.fw-expr-block) { padding: .15rem calc(var(--u) - 1px); }
+.fw-expr-out.fw-expr-block .ProseMirror { outline: none; white-space: pre-wrap; }
+.fw-expr-out.fw-expr-block .ProseMirror > * { margin-bottom: var(--gap); }
+.fw-expr-out.fw-expr-block .ProseMirror > *:last-child { margin-bottom: 0; }
+/* a value of one block, unwrapped (the user, 2026-11-24: "we should always unwrap wrappings with just one block"): that
+   block is its holder's box (an expression's, a call's, a window's), drawn as nothing of its own */
+.fw-doc .fw-value > :only-child { border-color: transparent !important; border-image: none !important; outline: none !important;
+  padding-top: 0; padding-bottom: 0; margin: 0; }
+.fw-value > .fw-quote:only-child > .fw-top > .fw-open { visibility: hidden; }   /* (a window unwrapped: its holder's tab says it) */
+/* its ƒ tab: in the right margin, as a paraphrase's ↗; faint at rest, drawn when you're on it, filled selected whole */
+.fw-expr { position: relative; }
+.fw-expr > .fw-fn { position: absolute; top: .15rem; line-height: 1.2rem; width: 1.2rem; height: 1.2rem; padding: 0; text-align: center;
+  right: calc(-1 * (var(--d, 0) * var(--u) + var(--fp) + 1px + 2rem)); color: var(--expr); opacity: .45; background: none; border: none;
+  font: italic .8rem/1.2rem Georgia, serif; cursor: pointer; transition: opacity .18s ease; }
+.fw-expr:is(.fw-here, .fw-chosen, .ProseMirror-selectednode, .fw-expr-coding, :has(.fw-current)) > .fw-fn { opacity: 1; outline: 1px solid var(--expr-mid); }
+.fw-expr:is(.fw-here, .fw-chosen, .ProseMirror-selectednode, .fw-expr-coding, :has(.fw-current)) > .fw-fn::before { content: ""; position: absolute; right: 100%; top: 50%; height: 1px;
+  background: var(--expr-mid); width: calc(var(--d, 0) * var(--u) + var(--fp) + 2rem - 1.2rem); }
+.fw-doc .fw-expr:is(.fw-chosen, .ProseMirror-selectednode) > .fw-fn { background: var(--expr-hi); color: var(--bg); outline-color: var(--expr-hi); }
+.fw-doc .fw-expr:is(.fw-chosen, .ProseMirror-selectednode) > .fw-fn::before { background: var(--expr-hi); }
+.fw-doc > .ProseMirror > .fw-expr::before { color: #4f6b5a; }   /* (its number in the gutter: green, at rest too) */
+.fw-expr-out.fw-expr-block .fw-container > * { margin-bottom: var(--gap); }
+.fw-expr-out.fw-expr-block .fw-container > *:last-child { margin-bottom: 0; }
+.fw-expr:has(.fw-current) { outline: .5px solid var(--path-expr); outline-offset: -.5px; }   /* (in its value: the path, green) */
+/* an expression's From (TYPE.md: body(@x), blocks that came from x unchanged): a quote, written by hand, so green */
+.fw-doc .fw-quote.fw-from { --own-mid: var(--expr-mid); --own-bright: var(--expr-hi); }
+.fw-quote.fw-from.fw-chosen { --edge: var(--expr-hi); border-color: var(--edge); }
+.fw-quote.fw-from:has(.fw-current) { --edge: var(--path-expr); }
+.fw-quote.fw-from:has(> .fw-body > .ProseMirror > .fw-text.fw-here:only-child) { --edge: var(--expr-mid); }
+.fw-quote.fw-from > .fw-top, .fw-quote.fw-from > .fw-top > .fw-open { color: var(--expr); }
 
 /* the top line (App.svelte): what the page says; small, in the header's monospace, centred in the page's width; no
    breadcrumb, no rule (the user, 2026-11-19). Its line kept when empty: a message coming never moves the page. */
@@ -413,6 +448,10 @@ div.fw-peek { color: #5a5855; white-space: pre-wrap; padding: .2rem .6rem; }
 .fw-tab-filled { background: var(--fg); border-color: var(--fg); color: var(--bg); }   /* (selected whole: the colour of its border) */
 .fw-tab-line.fw-line-filled { border-color: var(--fg); }
 .fw-tab-filled.fw-tab-quote { background: var(--quote-hi); border-color: var(--quote-hi); }
+.fw-tab-expr, .fw-line-expr { border-color: var(--path-expr); }
+.fw-tab-focus.fw-tab-expr, .fw-line-focus.fw-line-expr { border-color: var(--expr-mid); }
+.fw-tab-filled.fw-tab-expr { background: var(--expr-hi); border-color: var(--expr-hi); }
+.fw-tab-line.fw-line-filled.fw-line-expr { border-color: var(--expr-hi); }
 .fw-tab-line.fw-line-filled.fw-line-quote { border-color: var(--quote-hi); }
 /* (a top-level block with a tab: its plain number hidden, the tab stands for it) */
 .fw-doc > .ProseMirror > :is(.fw-here, :has(.fw-here), :has(.fw-current), .fw-chosen, :has(.fw-chosen))::before { visibility: hidden; }
@@ -424,18 +463,19 @@ div.fw-peek { color: #5a5855; white-space: pre-wrap; padding: .2rem .6rem; }
    you in it, too: in, not selected), bright beside one selected whole; its sides fading out over --glow. Drawn as each neighbour's own border
    (border-image), so nothing moves. (No :has() inside a :has(): CSS drops it; the quote case is one :has(+ .fw-quote > …).) */
 :root { --glow: 1rem; }
-.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-image) { --own-mid: var(--box-hi); --own-bright: var(--fg); }   /* (each box's own colours, lit) */
+.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-image, .fw-expr) { --own-mid: var(--box-hi); --own-bright: var(--fg); }   /* (each box's own colours, lit) */
 .fw-doc .fw-quote { --own-mid: var(--quote-mid); --own-bright: var(--quote-hi); }   /* (its red as bright as the grey) */
+.fw-doc .fw-expr { --own-mid: var(--expr-mid); --own-bright: var(--expr-hi); }   /* (green, lit as every box is) */
 .fw-doc .fw-para { --own-mid: rgba(154, 106, 106, .7); --own-bright: var(--quote); }
-.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image):not(.fw-here, .fw-chosen) { --lit-up: transparent; --lit-down: transparent; }
+.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr):not(.fw-here, .fw-chosen) { --lit-up: transparent; --lit-down: transparent; }
 /* the one above: its bottom edge lit, its sides fading upward; the one below: its top edge, its sides fading downward */
-.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image):not(.fw-here, .fw-chosen):is(:has(+ .fw-here), :has(+ .fw-quote > .fw-body > .ProseMirror > .fw-text.fw-here:only-child)) { --lit-down: var(--own-mid); }
-.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image):not(.fw-here, .fw-chosen):has(+ .fw-chosen) { --lit-down: var(--own-bright); }
-.fw-doc :is(.fw-here, .fw-quote:has(> .fw-body > .ProseMirror > .fw-text.fw-here:only-child)) + :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image):not(.fw-here, .fw-chosen) { --lit-up: var(--own-mid); }
-.fw-doc .fw-chosen + :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image):not(.fw-here, .fw-chosen) { --lit-up: var(--own-bright); }
+.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr):not(.fw-here, .fw-chosen):is(:has(+ .fw-here), :has(+ .fw-quote > .fw-body > .ProseMirror > .fw-text.fw-here:only-child)) { --lit-down: var(--own-mid); }
+.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr):not(.fw-here, .fw-chosen):has(+ .fw-chosen) { --lit-down: var(--own-bright); }
+.fw-doc :is(.fw-here, .fw-quote:has(> .fw-body > .ProseMirror > .fw-text.fw-here:only-child)) + :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr):not(.fw-here, .fw-chosen) { --lit-up: var(--own-mid); }
+.fw-doc .fw-chosen + :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr):not(.fw-here, .fw-chosen) { --lit-up: var(--own-bright); }
 /* the page's first block, always: its top edge lit as the header's line is, so that line always reaches a block (the
    user, 2026-11-19); unless it's the one you're in, whose own border shows */
-.fw-doc > .ProseMirror > :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image):not(.fw-here, .fw-chosen):first-child:not(.fw-quote:has(> .fw-body > .ProseMirror > .fw-text.fw-here:only-child)) { --lit-up: var(--faint); }
+.fw-doc > .ProseMirror > :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr):not(.fw-here, .fw-chosen):first-child:not(.fw-quote:has(> .fw-body > .ProseMirror > .fw-text.fw-here:only-child)) { --lit-up: var(--faint); }
 /* every box drawn by its gradient (the user, 2026-11-22: the active box and its neighbours' glow fading together, as
    one): its top edge --lit-up, its sides --lit-mid fading to and from them over --glow, its bottom edge --lit-down. At
    rest all four transparent; the active box (you in it, or selected whole) all its own colour; a neighbour its facing
@@ -445,7 +485,7 @@ div.fw-peek { color: #5a5855; white-space: pre-wrap; padding: .2rem .6rem; }
 .fw-doc :is(.fw-here, .fw-quote:has(> .fw-body > .ProseMirror > .fw-text.fw-here:only-child)) { --lit-up: var(--own-mid); --lit-mid: var(--own-mid); --lit-down: var(--own-mid); }
 .fw-doc .fw-chosen { --lit-up: var(--own-bright); --lit-mid: var(--own-bright); --lit-down: var(--own-bright); }
 .fw-doc .fw-para:is(.fw-here, .fw-chosen) { --lit-up: var(--quote-mid); --lit-mid: var(--quote-mid); --lit-down: var(--quote-mid); }
-.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image):not(.fw-unit, .fw-munit, .fw-masking-on, .fw-masking *) {
+.fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr):not(.fw-unit, .fw-munit, .fw-masking-on, .fw-masking *) {
   border-image: linear-gradient(to bottom, var(--lit-up), var(--lit-mid) var(--glow), var(--lit-mid) calc(100% - var(--glow)), var(--lit-down)) 1; }
 :root { --lit-fade: --lit-up .18s ease, --lit-mid .18s ease, --lit-down .18s ease; }
 @property --lit-up { syntax: "<color>"; inherits: false; initial-value: transparent; }
@@ -517,3 +557,31 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-backs:not(.fw-backs-open) { opacity: .6; }
 .fw-backs.fw-backs-open { position: static; padding-top: 4rem; }   /* (room above it, to be scrolled to with room: scrolling.js) */
 .fw-go.fw-go-up { border-bottom: none; border-top: 1px solid var(--rule); margin: 0; padding: .35rem .4rem .2rem; }
+
+/* an expression block (the expr branch, exprview.js): its value, in a box as any block's; its code, when shown, in a
+   box of its own above it, the value dim */
+.fw-doc .fw-expr { cursor: default; }
+.fw-expr-out { white-space: pre-wrap; }
+.fw-expr-out.fw-expr-wait { color: var(--dim); font-style: italic; }
+.fw-expr-out.fw-expr-holes { color: var(--dim); }
+.fw-expr.fw-expr-coding .fw-expr-out { color: var(--dim); font-size: .9em; padding-left: .5rem; }
+.fw-expr-code { display: block; width: 100%; resize: none; box-sizing: border-box;
+  background: rgba(255, 255, 255, .03); color: var(--fg); border: none; border-radius: 2px; outline: none;
+  font: 14px/1.55 ui-monospace, "SF Mono", Menlo, monospace; padding: .35rem .5rem; margin-bottom: .35rem; tab-size: 2; }
+/* its caret always shows (the block's selected whole meanwhile, which hides the page's: .fw-selecting) */
+.fw-selecting .fw-expr-code, .fw-expr-code { caret-color: var(--fg) !important; }
+.fw-expr-code::selection { background: rgba(120, 160, 220, .35); }
+/* its value: a Block value as fw's blocks (views.blockEl; each a box as any block's, read only), a function as its type,
+   dim (TYPE.md: a function can't be shown as a block), what's unfinished a dim ?; Hazel's errors under the code */
+.fw-expr-out.fw-expr-fn { color: var(--dim); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .9em; }
+.fw-expr-out.fw-expr-block > .fw-vblock { margin: 0; }
+.fw-expr-out.fw-expr-block .fw-container > .fw-vblock { margin-bottom: var(--gap); }
+.fw-expr-out.fw-expr-block .fw-container > .fw-vblock:last-child { margin-bottom: 0; }
+.fw-vhole { color: var(--dim); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.fw-expr-errors { color: var(--dim); font-size: .8em; padding: .2rem .5rem 0; white-space: pre-wrap; }
+.fw-expr-errors > div::before { content: "⦃ "; }
+.fw-expr-errors > div::after { content: " ⦄"; }
+/* the code in CodeMirror (codebox.js): a reference drawn as its pericope's title, a chip (TYPE.md, references) */
+.fw-ref { color: var(--blue); background: rgba(111, 147, 219, .14); border-radius: 3px; padding: 0 .25em;
+  font-family: "Source Sans 3 Variable", system-ui, sans-serif; }
+.fw-ref.fw-ref-gone { color: var(--dim); background: rgba(255, 255, 255, .06); }

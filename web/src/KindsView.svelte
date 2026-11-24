@@ -57,7 +57,7 @@
     return out;
   }
   let rows = $derived([...roots.flatMap((k) => tree(k, k.id, 0, new Set())),
-    ...(kinds ? tree({ id: NONE, name: "no kind", members: unkinded }, NONE, 0, new Set()) : []), { t: "new", depth: 0 }]);
+    ...(kinds ? tree({ id: NONE, name: "no tag", members: unkinded }, NONE, 0, new Set()) : []), { t: "new", depth: 0 }]);
   const up = (r) => (r.t === "kind" ? (r.path.includes("/") ? r.path.slice(0, r.path.lastIndexOf("/")) : null) : r.t === "new" ? null
     : r.t === "loop" ? r.path.slice(0, r.path.lastIndexOf("/")) : r.path);   // (the path of the kind it's shown in)
   let sel = $derived(Math.max(0, rows.findIndex((r) => keyOf(r) === at)));   // (gone: the first)
@@ -91,10 +91,10 @@
     let i = sel + 1;
     while (rows[i] && rows[i].depth > r.depth) i++;   // (past what's open under it)
     const next = rows[i];
-    if (!(await ask(`delete the kind “${r.k.name}”? what's of it stays, only the kind goes. this can't be undone.`))) return;
+    if (!(await ask(`delete the tag “${r.k.name}”? what's tagged stays, only the tag goes. this can't be undone.`))) return;
     const got = await api("/api/act", { method: "POST", body: JSON.stringify({ do: "delete", pericope: r.k.id }) });
     if (!got.ok) { say(got.body.error || "couldn't"); return; }
-    say(`deleted the kind ${r.k.name}`);
+    say(`deleted the tag ${r.k.name}`);
     if (next) at = keyOf(next);
     await load();
     list?.focus();
@@ -108,7 +108,7 @@
     naming = false;
     await load();
     at = `k:${r.body.kind}`;
-    say(`a kind: ${name.trim()}`);
+    say(`a tag: ${name.trim()}`);
     list?.focus();
   }
   function onkey(e) {
@@ -171,9 +171,9 @@
       {:else}
         <div class={"fw-row fw-newkind" + (n === sel ? " fw-sel" : "")} role="option" aria-selected={n === sel} tabindex="-1"
           onmousedown={(e) => click(e, r)}>
-          {#if naming}<span class="fw-row-label">+ new kind: <input class="fw-input" bind:this={input} bind:value={name} onkeydown={onname}
+          {#if naming}<span class="fw-row-label">+ new tag: <input class="fw-input" bind:this={input} bind:value={name} onkeydown={onname}
             onblur={() => (naming = false)} placeholder="its name" /></span>
-          {:else}<span class="fw-row-label">+ new kind</span>{/if}
+          {:else}<span class="fw-row-label">+ new tag</span>{/if}
         </div>
       {/if}
     {/each}

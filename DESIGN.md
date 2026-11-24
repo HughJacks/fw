@@ -41,6 +41,7 @@ several machines merge; undo is total; everything is a block.
 | `fw_screen.py` | the terminal: character widths, soft wrap, word steps, `put`, `draw_box`, terminal modes, the test-only `$FW_SYNC` signal |
 | `fw_app.py` | the loop: `stage` → edit → `finish` → home; the Open it trail |
 | `fw_web.py` | the web editor's core: a local server over the store (127.0.0.1), the only part of the web editor that touches it (fw_store's functions; drafts saved through `commit`); JSON to the page. It rebuilds the page when `web/src` changes and restarts itself when `fw_*.py` change; the open tab reloads itself. `fw`, `fw web` |
+| expressions | a block that's a program in fw's dialect of Hazel (schema v20; the theory in `TYPE.md`), evaluated in the page: `web/src/hazel.js` loads the engine (`web/vendor/hazel.js`, [Hazel](https://github.com/hazelgrove/hazel), MIT, compiled to JavaScript with fw's prelude and bridge, whose sources are in `hazel-bridge/`); `snapshot.svelte.js` is the store as the engine reads it (the core's `GET /api/snapshot`, the open pericope's own live over it); `exprview.js` the block (its value as a browsed editor, block level only; ⌘⇧X its code, `codebox.js`, CodeMirror); a quote of one expression is a call (`QuoteView.call`, `fw_web.quoted_expr`); `fw_block.expr_refs` its @references (backlinks) |
 | `web/` | the web editor's page: Svelte 5 components with runes (`App.svelte` the shell and the view open; `Home`, `Pericope`, `Keys`; `Tabs`, `Kinds`, `Ask`, `Masking`; the floating menus `SearchBox`, `ActionsMenu`, `SlashList`, `PictureLink`, through `float.svelte.js`), shared state in `*.svelte.js` (`state`, `keys`, `review`); ProseMirror the editing engine (`editor.js`, `schema.js`, `views.js`; `src/draft.js` pure: tree to document to draft); `main.js` routes; `motion.js` moving between places; keys as data in `keys.svelte.js`; Tailwind; `npm run build` → `dist/`; `npm test`, `node test/e2e.mjs` |
 | `fw_meaning.py` | search by meaning, optional: asks a search service you run apart from fw (`$FW_MEANING_URL`; none by default) in the background after a pause in typing (`Asker`); the search list mixes its answer in (`fw_picker.fuse`). fw has no model of its own and works the same without one |
 | `schema/block.schema.json` | the shape of a block; the source of truth for validation and the header fields |
@@ -67,7 +68,8 @@ Content = Text    "a string"
         | Blocks  ["<id>", …]                         children, in order
         | Quote   {"quote": "<id>", "mask"?, "show"?: [prop…], "inner"?: {"<quote id>": mask}, "lock"?: true}
         | Image   {"image": "<hash>.<png|jpg|gif|webp>"}    a file in images/
-        | Kind    {"kind": "<name>", "blocks": ["<id>", …]}  what a block can be: its description, children
+        | Kind    {"kind": "<name>", "blocks": ["<id>", …]}  what a block can be (a tag, on screen): its description, children
+        | Expr    {"expr": "<source>"}                    a program in fw's dialect of Hazel (v20); its value never stored
 links   = [{to: entry id, at: [start, end], created?}]  spans of a text block's text
 kinds   = {"<kind id>": true | false}                   what a pericope is (or isn't): only your answers
 mask (on disk) = {block id: [[start, end], …]}          what shows of each block of the target
@@ -92,7 +94,7 @@ visits  = {total, first, recent: [[minute, flags], …]}   the last 10 visits; m
   `fw_block`) and writes them with `record_visits` when a visit ends, on
   leaving a pericope and on quit. `fw_block.visits(b)` reads them;
   `$FW_CLOCK` sets the time in tests.
-- **Kinds** (v16): a kind (a poem, a to-do) is a block whose content is
+- **Kinds** (v16; called tags on screen and in the docs, the code and the schema keep `kind`): a kind (a poem, a to-do, a class) is a block whose content is
   Kind, a name and a description made of ordinary child blocks, always an
   entry; `children`, `own_text`, `block_items`, `block_draft` treat it as a
   container, and `with_children` writes one back keeping its name. A

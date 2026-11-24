@@ -1269,8 +1269,8 @@ const scenarios = {
     await t.settle();
     t.check("  saved: the store's count agrees", (await t.get(`/api/pericope/${T}`)).words === before + 3);
     t.check("every field shown, an empty one saying none (2026-11-21)", await t.js(`(() => { const h = document.querySelector(".fw-hbox").textContent.replace(/ +/g, " "), flat = h.replace(/ /g, "");
-      return ["created ", "updated ", "words ", "last visited ", "backlinks", "kinds", "title"].every((f) => h.includes(f))
-        && h.includes("last visited none") && !h.includes("paraphrase of") && flat.includes("kindsnone"); })()`),
+      return ["created ", "updated ", "words ", "last visited ", "backlinks", "tags", "title"].every((f) => h.includes(f))
+        && h.includes("last visited none") && !h.includes("paraphrase of") && flat.includes("tagsnone"); })()`),
       await t.js(`document.querySelectorAll(".fw-hbox").length + " " + document.querySelector(".fw-header").outerHTML.slice(0, 1500)`));
   },
 
@@ -1281,9 +1281,9 @@ const scenarios = {
     await t.key("ArrowUp");
     t.check("  ↑ again: the kinds line", await t.until(`document.activeElement?.classList.contains("fw-chip")`, 1000));
     await t.key("h");   // (typing on the line: the picker, with it typed)
-    await t.until(`document.querySelector(".fw-menu")?.innerText.includes("kind ›")`, 2000);
+    await t.until(`document.querySelector(".fw-menu")?.innerText.includes("tag ›")`, 2000);
     await t.type("aiku");
-    t.check("  the picker: + new kind, with what's typed", await t.until(`document.querySelector(".fw-menu")?.innerText.includes("+ new kind “haiku”")`, 2000));
+    t.check("  the picker: + new kind, with what's typed", await t.until(`document.querySelector(".fw-menu")?.innerText.includes("+ new tag “haiku”")`, 2000));
     await t.key("Enter");
     await t.settle();
     const tok = (await t.get(`/api/pericope/${B}`)).kindTokens;
@@ -1310,7 +1310,7 @@ const scenarios = {
     t.check("only a pericope has kinds: a block inside one refused", !(await say(B1, true)));
     await t.key("u", 4 | 8);
     const rows = `[...document.querySelectorAll(".fw-kindsview .fw-row")].map((r) => r.innerText.replace(/\\s+/g, " ").trim()).join(" | ")`;
-    t.check("⌘⇧U: the kinds view, each kind folded with its count", await t.until(`location.hash === "#/kinds" && ${rows} === "▸ poem 2 + 1 sure + 1 maybe | ▸ no kind 4 | + new kind"`, 3000), await t.js(rows));
+    t.check("⌘⇧U: the kinds view, each kind folded with its count", await t.until(`location.hash === "#/tags" && ${rows} === "▸ poem 2 + 1 sure + 1 maybe | ▸ no tag 4 | + new tag"`, 3000), await t.js(rows));
     await t.key("ArrowRight");
     t.check("  →: its members, yours newest first, then the model's sure ones, dim, then its maybes",
       await t.until(`${rows}.startsWith("▾ poem 2 + 1 sure + 1 maybe | beta") && ${rows}.includes("| alpha") && ${rows}.includes("| fox")
@@ -1319,7 +1319,7 @@ const scenarios = {
     await t.key("Enter");
     t.check("  Enter on a member: opened", await t.until(`window.fw?.editor()?.id === "${B}"`, 4000));
     await t.key("u", 4 | 8);
-    await t.until(`location.hash === "#/kinds" && document.querySelector(".fw-kindsview .fw-sel")`, 3000);
+    await t.until(`location.hash === "#/tags" && document.querySelector(".fw-kindsview .fw-sel")`, 3000);
     t.check("  back again: still open", await t.until(`document.querySelectorAll(".fw-member").length === 4`, 3000));
     for (let i = 0; i < 3; i++) await t.key("ArrowDown");   // (from the kind: beta, alpha, fox, the sure guess)
     await t.key("y");
@@ -1339,10 +1339,10 @@ const scenarios = {
     for (let i = 0; i < 5; i++) await t.key("ArrowUp");   // (up to poem)
     await t.key("ArrowLeft"); await t.key("ArrowDown");
     await t.key("ArrowRight");
-    t.check("  no kind, last: the pericopes of none (a maybe isn't one), newest first", await t.until(`${rows}.includes("▾ no kind 4 | nested") && ${rows}.includes("| masker")
+    t.check("  no kind, last: the pericopes of none (a maybe isn't one), newest first", await t.until(`${rows}.includes("▾ no tag 4 | nested") && ${rows}.includes("| masker")
       && !${rows}.includes("| fox") && !${rows}.includes("| poem ")`, 2000), await t.js(rows));
     await t.key("ArrowLeft"); await t.key("ArrowDown");
-    t.check("  ←: folded; ↓ to + new kind", await t.until(`${rows} === "▸ poem 2 + 1 sure + 1 maybe | ▸ no kind 4 | + new kind" && document.querySelector(".fw-sel")?.classList.contains("fw-newkind")`, 2000), await t.js(rows));
+    t.check("  ←: folded; ↓ to + new kind", await t.until(`${rows} === "▸ poem 2 + 1 sure + 1 maybe | ▸ no tag 4 | + new tag" && document.querySelector(".fw-sel")?.classList.contains("fw-newkind")`, 2000), await t.js(rows));
     await t.key("Enter");
     await t.until(`document.activeElement?.matches(".fw-newkind .fw-input")`, 2000);
     await t.type("song");
@@ -1352,7 +1352,7 @@ const scenarios = {
     await t.key("Backspace", 4);
     await t.until(`!!document.querySelector(".fw-ask")`, 2000);
     await t.key("y");
-    t.check("  ⌘⌫ on a kind, asked, y: deleted", await t.until(`${rows} === "▸ poem 2 + 1 sure + 1 maybe | ▸ no kind 4 | + new kind"`, 3000)
+    t.check("  ⌘⌫ on a kind, asked, y: deleted", await t.until(`${rows} === "▸ poem 2 + 1 sure + 1 maybe | ▸ no tag 4 | + new tag"`, 3000)
       && !(await t.get("/api/kinds")).kinds.some((k) => k.name === "song"), await t.js(rows));
     await t.key("ArrowUp");
     await t.key("Enter");
@@ -1403,6 +1403,331 @@ scenarios.nestback = async (t) => {   // ⌘↵ then ⌫, over and over: never d
     && kids[0].text === "Xbeta's words", JSON.stringify(kids));
 };
 
+scenarios.expr = async (t) => {   // the expr branch: an expression block, Hazel's engine, the code on ⌘⇧X
+  await t.open(`#/p/${A}`);
+  await t.end();
+  await t.key("Enter");
+  await t.type("/");
+  await t.type("expr");
+  await t.until(`!!document.querySelector(".fw-slash, .fw-menu")`, 2000);
+  await t.key("Enter");
+  t.check("/ → Expression: an expression block, its code open to write", await t.until(`!!document.activeElement?.closest(".fw-expr-code")`, 2000));
+  t.check("  its caret shows (the block selected whole meanwhile hides the page's)", await t.until(`!!document.querySelector(".fw-expr-code .cm-cursor")`, 2000));
+  await t.type('if 3 * 4 > 10 then "big" ++ "!" else "small"');
+  t.check("  the engine loads; the result follows the code, dim below it", await t.until(`document.querySelector(".fw-expr-out")?.textContent === '"big!"'`, 8000),
+    await t.js(`document.querySelector(".fw-expr-out")?.textContent`));
+  await t.shot("expr-coding.png", { x: 0, y: 100, width: 1100, height: 260 });
+  await t.key("x", 4 | 8);
+  t.check("  a block as any: its number in the gutter, a tab when it's selected", await t.until(`!!document.querySelector(".fw-tab") && [...document.querySelectorAll(".fw-tab")].some((x) => x.textContent.trim() === "3")`, 2000)
+    || await t.js(`getComputedStyle(document.querySelector(".fw-expr"), "::before").content !== "none"`), await t.js(`[...document.querySelectorAll(".fw-tab")].map((x) => x.textContent).join()`));
+  t.check("  ⌘⇧X: the code hidden, the result shown, the block selected", await t.until(`!document.querySelector(".fw-expr-code") && !!document.querySelector(".fw-expr.ProseMirror-selectednode")`, 2000));
+  await t.settle();
+  await t.shot("expr-selected.png", { x: 0, y: 0, width: 1100, height: 320 });
+  const kid = (await t.kids(A)).find((k) => k.t === "expr");
+  t.check("  saved: an expression block, its source", kid?.source === 'if 3 * 4 > 10 then "big" ++ "!" else "small"', JSON.stringify(await t.kids(A)));
+  await t.open(`#/p/${B}`);
+  await t.open(`#/p/${A}`);
+  t.check("  opened again: its result (a String, as Hazel prints it)", await t.until(`document.querySelector(".fw-expr-out")?.textContent === '"big!"'`, 8000));
+  const r = await t.js(`(() => { const b = document.querySelector(".fw-expr").getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`);
+  await t.click(r[0], r[1]);
+  await t.until(`!!document.querySelector(".fw-expr.ProseMirror-selectednode")`, 2000);
+  await t.key("x", 4 | 8);
+  await t.until(`!!document.activeElement?.closest(".fw-expr-code")`, 4000);
+  await setCode(t, "1 + 2 +");
+  t.check("  unfinished: a hole, the rest worked out", await t.until(`document.querySelector(".fw-expr-out")?.textContent === "3 + ?"`, 5000),
+    await t.js(`document.querySelector(".fw-expr-out")?.textContent + " | " + document.querySelector(".fw-expr-codebox")?.fwCode.state.doc.toString()`));
+  await t.key("Escape");   // (the code closed: the block selected whole)
+  await t.until(`!document.querySelector(".fw-expr-code") && !!document.querySelector(".fw-expr.ProseMirror-selectednode")`, 3000);
+  await t.settle();
+  await t.key("e", 4);   // (⌘E: Turn into a quote)
+  t.check("⌘E on an expression block: a pericope of its own, quoted here, showing its result",
+    await t.until(`!!document.querySelector(".fw-quote .fw-expr-out") && document.querySelector(".fw-quote .fw-expr-out").textContent === "3 + ?"`, 5000),
+    await t.js(`document.querySelector(".fw-quote")?.innerText`));
+  await t.settle();
+  const q = (await t.kids(A)).find((k) => k.t === "quote" && k.target !== B);
+  t.check("  in the store: a quote here, the expression in its new pericope", !!q && (await t.kids(q.target))[0]?.t === "expr", JSON.stringify(await t.kids(A)));
+  await t.open(`#/p/${q.target}`);
+  t.check("  its pericope opened: the expression, its result; its type in the header", await t.until(`document.querySelector(".fw-expr-out")?.textContent === "3 + ?"`, 5000)
+    && await t.js(`document.querySelector(".fw-label").textContent === "expression"`), await t.js(`document.querySelector(".fw-label").textContent`));
+
+};
+
+/** The open code box's text set to `src` (CodeMirror's own change: told back to the block as typing is). */
+const setCode = (t, src) => t.js(`(() => { const v = document.querySelector(".fw-expr-codebox").fwCode;
+  v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: ${JSON.stringify(src)} } }); return 1; })()`);
+
+/** An expression block put in at the end of the open pericope, its code `src`, then shown at rest (⌘⇧X). */
+async function addExpr(t, src) {
+  await t.end();
+  await t.key("Enter");
+  await t.type("/");
+  await t.type("expr");
+  await t.until(`!!document.querySelector(".fw-slash, .fw-menu")`, 2000);
+  await t.key("Enter");
+  await t.until(`!!document.activeElement?.closest(".fw-expr-code")`, 2000);
+  await setCode(t, src);
+  await t.key("x", 4 | 8);
+  await t.until(`!document.querySelector(".fw-expr-code")`, 2000);
+  await t.settle();
+}
+const lastOut = `[...document.querySelectorAll(".fw-doc .fw-expr > .fw-expr-out")].at(-1)`;
+
+scenarios.codebox = async (t) => {   // the code written in CodeMirror (2026-11-24): highlighted; @ opens fw's search; a reference drawn as its title
+  await t.open(`#/p/${A}`);
+  await t.end();
+  await t.key("Enter");
+  await t.type("/");
+  await t.type("expr");
+  await t.until(`!!document.querySelector(".fw-slash, .fw-menu")`, 2000);
+  await t.key("Enter");
+  await t.until(`!!document.activeElement?.closest(".fw-expr-code")`, 2000);
+  await t.type("let n = 3 in ");
+  await t.settle();
+  const caretIn = `(() => { const s = getSelection(); const c = document.querySelector(".fw-expr-code .cm-cursor");
+    return !!s.anchorNode && !!s.anchorNode.parentElement?.closest(".cm-content") && s.isCollapsed && !!document.activeElement?.closest(".fw-expr-code")
+      && !!c && c.getBoundingClientRect().height > 0 && getComputedStyle(c).borderLeftColor !== "rgba(0, 0, 0, 0)"; })()`;
+  t.check("while typing, the caret stays in the code (the page's selection never takes it)", await t.js(caretIn),
+    await t.js(`(() => { const s = getSelection(); return (s.anchorNode?.nodeName || "none") + " in " + (s.anchorNode?.parentElement?.className || "") + " · active " + document.activeElement?.className + " · caret " + getComputedStyle(document.querySelector(".fw-expr-code .cm-content")).caretColor; })()`));
+  t.check("highlighted: a keyword coloured apart from a name", await t.until(`(() => {
+    const spans = [...document.querySelectorAll(".fw-expr-code .cm-line span")];
+    const c = (w) => spans.find((x) => x.textContent === w) && getComputedStyle(spans.find((x) => x.textContent === w)).color;
+    return c("let") && c("let") !== getComputedStyle(document.querySelector(".fw-expr-code .cm-line")).color; })()`, 2000));
+  await t.type("title(");
+  await t.type("@");
+  t.check("@: fw's search opens at once", await t.until(`!!document.querySelector(".cm-tooltip-autocomplete li")`, 3000));
+  await t.type("fox");
+  t.check("  typing narrows it: the pericope titled fox offered", await t.until(`[...document.querySelectorAll(".cm-tooltip-autocomplete li")].some((li) => li.textContent.includes("fox"))`, 3000),
+    await t.js(`document.querySelector(".cm-tooltip-autocomplete")?.innerText`));
+  await t.until(`document.querySelector(".cm-tooltip-autocomplete li[aria-selected]")?.textContent.includes("fox")`, 2000);
+  await t.shot("codebox-at.png", { x: 0, y: 0, width: 1100, height: 520 });
+  await t.key("Enter");
+  await t.type(")");
+  const src = () => t.js(`document.querySelector(".fw-expr-codebox").fwCode.state.doc.toString()`);
+  t.check("  picked: the source holds its id", (await src()) === `let n = 3 in title(@${T})`, await src());
+  t.check("  drawn as its title, a chip", await t.until(`document.querySelector(".fw-expr-code .fw-ref")?.textContent === "fox"`, 2000),
+    await t.js(`document.querySelector(".fw-expr-code .cm-line")?.innerHTML`));
+  t.check("  the result follows", await t.until(`document.querySelector(".fw-expr-out")?.textContent === '"fox"'`, 5000), await t.js(`document.querySelector(".fw-expr-out")?.textContent`));
+  await t.shot("codebox.png", { x: 0, y: 0, width: 1100, height: 400 });
+  await t.key("ArrowLeft");
+  await t.key("Backspace");
+  t.check("  ⌫ just after it deletes it whole", (await src()) === "let n = 3 in title()", await src());
+  await t.key("z", 4);
+  t.check("  ⌘Z puts it back", (await src()) === `let n = 3 in title(@${T})`, await src());
+  await t.key("Escape");
+  t.check("Esc: the code closed, the block selected", await t.until(`!document.querySelector(".fw-expr-code") && !!document.querySelector(".fw-expr.ProseMirror-selectednode")`, 2000));
+  await t.settle();
+  t.check("  saved with the id", (await t.kids(A)).find((k) => k.t === "expr")?.source === `let n = 3 in title(@${T})`, JSON.stringify(await t.kids(A)));
+};
+
+scenarios.exprbrowse = async (t) => {   // a value's blocks: moved through as any nesting, at block level; no caret, nothing changes them (2026-11-24)
+  await t.open(`#/p/${A}`);
+  await addExpr(t, `Blocks([body(@${T}), text("after")])`);
+  const out = `[...document.querySelectorAll(".fw-doc .fw-expr > .fw-expr-out")].at(-1)`;
+  const val = `${out}?.querySelector(":scope > .fw-body > .ProseMirror")`;
+  await t.until(`${val}?.children.length === 2`, 8000);
+  const before = await t.js(`${val}.textContent`);
+  const chosen = `(() => { const c = [...(${out}?.querySelectorAll(".fw-chosen") || [])].at(-1); return c ? c.textContent : null; })()`;
+  const noCaret = `(() => { const s = getSelection(); return !(s.rangeCount && s.isCollapsed && s.anchorNode?.parentElement?.closest(".fw-expr-out")); })()`;
+  const FOX = "↗the quick brown foxjumps over the dog";   // (body(@fox): a From, drawn as a quote of fox, its ↗ first)
+  await t.select("first words", { collapse: true });
+  for (let i = 0; i < 8 && !(await t.js(chosen)); i++) await t.key("ArrowDown");
+  t.check("the arrows go into a value: its first block (body(@fox), a green quote) selected whole, no caret", (await t.js(chosen)) === FOX && await t.js(noCaret), String(await t.js(chosen)));
+  t.check("  its tabs: the expression's green on the path", await t.until(`!!document.querySelector(".fw-tab.fw-tab-expr")`, 2000));
+  await t.type("zz");
+  await t.key("Backspace");
+  await t.key("Tab");
+  t.check("  typing, ⌫ and Tab change nothing", (await t.js(`${val}.textContent`)) === before, await t.js(`${val}.textContent`));
+  await t.key("Enter");
+  t.check("  Enter: a level in, the quote's first block (as any quote)", (await t.js(chosen)) === "the quick brown fox" && await t.js(noCaret), String(await t.js(chosen)));
+  await t.key("ArrowDown");
+  t.check("  ↓ the next block", (await t.js(chosen)) === "jumps over the dog", String(await t.js(chosen)));
+  await t.key("ArrowDown");
+  t.check("  ↓ past the quote's last: the block after it, a level out", (await t.js(chosen)) === "after", String(await t.js(chosen)));
+  await t.key("ArrowRight");
+  t.check("  → on text: nothing (no caret in a value)", (await t.js(chosen)) === "after" && await t.js(noCaret), String(await t.js(chosen)));
+  const r = await t.js(`(() => { const e = ${val}.querySelector(".fw-quote .fw-text"); const b = e.getBoundingClientRect(); return [b.left + 40, b.top + b.height / 2]; })()`);
+  await t.click(r[0], r[1]);
+  t.check("  a click in its text: that block selected whole, no caret", await t.until(`${chosen} === "the quick brown fox"`, 2000) && await t.js(noCaret),
+    String(await t.js(chosen)));
+  await t.key("ArrowLeft");
+  t.check("  ←: out a level, the quote", (await t.js(chosen)) === FOX, String(await t.js(chosen)));
+  await t.key("ArrowLeft");
+  t.check("  ← again: out of the value, the expression selected whole", await t.until(`[...document.querySelectorAll(".fw-expr.ProseMirror-selectednode")].length === 1 && ${chosen} === null`, 2000));
+  const lit = `getComputedStyle(document.querySelector(".fw-expr.ProseMirror-selectednode")).getPropertyValue("--lit-mid")`;
+  t.check("  selected whole, green", await t.until(`${lit} === "rgb(124, 203, 154)"`, 2000), await t.js(lit));
+  await t.key("ArrowRight");
+  t.check("  →: in a level, its first block", await t.until(`${chosen} === ${JSON.stringify(FOX)}`, 2000), String(await t.js(chosen)));
+  await t.key("Enter");
+  await t.shot("exprbrowse.png", { x: 0, y: 0, width: 1100, height: 560 });
+  await t.settle();
+  t.check("  the store: just the expression, its source as written", (await t.kids(A)).filter((k) => k.t === "expr").map((k) => k.source).join() === `Blocks([body(@${T}), text("after")])`,
+    JSON.stringify(await t.kids(A)));
+};
+
+scenarios.expropen = async (t) => {   // TYPE.md: if you can reference it, you can open it; any @ref is a backlink (2026-11-24)
+  await t.open(`#/p/${A}`);
+  await addExpr(t, `body(@${T})`);
+  await t.until(`!!document.querySelector(".fw-doc .fw-expr .fw-from")`, 8000);
+  await t.key("o", 4);
+  t.check("⌘O on an expression whose value is one From: its source opens", await t.until(`location.hash.startsWith("#/p/${T}")`, 3000), await t.js("location.hash"));
+  await t.open(`#/p/${A}`);
+  await addExpr(t, `Blocks([body(@${T}), body(@${B})])`);
+  await t.until(`[...document.querySelectorAll(".fw-doc .fw-expr")].at(-1)?.querySelectorAll(".fw-from").length === 2`, 8000);
+  await t.key("o", 4);
+  const rows = `[...document.querySelectorAll(".fw-menu li, .fw-menu .fw-row, .fw-menu button")].map((x) => x.textContent.trim()).filter(Boolean)`;
+  t.check("  two references: ⌘O lists them to pick from", await t.until(`(() => { const r = ${rows}; return r.some((x) => x.startsWith("fox")) && r.some((x) => x.startsWith("beta")); })()`, 2000),
+    await t.js(`document.querySelector(".fw-menu")?.innerText`));
+  await t.key("Escape");
+  await t.key("Escape");
+  await t.settle();
+  const back = (await t.get(`/api/pericope/${T}`)).backlinkRows || [];
+  t.check("any @reference in an expression is a backlink of what it names", back.some((r) => r.kind === "expression" && r.open === A), JSON.stringify(back));
+};
+
+scenarios.neighbours = async (t) => {   // above and below: the peer blocks around an expression, where it sits now (2026-11-24)
+  await t.open(`#/p/${A}`);
+  await t.end();
+  await t.type("three little words");
+  await addExpr(t, `wordCount(above)`);
+  const out = `[...document.querySelectorAll(".fw-doc .fw-expr > .fw-expr-out")].at(-1)`;
+  t.check("wordCount(above): the block just above it", await t.until(`${out}?.textContent === "3"`, 8000), await t.js(`${out}?.outerHTML`));
+  await t.select("three little words", { collapse: true });
+  await t.type(" and two");
+  t.check("  live: it follows each key in that block", await t.until(`${out}?.textContent === "5"`, 2000), await t.js(`${out}?.textContent`));
+  await addExpr(t, `body(below)`);
+  const below = `${out}?.querySelector(".fw-from .fw-text")?.textContent`;
+  t.check("body(below): a window on the (empty) block below it", await t.until(`${out}?.querySelector(".fw-from") && ${below} === ""`, 4000), await t.js(`${out}?.outerHTML`));
+  await t.key("ArrowDown");   // (into the block below it)
+  await t.type("now below");
+  t.check("  written in: shown there, live", await t.until(`${below} === "now below"`, 4000), await t.js(`${out}?.outerHTML`));
+  const first = `[...document.querySelectorAll(".fw-doc .fw-expr > .fw-expr-out")].at(-2)`;
+  t.check("  the first still reads its own neighbour above", await t.js(`${first}?.textContent`) === "5", await t.js(`${first}?.textContent`));
+};
+
+scenarios.exprcall = async (t) => {   // a quote of an expression is a call: evaluated where the quote sits, one red box (2026-11-24)
+  await t.open(`#/p/${A}`);
+  await t.end();
+  await t.type("a pigeon walks by");
+  const SHOUT = "let shout = fun b ->\n  case content(body(b))\n  | Text([Plain(s)]) => text(string_uppercase(s))\n  | _ => text(\"?\")\n  end\nin\nshout(above)";
+  await addExpr(t, SHOUT);
+  await t.until(`[...document.querySelectorAll(".fw-doc .fw-expr .fw-text")].some((x) => x.textContent === "A PIGEON WALKS BY")`, 8000);
+  await t.key("e", 4);   // (⌘E: a pericope of its own, quoted here)
+  const q = `[...document.querySelectorAll(".fw-doc > .ProseMirror > .fw-quote")].at(-1)`;
+  t.check("⌘E on it: the quote left here shows the result, worked out here (above: the pigeon)", await t.until(
+    `${q}?.querySelector(".fw-text")?.textContent === "A PIGEON WALKS BY"`, 6000), await t.js(`${q}?.outerHTML`));
+  t.check("  one red box: no expression box, no green inside it", await t.js(`!${q}.querySelector(".fw-expr, .fw-from") && !${q}.classList.contains("fw-from")`),
+    await t.js(`${q}?.outerHTML`));
+  await t.select("a pigeon walks by", { collapse: true });
+  await t.key("End");
+  await t.key("ArrowDown");
+  t.check("  ↓ onto it: the quote selected whole (one block: nothing inside to be half in)", await t.until(
+    `${q}?.classList.contains("fw-chosen") && !${q}.querySelector(".fw-chosen, .fw-here")`, 2000),
+    await t.js(`${q}?.className + " | " + [...${q}.querySelectorAll(".fw-chosen, .fw-here")].map((x) => x.className).join()`));
+  t.check("  its one tab filled red; the block above glows", await t.until(`(() => { const ts = [...document.querySelectorAll(".fw-tab")];
+    const above = ${q}.previousElementSibling;
+    return ts.length === 1 && ts[0].matches(".fw-tab-filled.fw-tab-quote") && getComputedStyle(above).getPropertyValue("--lit-down") !== "rgba(0, 0, 0, 0)"; })()`, 2000),
+    await t.js(`[...document.querySelectorAll(".fw-tab")].map((x) => x.className).join(" | ")`));
+  await t.select("a pigeon walks by", { collapse: true });
+  const at = await t.js(`(() => { const b = ${q}.querySelector(".fw-text").getBoundingClientRect(); return [b.left + 30, b.top + b.height / 2]; })()`);
+  await t.click(at[0], at[1]);
+  t.check("  a click in its text: the quote selected whole too", await t.until(`${q}?.classList.contains("fw-chosen") && !${q}.querySelector(".fw-chosen, .fw-here")`, 2000),
+    await t.js(`${q}?.className + " | " + [...${q}.querySelectorAll(".fw-chosen, .fw-here")].map((x) => x.className).join()`));
+  await t.shot("exprcall.png", { x: 0, y: 0, width: 1100, height: 480 });
+  await t.select("a pigeon walks by", { collapse: true });
+  await t.type(" slowly");
+  t.check("  live: the block above it changed, the call follows", await t.until(`${q}?.querySelector(".fw-text")?.textContent === "A PIGEON WALKS BY SLOWLY"`, 3000),
+    await t.js(`${q}?.querySelector(".fw-text")?.textContent`));
+  await t.settle();
+  const quoted = (await t.kids(A)).find((k) => k.t === "quote" && k.target !== B);
+  await t.open(`#/p/${quoted.target}`);
+  t.check("its own pericope: nothing above it there, so a ?", await t.until(`[...document.querySelectorAll(".fw-doc .fw-expr .fw-text")].some((x) => x.textContent === "?")`, 6000));
+};
+
+scenarios.unwrap = async (t) => {   // a value of one block is unwrapped: its holder's box, never gone into (2026-11-24)
+  await t.open(`#/p/${A}`);
+  await t.end();
+  await t.type("a pigeon walks by");
+  await addExpr(t, `text("hello")`);
+  const ex = `[...document.querySelectorAll(".fw-doc > .ProseMirror > .fw-expr")].at(-1)`;
+  await t.until(`${ex}?.querySelector(".fw-value > .fw-text")?.textContent === "hello"`, 8000);
+  await t.select("a pigeon walks by", { collapse: true });
+  await t.key("End");
+  await t.key("ArrowDown");
+  const whole = `${ex}?.classList.contains("ProseMirror-selectednode") && !${ex}.querySelector(".fw-value .fw-chosen, .fw-value .fw-here")`;
+  t.check("↓ onto an expression of one block: it, selected whole (nothing inside to be in)", await t.until(whole, 2000),
+    await t.js(`${ex}?.className + " | " + [...${ex}.querySelectorAll(".fw-chosen, .fw-here")].map((x) => x.className).join()`));
+  t.check("  one tab, filled, green", await t.until(`(() => { const ts = [...document.querySelectorAll(".fw-tab")]; return ts.length === 1 && ts[0].matches(".fw-tab-filled.fw-tab-expr"); })()`, 2000),
+    await t.js(`[...document.querySelectorAll(".fw-tab")].map((x) => x.className + ":" + x.textContent).join(" | ")`));
+  t.check("  its one block has no box of its own", await t.js(`getComputedStyle(${ex}.querySelector(".fw-value > .fw-text")).borderImageSource === "none"`));
+  t.check("  its ƒ tab, filled", await t.until(`getComputedStyle(${ex}.querySelector(".fw-fn")).opacity === "1"`, 2000));
+  await t.select("a pigeon walks by", { collapse: true });
+  const hit = await t.js(`(() => { const b = ${ex}.querySelector(".fw-value > .fw-text").getBoundingClientRect(); return [b.left + 20, b.top + b.height / 2]; })()`);
+  await t.click(hit[0], hit[1]);
+  t.check("  a click in its text: it, selected whole", await t.until(whole, 2000), await t.js(`${ex}?.className`));
+  await t.key("Enter");
+  t.check("  Enter: nothing to go into (still it, selected whole)", await t.until(whole, 1000) || !(await t.js(`!!${ex}.querySelector(".fw-value .fw-chosen")`)));
+  await addExpr(t, `body(@${T})`);
+  const ex2 = `[...document.querySelectorAll(".fw-doc > .ProseMirror > .fw-expr")].at(-1)`;
+  await t.until(`${ex2}?.querySelectorAll(".fw-from .fw-text").length === 2`, 8000);
+  await t.key("Enter");
+  const chosen = `(() => { const c = [...(${ex2}?.querySelectorAll(".fw-chosen") || [])].at(-1); return c ? c.textContent : null; })()`;
+  t.check("an expression of one window (body(@fox)): Enter goes straight to its blocks", await t.until(`${chosen} === "the quick brown fox"`, 2000), String(await t.js(chosen)));
+  await t.key("ArrowLeft");
+  t.check("  ←: straight back out, the expression selected whole (no unseen level between)", await t.until(
+    `${ex2}?.classList.contains("ProseMirror-selectednode") && ${chosen} === null`, 2000), String(await t.js(chosen)));
+};
+
+scenarios.exprblocks = async (t) => {   // fw's type is Hazel's: a value of type Block drawn as fw's blocks, the store read through Refs
+  await t.open(`#/p/${A}`);
+  await addExpr(t, `body(@${B})`);
+  const valueDoc = `${lastOut}?.querySelector(":scope > .fw-body > .ProseMirror")`;
+  t.check("body(@beta): a From, beta's blocks drawn as a quote of beta, green (TYPE.md: a quote is body(@x))", await t.until(
+    `${valueDoc}?.querySelector(":scope > .fw-quote.fw-from .fw-text")?.textContent === "beta's words"`, 8000), await t.js(`${lastOut}?.outerHTML`));
+  t.check("  its top line, ↗ and tab green", await t.js(`(() => { const q = ${valueDoc}.querySelector(":scope > .fw-quote.fw-from");
+    return getComputedStyle(q.querySelector(".fw-top")).color === "rgb(111, 158, 130)"; })()`));
+  await addExpr(t, `Quote(@${T})`);
+  t.check("Quote(@fox): no such constructor (body is how a quote is written)", await t.until(
+    `${lastOut}?.title.includes("Constructor is not defined")`, 4000), await t.js(`${lastOut}?.outerHTML`));
+  await addExpr(t, `From(@${T}, text("forged"))`);
+  t.check("From(…) by hand: sealed, refused (no forged quote)", await t.until(
+    `${lastOut}?.title.includes("Constructor is not defined") && !${lastOut}.querySelector(".fw-quote")`, 4000), await t.js(`${lastOut}?.outerHTML`));
+  await addExpr(t, `Text([Plain("see "), Link("the fox", @${T})])`);
+  t.check("a text with a link: the link drawn, pointing at fox", await t.until(
+    `${valueDoc}?.querySelector(".fw-link")?.textContent === "the fox"`, 4000), await t.js(`${lastOut}?.outerHTML`));
+  await addExpr(t, `Blocks([text(title(@${T})), Paraphrase(@${T}, "a fox jumps"), ?])`);
+  t.check("Blocks of a text, a paraphrase and a hole: each drawn, the hole a ?", await t.until(
+    `(() => { const c = ${valueDoc}; return c && c.children[0].textContent === "fox" && c.children[1].matches(".fw-para") && c.children[2].textContent === "?"; })()`, 4000),
+    await t.js(`${lastOut}?.outerHTML`));
+  await addExpr(t, `fun (r : Ref) -> body(r)`);
+  t.check("a function alone: its type, dim", await t.until(`${lastOut}?.matches(".fw-expr-fn") && ${lastOut}.textContent === "Ref -> Block"`, 4000),
+    await t.js(`${lastOut}?.outerHTML`));
+  await addExpr(t, `length(pericopes)`);
+  t.check("any other value: printed (pericopes: every pericope)", await t.until(`${lastOut}?.textContent === "8"`, 4000), await t.js(`${lastOut}?.outerHTML`));
+  await addExpr(t, `wordCount(@${T})`);
+  t.check("a pericope's facts: wordCount", await t.until(`${lastOut}?.textContent === "8"`, 4000), await t.js(`${lastOut}?.outerHTML`));
+  await addExpr(t, `created(@${B})`);
+  t.check("  created (ISO, a String)", await t.until(`${lastOut}?.textContent.startsWith('"2026-10-01T10:00:00')`, 4000), await t.js(`${lastOut}?.textContent`));
+  await addExpr(t, `length(backlinks(@${B}))`);
+  t.check("  backlinks (alpha and two quotes quote beta)", await t.until(`${lastOut}?.textContent === "2"`, 4000), await t.js(`${lastOut}?.textContent`));
+  await addExpr(t, `visits(@${B})`);
+  t.check("  visits (an Int)", await t.until(`/^[0-9]+$/.test(${lastOut}?.textContent || "")`, 4000), await t.js(`${lastOut}?.textContent`));
+  await addExpr(t, `body(@${A1})`);
+  const lastText = `${lastOut}?.querySelector(".fw-text")?.textContent`;
+  t.check("body of a block of the open pericope", await t.until(`${lastText} === "first words"`, 4000), await t.js(`${lastOut}?.outerHTML`));
+  await t.select("first words", { collapse: true });
+  await t.type(" and more");
+  t.check("  live: it follows each key in that block (the snapshot built on the page)", await t.until(`${lastText} === "first words and more"`, 2000),
+    await t.js(`${lastOut}?.outerHTML`));
+  await t.settle();
+  const kinds = (await t.kids(A)).filter((k) => k.t === "expr").map((k) => k.source);
+  await t.shot("exprblocks.png");
+  t.check("  saved as their sources, @ids and all", kinds.length === 12 && kinds[0] === `body(@${B})`, JSON.stringify(kinds));
+  await addExpr(t, `1 + "a"`);
+  await t.key("x", 4 | 8);
+  t.check("Hazel's own errors, under the code", await t.until(`document.querySelector(".fw-expr-errors")?.textContent.includes("Expecting type Int but got inconsistent type String")`, 4000),
+    await t.js(`document.querySelector(".fw-expr-coding")?.outerHTML`));
+};
+
 scenarios.livetype = async (t) => {   // the header's type follows what's written, on the key (2026-11-23)
   await t.open(`#/p/${B}`);
   const type = `document.querySelector(".fw-label").textContent`;
@@ -1450,7 +1775,7 @@ scenarios.backlinks = async (t) => {   // the backlinks above the header (2026-1
     && document.querySelector(".fw-go-up").getBoundingClientRect().bottom <= document.querySelector(".fw-header").getBoundingClientRect().top`));
   const wheel = (deltaY) => t.cdp("Input.dispatchMouseEvent", { type: "mouseWheel", x: 500, y: 300, deltaX: 0, deltaY });
   await t.js(`document.activeElement?.blur(); 1`);
-  await wheel(-200);
+  await wheel(-200); await wheel(-400);   // (in, then on up to them: they have room above them, scrolling.js)
   t.check("  scrolling up at the page's top: they come in, scrolled to", await t.until(`!!document.querySelector(".fw-backs-open") && document.querySelector(".fw-back").getBoundingClientRect().top >= 0`, 2000),
     JSON.stringify(await t.js(rect(".fw-back"))));
   for (let i = 0; i < 4; i++) await wheel(200);
@@ -1486,19 +1811,19 @@ scenarios.kindtree = async (t) => {   // kinds of kinds (2026-11-23): nested in 
   await act({ do: "kind", block: A, kind: S, answer: true });
   await t.key("u", 4 | 8);
   const rows = `[...document.querySelectorAll(".fw-kindsview .fw-row")].map((r) => r.innerText.replace(/\\s+/g, " ").trim()).join(" | ")`;
-  t.check("only the kinds of no kind at the top: form", await t.until(`${rows}.startsWith("▸ form 2 | ▸ no kind")`, 3000), await t.js(rows));
+  t.check("only the kinds of no kind at the top: form", await t.until(`${rows}.startsWith("▸ form 2 | ▸ no tag")`, 3000), await t.js(rows));
   await t.key("ArrowRight");
-  t.check("  → form: poem and sonnet nested in it, as kinds", await t.until(`${rows}.startsWith("▾ form 2 | ▸ sonnet 1 | ▸ poem 1 | ▸ no kind")`, 2000), await t.js(rows));
+  t.check("  → form: poem and sonnet nested in it, as kinds", await t.until(`${rows}.startsWith("▾ form 2 | ▸ sonnet 1 | ▸ poem 1 | ▸ no tag")`, 2000), await t.js(rows));
   await t.key("ArrowDown"); await t.key("ArrowDown"); await t.key("ArrowRight");
-  t.check("  → poem: sonnet again inside it, a level further in (in every place it's of)", await t.until(`${rows}.startsWith("▾ form 2 | ▸ sonnet 1 | ▾ poem 1 | ▸ sonnet 1 | ▸ no kind")
+  t.check("  → poem: sonnet again inside it, a level further in (in every place it's of)", await t.until(`${rows}.startsWith("▾ form 2 | ▸ sonnet 1 | ▾ poem 1 | ▸ sonnet 1 | ▸ no tag")
     && document.querySelectorAll('.fw-kindsview [data-kind="${S}"]').length === 2`, 2000), await t.js(rows));
   await t.key("ArrowDown"); await t.key("ArrowRight");
   t.check("  → sonnet there: its own member", await t.until(`${rows}.includes("▾ sonnet 1 | alpha")`, 2000), await t.js(rows));
   await t.key("ArrowLeft"); await t.key("ArrowLeft");
-  t.check("  ← ←: sonnet folded, then out to poem, folded", await t.until(`${rows}.startsWith("▾ form 2 | ▸ sonnet 1 | ▸ poem 1 | ▸ no kind")
+  t.check("  ← ←: sonnet folded, then out to poem, folded", await t.until(`${rows}.startsWith("▾ form 2 | ▸ sonnet 1 | ▸ poem 1 | ▸ no tag")
     && document.querySelector(".fw-sel")?.dataset.kind === "${K}"`, 2000), await t.js(rows));
   await t.key("ArrowRight"); await t.key("ArrowDown"); await t.key("n");
-  t.check("  N on sonnet in poem: taken out of poem (form keeps it)", await t.until(`${rows}.startsWith("▾ form 2 | ▸ sonnet 1 | ▾ poem 0 | ▸ no kind")`, 3000), await t.js(rows));
+  t.check("  N on sonnet in poem: taken out of poem (form keeps it)", await t.until(`${rows}.startsWith("▾ form 2 | ▸ sonnet 1 | ▾ poem 0 | ▸ no tag")`, 3000), await t.js(rows));
   await act({ do: "kind", block: F, kind: S, answer: true });   // (a loop: form is a sonnet, a sonnet is a form)
   const tops = `[...document.querySelectorAll(".fw-kindsview .fw-kind:not(.fw-nested):not(.fw-nokind)")].map((r) => r.dataset.kind).join(",")`;
   t.check("  a loop: every kind of some kind; the oldest (poem) at the top, then the first the loop would hide (made the same second: either)",

@@ -18,3 +18,5 @@ web-keys.json
 # the web editor's page: its packages, and the page built from web/src (npm run build, or fw web)
 web/node_modules/
 web/dist/
+.venv
+tests/.venv

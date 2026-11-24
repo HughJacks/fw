@@ -33,7 +33,7 @@
       "readOnly": true
     },
     "content": {
-      "description": "What the block is, one of six shapes: Text (a string, may contain newlines); Paraphrase (your own words about another block, `paraphrase` naming it and `text` the words, a string like Text's: drawn as text, not live, unlike a quote; it keeps nothing alive, and one of a block that's gone is just text; a paraphrase is always inside a pericope, never one itself); Blocks (its children, by id, in order); Quote (a live view of another block, `quote` naming it; an optional `mask` of anchors into that block's text, in open/close pairs, shows only what's between them, the rest as …; an optional `show` lists which of its properties the quote's top line shows; an optional `inner` masks the quotes inside it, seen through it; an optional `lock` keeps anyone writing through it); or Image (one picture: `image` names its file in the `images` folder beside the store, named by a hash of its bytes); or Kind (what a block can be, as a poem or a to-do: `kind` its short name, `blocks` its description, child blocks held as Blocks holds them; a kind is always an entry). An entry with nothing written is empty Blocks.",
+      "description": "What the block is, one of six shapes: Text (a string, may contain newlines); Paraphrase (your own words about another block, `paraphrase` naming it and `text` the words, a string like Text's: drawn as text, not live, unlike a quote; it keeps nothing alive, and one of a block that's gone is just text; a paraphrase is always inside a pericope, never one itself); Blocks (its children, by id, in order); Quote (a live view of another block, `quote` naming it; an optional `mask` of anchors into that block's text, in open/close pairs, shows only what's between them, the rest as …; an optional `show` lists which of its properties the quote's top line shows; an optional `inner` masks the quotes inside it, seen through it; an optional `lock` keeps anyone writing through it); or Image (one picture: `image` names its file in the `images` folder beside the store, named by a hash of its bytes); or Kind (what a block can be, as a poem or a to-do: `kind` its short name, `blocks` its description, child blocks held as Blocks holds them; a kind is always an entry). An entry with nothing written is empty Blocks. Or Expression (`expr`, a program's source: the block shows what it evaluates to).",
       "default": [],
       "oneOf": [
         {
@@ -164,6 +164,20 @@
                 "type": "string",
                 "pattern": "^[0-9]{8}T[0-9]{6}-[0-9a-f]{4}$"
               }
+            }
+          }
+        },
+        {
+          "title": "Expression",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "expr"
+          ],
+          "properties": {
+            "expr": {
+              "type": "string",
+              "description": "Its source: a program (Hazel's language) the page evaluates; the block shows its value, as text for now. The value is never stored."
             }
           }
         }

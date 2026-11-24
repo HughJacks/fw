@@ -65,7 +65,7 @@
     if (doc.childCount !== 1) return "pericope";
     const n = doc.firstChild;
     return n.type.name === "text_block" ? (n.attrs.para ? "paraphrase" : "text")
-      : n.type.name === "quote" || n.type.name === "image" ? n.type.name : "pericope";
+      : n.type.name === "quote" || n.type.name === "image" ? n.type.name : n.type.name === "expr" ? "expression" : "pericope";
   });
   let auto = $derived(p.kind ? p.shown : (ed?.pm && deriveTitle(ownText(ed.pm.doc))) || (p.title ? "" : p.shown));
   let shown = $derived(p.kind ? p.shown : titleValue.trim() || auto);

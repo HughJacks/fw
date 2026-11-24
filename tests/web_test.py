@@ -37,6 +37,13 @@ b = S.index(S.load_data())
 check("  left: written, the block's flags as said, carried up to its pericope", "cw" in "".join(f for _, f in S.visits(b[A1]))
       and "o" in "".join(f for _, f in S.visits(b[A])) and "c" in "".join(f for _, f in S.visits(b[A])), (b[A1].get("visits"), b[A].get("visits")))
 same("  not an edit: nothing else about them changed", S.content_hash(b, A) == S.content_hash(S.index(S.load_data()), A), True)
+# the store as the expression engine reads it (GET /api/snapshot): every pericope, its title, kinds, body as stored
+code, snap = call("GET", "/api/snapshot")
+by = {p["id"]: p for p in snap["pericopes"]}
+same("the snapshot: every pericope (entries only), titled", (code, sorted(by), by[B]["title"]), (200, sorted([A, B, C]), "beta"))
+same("  a body as stored: text, a quote (its target), a container's blocks",
+     [by[A]["body"]["children"][1], by[C]["body"]["children"][0]],
+     [{"id": QA, "t": "quote", "target": B}, {"id": C1, "t": "blocks", "children": [{"id": C2, "t": "text", "text": "nested", "links": []}]}])
 code, ex = call("GET", f"/api/exits/{B}")
 same("exits from beta: alpha, which quotes it", (code, [r["key"] for r in ex["rows"]][:1]), (200, [A]))
 code, ex = call("GET", f"/api/exits/{A}")

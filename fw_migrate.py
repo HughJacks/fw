@@ -16,7 +16,7 @@ from datetime import datetime
 from fw_block import word_count
 from fw_draft import trim_edges
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 21
 
 
 class BadStore(ValueError):
@@ -139,12 +139,22 @@ def nothing(data: dict, now: datetime, new_id) -> None:
     written: v6 (`show` on a quote), v8 (`inner`), v9 (`links`), v11 (masks
     written per block; in memory they stay anchors), v12 (an Image block), v13 (a link's `created`), v14 (`paraphrases`), v15 (`visits`:
     blocks from before have none), v16 (a Kind block, and `kinds` on any
-    block: none yet), v17 (`lock` on a quote: none locked yet)."""
+    block: none yet), v17 (`lock` on a quote: none locked yet), v20 (an Expression block: none yet)."""
+
+
+def v21(data: dict, now: datetime, new_id) -> None:
+    """An Apply block (`{apply: [function, arguments…]}`, on the expr branch for a day) is gone again: the user,
+    2026-11-24, "expressions are completely contained within an expression block, this removes application". Any
+    left becomes a plain container of the same blocks, so nothing written in one is lost."""
+    for b in data.get("blocks", []):
+        c = b.get("content")
+        if isinstance(c, dict) and set(c) == {"apply"} and isinstance(c["apply"], list):
+            b["content"] = list(c["apply"])
 
 
 STEPS = [(2, v2), (3, v3), (4, v4), (5, v5), (6, nothing), (7, v7), (8, nothing),
          (9, nothing), (10, v10), (11, nothing), (12, nothing), (13, nothing), (14, nothing),
-         (15, nothing), (16, nothing), (17, nothing), (18, v18), (19, v19)]
+         (15, nothing), (16, nothing), (17, nothing), (18, v18), (19, v19), (20, nothing), (21, v21)]
 assert STEPS[-1][0] == SCHEMA_VERSION
 
 

@@ -12,6 +12,7 @@ the container it's in, at every level).
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import uuid
 from datetime import datetime
@@ -24,11 +25,14 @@ QUOTE_RE = re.compile(rf"\{{\{{quote ({_ID})(?: ({_ID}))?((?: {_ID})*)\}}\}}")  
 
 BLOCK_RE = re.compile(rf"\{{\{{block(?: ({_ID}))?((?: {_ID})*)\}}\}}")  # id, its containers
 IMAGE_RE = re.compile(rf"\{{\{{image ({_ID})((?: {_ID})*)\}}\}}")  # the image block, its containers
+# an expression block (the expr branch, 2026-11-23): its id, its containers, then its source as a JSON string, so a
+# block of code of any lines is one line of the draft
+EXPR_RE = re.compile(rf"\{{\{{expr ({_ID})((?: {_ID})*) (\".*\")\}}\}}")
 
 
 def is_atom(line: str) -> bool:
     """A line that's one block whole, not text: a quote's, or an image's."""
-    return bool(QUOTE_RE.fullmatch(line) or IMAGE_RE.fullmatch(line))
+    return bool(QUOTE_RE.fullmatch(line) or IMAGE_RE.fullmatch(line) or EXPR_RE.fullmatch(line))
 
 
 def atom_id(line: str) -> str | None:
@@ -36,7 +40,7 @@ def atom_id(line: str) -> str | None:
     m = QUOTE_RE.fullmatch(line)
     if m:
         return m.group(2)
-    m = IMAGE_RE.fullmatch(line)
+    m = IMAGE_RE.fullmatch(line) or EXPR_RE.fullmatch(line)
     return m.group(1) if m else None
 
 
@@ -49,6 +53,16 @@ def quote_line(ref: str, qid: str | None = None, within: tuple = ()) -> str:
 def image_line(ref: str, within: tuple = ()) -> str:
     """Image block `ref` in the draft (in the containers `within`, innermost first)."""
     return "{{image " + ref + "".join(" " + c for c in within) + "}}"
+
+
+def expr_line(ref: str, source: str, within: tuple = ()) -> str:
+    """Expression block `ref` in the draft: its source (a JSON string, one line), in the containers `within`."""
+    return "{{expr " + ref + "".join(" " + c for c in within) + " " + json.dumps(source) + "}}"
+
+
+def expr_source(line: str) -> str:
+    """An expression line's source."""
+    return json.loads(EXPR_RE.fullmatch(line).group(3))
 
 
 def block_line(ref: str, within: tuple = ()) -> str:
@@ -110,6 +124,10 @@ def parse_draft(text: str, taken=()) -> tuple[list, list]:
             lines.append(image_line(m.group(1)))  # in the buffer, just its id
             bids.append(None)
             cur = None
+        elif m := EXPR_RE.fullmatch(line):
+            lines.append(expr_line(m.group(1), json.loads(m.group(3))))  # in the buffer, its id and source
+            bids.append(None)
+            cur = None
         else:
             cur = cur or fresh()
             lines.append(line)
@@ -126,7 +144,7 @@ def parse_nest(text: str) -> dict:
             key, path = m.group(1), m.group(2).split()
         elif m := QUOTE_RE.fullmatch(line):
             key, path = m.group(2), m.group(3).split()
-        elif m := IMAGE_RE.fullmatch(line):
+        elif m := IMAGE_RE.fullmatch(line) or EXPR_RE.fullmatch(line):
             key, path = m.group(1), m.group(2).split()
         else:
             continue
@@ -156,6 +174,8 @@ def atom_draft(line: str, nest: dict) -> str:
         return quote_line(m.group(1), m.group(2), chain(nest, m.group(2))) if m.group(2) else line
     if m := IMAGE_RE.fullmatch(line):
         return image_line(m.group(1), chain(nest, m.group(1)))
+    if m := EXPR_RE.fullmatch(line):
+        return expr_line(m.group(1), json.loads(m.group(3)), chain(nest, m.group(1)))
     return line
 
 
@@ -175,6 +195,8 @@ def draft_items(text: str, taken=(), keep=frozenset()) -> list:
     for line, bid in zip(lines, bids):
         if bid is None and (m := IMAGE_RE.fullmatch(line)):
             runs.append((chain(nest, m.group(1))[::-1], ["image", m.group(1)]))
+        elif bid is None and (m := EXPR_RE.fullmatch(line)):
+            runs.append((chain(nest, m.group(1))[::-1], ["expr", m.group(1), json.loads(m.group(3))]))
         elif bid is None:
             m = QUOTE_RE.fullmatch(line)
             runs.append((chain(nest, m.group(2))[::-1], ["quote", m.group(1), m.group(2)]))

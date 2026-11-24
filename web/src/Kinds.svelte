@@ -78,20 +78,20 @@
     <button class="fw-chip fw-chip-{t.mark}" title={hint(t)} bind:this={chips[n]} onkeydown={(e) => chipKey(e, n)} ondblclick={() => open(t.kind)}>{label(t)}</button>
   {/each}
   {#if !tokens.length}<span class="fw-none">none</span>{/if}   <!-- (an empty field says so: the user, 2026-11-21) -->
-  <button class="fw-chip fw-chip-plus" title="a kind: ↵, or type its name" bind:this={chips[tokens.length]}
+  <button class="fw-chip fw-chip-plus" title="a tag: ↵, or type its name" bind:this={chips[tokens.length]}
     onkeydown={(e) => chipKey(e, tokens.length)} onclick={() => picker(chips[tokens.length], "")}>+</button>
 </div>
 
 {#if picking}
   <div class="fw-menu" style:position="fixed" style:left="{picking.left}px" style:top="{picking.top}px">
-    <div class="fw-prompt"><span class="fw-dim">kind › </span>
+    <div class="fw-prompt"><span class="fw-dim">tag › </span>
       <input class="fw-input" bind:this={pickInput} bind:value={picking.typed} oninput={() => (picking.sel = 0)} onkeydown={pickKey}
         onblur={() => setTimeout(() => { if (document.activeElement !== pickInput) picking = null; }, 150)} />
     </div>
     <div class="fw-rows">
       {#each rows as k, n}
         <div class="fw-row{n === Math.min(picking.sel, rows.length - 1) ? ' fw-sel' : ''}" role="button" tabindex="-1"
-          onmousedown={(e) => { e.preventDefault(); picking.sel = n; pick(false); }}>{k.made ? `+ new kind “${k.name}”` : k.name}</div>
+          onmousedown={(e) => { e.preventDefault(); picking.sel = n; pick(false); }}>{k.made ? `+ new tag “${k.name}”` : k.name}</div>
       {/each}
     </div>
     <div class="fw-dim fw-foot">↵ it is one · ⇧↵ it isn't · esc</div>

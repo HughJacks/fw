@@ -14,7 +14,7 @@ def new_label(query: str) -> str:
 
 
 def new_kind_label(query: str) -> str:
-    return f"+ new kind “{query}”" if query else "+ new kind"
+    return f"+ new tag “{query}”" if query else "+ new tag"
 
 
 def blocks_inside(library: dict, refs: list) -> dict:

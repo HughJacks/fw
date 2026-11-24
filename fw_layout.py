@@ -405,9 +405,9 @@ class Layout:
             self.unit_rows[-1][1] = len(self.rows) - 1
 
     def kind_label(self, ref) -> str:
-        """A kind's top line, "kind: <its name>"; "" for a block that isn't one."""
+        """A kind's top line, "tag: <its name>" (called a tag, 2026-11-24); "" for a block that isn't one."""
         name = store.kind_of(self.library.get(ref, {}).get("block")) if ref else None
-        return f"kind: {name}" if name is not None else ""
+        return f"tag: {name}" if name is not None else ""
 
     def para_label(self, ref) -> str:
         """A paraphrase's top line, "≈ <its source's title>"; "" for a block that isn't one."""

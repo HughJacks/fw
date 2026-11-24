@@ -28,6 +28,13 @@ export const schema = new Schema({
       attrs: { id: { default: null }, target: {}, data: { default: null } },
       toDOM: () => ["div", { class: "fw-quote" }],
     },
+    // an expression block (the expr branch): its source, a program; drawn by ExprView (editor.js), showing what it
+    // evaluates to (hazel.js), its code shown and edited on ⌘⇧X
+    expr: {
+      group: "block", atom: true, selectable: true, draggable: false,
+      attrs: { id: { default: null }, source: { default: "" } },
+      toDOM: () => ["div", { class: "fw-expr" }],
+    },
     image: {
       group: "block", atom: true, selectable: true,
       attrs: { id: { default: null }, file: {} },

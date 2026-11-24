@@ -13,6 +13,7 @@ import { keyOf, pretty } from "./keys.js";
 import { ask } from "./ask.js";
 import { float } from "./float.svelte.js";
 import ActionsMenu from "./ActionsMenu.svelte";
+import { refsIn, labelOf } from "./codebox.js";
 
 const SHOWABLE = [["title", "title"], ["created", "date"], ["updated", "last update"], ["words", "word count"]];
 
@@ -22,7 +23,13 @@ export function commands(editor, ctx) {
   if (shows && !shows.data?.locked) out.push({ name: "mask", label: shows.data?.masked ? "Edit mask" : "Create mask", key: pretty(keyOf("mask")),
     note: "choose what it shows, with [ ]" });
   const para = !q && ctx.block?.para;
-  if (q || ctx.link || para || ctx.para || editor.exit) out.push({ name: "open", label: "Open it", key: pretty(keyOf("open")),
+  // (an expression, or a computed block in its value: what it refers to, each one to open; TYPE.md)
+  const src = ctx.expr ? ctx.expr.source : editor.browse && !q ? editor.holder?.node.attrs.source : null;
+  if (src != null && refsIn(src).length) {
+    out.push({ name: "group:openrefs", label: "Open what it refers to…", key: pretty(keyOf("open")), note: "each pericope its code names" });
+    for (const id of refsIn(src)) out.push({ name: `open:${id}`, label: labelOf(id) ?? id, note: "open it", group: "openrefs" });
+  }
+  if (q || ctx.link || para || ctx.para || (editor.exit && !editor.browse)) out.push({ name: "open", label: "Open it", key: pretty(keyOf("open")),
     note: q ? "its source, as the pericope you're in" : ctx.link ? "the pericope it links to" : (para || ctx.para) ? "the block it paraphrases"
       : "the quote you're in, as the pericope, here" });
   if (para && !editor.lens) out.push({ name: "peek", label: editor.peeking.has(ctx.block.id) ? "Hide its source" : "Show its source",
@@ -51,7 +58,7 @@ export function commands(editor, ctx) {
   else if (ctx.span && !editor.readOnly) {
     out.push({ name: "popout", label: "Turn into a quote", key: pretty(keyOf("popout")), note: "the selection to a pericope of its own, nested here" });
     out.push({ name: "popopen", label: "Turn into a quote and open it", key: pretty(keyOf("popopen")), note: "…and step into it" });
-  } else if (ctx.block && ctx.block.text && !editor.readOnly && !(ctx.block.own && !editor.exit)) {
+  } else if ((ctx.expr || (ctx.block && ctx.block.text && !(ctx.block.own && !editor.exit))) && !editor.readOnly) {   // (an expression block too: everything is a block)
     out.push({ name: "popout", label: "Turn into a quote", key: pretty(keyOf("popout")), note: "this block to a pericope of its own" });
     out.push({ name: "popopen", label: "Turn into a quote and open it", key: pretty(keyOf("popopen")), note: "…and step into it" });
   }
@@ -102,8 +109,8 @@ export function actions({ root, reload, go, gone, title }) {
         return false;
       case "popout":
       case "popopen": {
-        if (!ctx.block || !ctx.block.text) return false;
-        let block = ctx.block.own ? editor.id : ctx.block.id;
+        if (!ctx.expr && (!ctx.block || !ctx.block.text)) return false;
+        let block = ctx.expr ? ctx.expr.id : ctx.block.own ? editor.id : ctx.block.id;
         if (ctx.span) {   // a selection: split out to a block of its own (the block a container around it), then that moved
           const split = splitSelection(editor.view.state, newId);
           if (!split) return false;
@@ -198,6 +205,7 @@ export function actions({ root, reload, go, gone, title }) {
         return false;
       }
       default:
+        if (name.startsWith("open:")) { editor.open({ target: name.slice(5) }); return false; }
         if (name.startsWith("show:") && shows) {
           const k = name.slice(5), now = shows.data?.show || [];
           const show = now.includes(k) ? now.filter((x) => x !== k) : [...now, k];
@@ -208,17 +216,18 @@ export function actions({ root, reload, go, gone, title }) {
     }
   }
 
-  function menu(editor) {   // ActionsMenu.svelte, at the cursor
+  function menu(editor, start = null) {   // ActionsMenu.svelte, at the cursor (`start`: a submenu it opens at)
     box?.dismiss(false);
     const view = editor.view;
     let at = editor;   // (where the focus goes back to: where it opened, or after a toggle, the editor the cursor's in now)
-    box = float(ActionsMenu, view.coordsAtPos(view.state.selection.from), { editor, commands, run, root, moved: (e) => { at = e; } },
+    box = float(ActionsMenu, view.coordsAtPos(view.state.selection.from), { editor, commands, run, root, start, moved: (e) => { at = e; } },
       () => (at.view.dom.isConnected ? at : root()).view.focus());   // (back there, if that's still there)
   }
 
   /** What an editor's key calls: the menu, an action, or ^Z on an action just taken. Returns whether it was handled. */
   return function act(editor, name) {
     if (name === "menu") { menu(editor); return true; }
+    if (name.startsWith("menu:")) { menu(editor, name.slice(5)); return true; }
     if (name === "changed") { undone.length = 0; return false; }
     if (name === "undo") { if (!done.length) return false; putBack(done, undone, "taken back · ^Y does it again"); return true; }
     if (name === "redo") { if (!undone.length) return false; putBack(undone, done, "done again"); return true; }

@@ -28,7 +28,7 @@ function bar(text) {
 // --- routing: #/ home, #/p/<id>[@<block>] a pericope (at a block) -----------------
 function route() {
   if (location.hash === "#/keys") return { view: "keys" };
-  if (location.hash === "#/kinds") return { view: "kinds" };
+  if (location.hash === "#/tags" || location.hash === "#/kinds") return { view: "kinds" };   // (the tags view; #/kinds its old address)
   const m = location.hash.match(/^#\/p\/([^@]+)(?:@([^~]+))?(?:~(\d+))?$/);
   return m ? { view: "pericope", id: m[1], at: m[2] || null, off: m[3] != null ? +m[3] : null } : { view: "home" };
 }
@@ -192,7 +192,7 @@ document.addEventListener("keydown", (e) => {
   else if (pressed(e, "home")) { e.preventDefault(); go("#/"); }
   else if (pressed(e, "done")) { e.preventDefault(); sendAway(); }
   else if (pressed(e, "keys")) { e.preventDefault(); go("#/keys"); }
-  else if (pressed(e, "kinds")) { e.preventDefault(); go("#/kinds"); }
+  else if (pressed(e, "kinds")) { e.preventDefault(); go("#/tags"); }
 });
 
 // --- send it away (the user, 2026-11-19: "a key to all pericopes to send it away off the top of the screen and go to
