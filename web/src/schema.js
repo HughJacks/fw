@@ -57,6 +57,13 @@ export const schema = new Schema({
     },
   },
   marks: {
+    // an inline expression (TYPE.md "Inline"): `$source$`, its dollar signs included, written in the text and marked as
+    // code; one key per expression (two side by side stay two). Drawn by inlinecode.js: its code while the caret's in
+    // it, else its value
+    icode: {
+      attrs: { key: { default: "" } }, inclusive: false,
+      toDOM: () => ["span", { class: "fw-icode" }, 0],
+    },
     // a hyperlink: a span of a block of text pointing at a pericope (the store's `links`; drawn red, underlined, ↗)
     link: {
       attrs: { to: {}, title: { default: "" } }, inclusive: false,

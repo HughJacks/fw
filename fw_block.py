@@ -49,8 +49,22 @@ def derive_title(content: str) -> str | None:
     return None
 
 
+PUNCTUATION = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~" + "–—…“”‘’«»•·")   # (ASCII's, and typography's dashes, quotes, dots)
+
+
+def is_word(token: str) -> bool:
+    """A word is a run without spaces with something in it besides punctuation (ASCII's, and the typographic
+    dashes, quotes and dots: PUNCTUATION) (the user, 2026-11-25: `+` and the
+    `?` of an unfinished value aren't words; one rule wherever fw counts: here, the page's editor.js `isWord`, Hazel's
+    FwPrelude `is_word`)."""
+    return any(c not in PUNCTUATION for c in token)
+
+
 def word_count(content: str) -> int:
-    return len(content.split())
+    """Words in a text as stored. An inline expression (`$…$`, TYPE.md "Inline") counts as one word: what it shows
+    can't be worked out here (it's Hazel, worked out in the page), but it always shows something in the line (a value,
+    a chip, ?), never its code."""
+    return sum(1 for w in INLINE_CODE.sub(" \x00 ", content).split() if is_word(w))
 
 
 def index(data: dict) -> dict:
@@ -183,10 +197,19 @@ def expr_of(b: dict | None) -> str | None:
 EXPR_REF = re.compile(r"@([0-9]{8}T[0-9]{6}-[0-9a-f]{4})")
 
 
+INLINE_CODE = re.compile(r"(?<!\\)\$((?:[^$\n\\]|\\.)*?)\$")   # (an inline expression in a text: $source$, TYPE.md "Inline")
+
+
+def inline_codes(text: str) -> list:
+    """The sources of a text's inline expressions (`$…$`, closed on their line; `\\$` a dollar sign), in order."""
+    return [m.group(1) for m in INLINE_CODE.finditer(text or "")]
+
+
 def expr_refs(b: dict | None) -> list:
-    """The pericopes and blocks an expression block's source refers to (`@<id>`), in order, each once."""
+    """The pericopes and blocks an expression block's source refers to (`@<id>`), and a block of text's inline
+    expressions (`$…$`) do, in order, each once."""
     out = []
-    for m in EXPR_REF.finditer(expr_of(b) or ""):
+    for m in EXPR_REF.finditer("\n".join([expr_of(b) or "", *inline_codes(text_of(b) or "")])):
         if m.group(1) not in out:
             out.append(m.group(1))
     return out
@@ -368,14 +391,31 @@ def pretty_time(iso: str | None, clock: bool = True) -> str:
     return f"{date}, {t.hour % 12 or 12}:{t:%M} {'am' if t.hour < 12 else 'pm'}" if clock else date
 
 
+def named_refs(blocks: dict, src: str, seen: frozenset = frozenset()) -> str:
+    """Code `src` with each @reference as its target's title, as the code box draws it ("?" for one that's gone)."""
+    def named(m):
+        r = blocks.get(m.group(1))
+        if r is None:
+            return "?"
+        return kind_of(r) or r.get("title") or derive_title(own_text(blocks, m.group(1), seen)) or "(untitled)"
+    return EXPR_REF.sub(named, src)
+
+
+def readable(blocks: dict, text: str, seen: frozenset = frozenset()) -> str:
+    """A stored text as a title reads it: each inline expression its code with references named, `\\$` a dollar."""
+    return INLINE_CODE.sub(lambda m: named_refs(blocks, m.group(1), seen), text).replace("\\$", "$")
+
+
 def own_text(blocks: dict, ref: str, seen: frozenset = frozenset()) -> str:
     """A block's own text: its text, or its children's in order. A quote or an image has none."""
     b = blocks.get(ref)
     if b is None or ref in seen:
         return ""
     match b.get("content", ""):
-        case str(text) | {"paraphrase": str(), "text": str(text)} | {"expr": str(text)}:   # (an expression's: its source)
+        case str(text) | {"paraphrase": str(), "text": str(text)}:
             return text
+        case {"expr": str(src)}:   # (an expression's: its source, each @reference as its title, as the code draws it)
+            return named_refs(blocks, src, seen | {ref})
         case list() | {"kind": str(), "blocks": list()}:
             return "\n".join(own_text(blocks, k, seen | {ref}) for k in children(b)
                              if not (quoted(blocks.get(k)) or image_of(blocks.get(k))))
@@ -497,8 +537,13 @@ def content_hash(blocks: dict, ref: str) -> str | None:
     """A fingerprint of what a block shows (its text, how it's split into
     blocks, its quotes and their masks; not the ids): an editor keeps it as
     the `base` its text was built on, so a commit can tell when the block
-    changed elsewhere in the meantime."""
-    return draft_digest(json.dumps(block_items(blocks, ref))) if ref in blocks else None
+    changed elsewhere in the meantime. An expression's code is part of what it shows (its value is worked out
+    from it in the page), so a change to the code is a change here."""
+    if ref not in blocks:
+        return None
+    code = lambda i: ("expr", i, expr_of(blocks.get(i)))
+    items = [code(it[1]) if it[0] == "expr" else it for it in block_items(blocks, ref)]
+    return draft_digest(json.dumps(items if expr_of(blocks[ref]) is None else [code(ref)]))
 
 
 def with_mask(b: dict, mask: list | None) -> dict:
@@ -773,7 +818,7 @@ def display_title(blocks: dict, ref: str, named: dict | None = None) -> str | No
     derived from the first line, else from what else it holds: a picture,
     the title a model gave it (`named`, {file name: title}, written beside the store by a model:
     picture-titles.json), else "picture"."""
-    return (kind_of(blocks[ref]) or blocks[ref].get("title") or derive_title(own_text(blocks, ref))
+    return (kind_of(blocks[ref]) or blocks[ref].get("title") or derive_title(readable(blocks, own_text(blocks, ref), frozenset({ref})))
             or (named or {}).get(image_of(blocks[ref]))
             or ("picture" if any(item[0] == "image" for item in block_items(blocks, ref)) else None))
 

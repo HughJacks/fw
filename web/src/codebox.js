@@ -4,10 +4,10 @@
 // over and ⌫ deletes whole (TYPE.md, references); typing `@` opens fw's own search (the one Quote a block uses) and a
 // pick puts `@<id>` in; fw's built-ins and the code's own `let` names completed as you type. Its keys: Esc and the
 // `code` command close it (exprview.js), Tab indents two spaces. Each change goes back as the block's `source`.
-import { EditorState, RangeSetBuilder, Prec } from "@codemirror/state";
+import { EditorState, RangeSetBuilder, Prec, Facet } from "@codemirror/state";
 import { EditorView, Decoration, ViewPlugin, WidgetType, keymap, drawSelection } from "@codemirror/view";
 import { StreamLanguage, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { autocompletion, completionKeymap, completionStatus, startCompletion } from "@codemirror/autocomplete";
+import { autocompletion, completionKeymap, completionStatus, startCompletion, acceptCompletion } from "@codemirror/autocomplete";
 import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
 import { tags as t } from "@lezer/highlight";
 import { api } from "./api.js";
@@ -17,6 +17,7 @@ import { snapshot } from "./snapshot.svelte.js";
 
 const KEYWORDS = new Set(["let", "in", "fun", "if", "then", "else", "case", "end", "type", "test", "rec", "and"]);
 const ATOMS = new Set(["true", "false"]);
+const RELATIVE = new Set(["this", "here", "self", "above", "below"]);   // (where the expression sits, worked out as it's viewed: drawn apart)
 export const REF = /@([0-9]{8}T[0-9]{6}-[0-9a-f]{4})/g;   // (a pericope or block id, as fw makes them)
 /** The ids a source refers to, in order, each once (fw_block.expr_refs). */
 export const refsIn = (src) => [...new Set([...(src || "").matchAll(REF)].map((m) => m[1]))];
@@ -34,12 +35,14 @@ const hazelSyntax = StreamLanguage.define({
       const word = w[0];
       if (KEYWORDS.has(word)) return "keyword";
       if (ATOMS.has(word)) return "atom";
+      if (RELATIVE.has(word)) return "relative";
       return /^[A-Z]/.test(word) ? "typeName" : "variableName";
     }
     if (s.match(/^(->|=>|\+\+|::|==\.?|!=|<=|>=|&&|\|\||[-+*\/<>=|!.,:;()[\]{}])/)) return "operator";
     s.next();
     return null;
   },
+  tokenTable: { relative: t.special(t.variableName) },
 });
 
 const colours = HighlightStyle.define([
@@ -48,6 +51,7 @@ const colours = HighlightStyle.define([
   { tag: t.number, color: "#d7a46f" },
   { tag: t.string, color: "#a3c48a" },
   { tag: t.typeName, color: "var(--blue)" },
+  { tag: t.special(t.variableName), class: "fw-relative" },
   { tag: t.comment, color: "var(--dim)", fontStyle: "italic" },
   { tag: t.operator, color: "var(--dim)" },
 ]);
@@ -61,7 +65,7 @@ export function labelOf(id) {
     const map = new Map();
     const walk = (n, title) => {
       if (!n) return;
-      if (n.id && !map.has(n.id)) map.set(n.id, title ?? (n.text || "").replace(/\s+/g, " ").slice(0, 40));
+      if (n.id && !map.has(n.id)) map.set(n.id, title ?? (n.t === "expr" ? `ƒ ${n.source || ""}` : n.text || "").replace(/\s+/g, " ").slice(0, 40));
       for (const k of n.children || []) walk(k, null);
     };
     for (const p of snapshot.store?.pericopes || []) {
@@ -74,11 +78,16 @@ export function labelOf(id) {
   return l === undefined ? null : l || "(untitled)";
 }
 
+/** The pericope the expression is in (`this`): a reference to it is drawn as `this` (the user, 2026-11-25: "any self
+ * referential references should render as 'this'"). */
+const hereFacet = Facet.define({ combine: (v) => v[0] ?? new Map() });   // ({id: this | here | self})
+
 class RefChip extends WidgetType {
-  constructor(id) { super(); this.id = id; }
-  eq(o) { return o.id === this.id; }
+  constructor(id, here = null) { super(); this.id = id; this.here = here; }   // (here: its word, this/here/self, or null)
+  eq(o) { return o.id === this.id && o.here === this.here; }
   toDOM() {
     const s = document.createElement("span");
+    if (this.here) { s.className = "fw-ref fw-ref-this"; s.textContent = this.here; s.title = `@${this.id}`; return s; }
     const label = labelOf(this.id);
     s.className = "fw-ref" + (label === null ? " fw-ref-gone" : "");
     s.textContent = label ?? "?";
@@ -92,7 +101,8 @@ function chips(view) {
   const b = new RangeSetBuilder();
   for (const { from, to } of view.visibleRanges) {
     const text = view.state.doc.sliceString(from, to);
-    for (const m of text.matchAll(REF)) b.add(from + m.index, from + m.index + m[0].length, Decoration.replace({ widget: new RefChip(m[1]) }));
+    const names = view.state.facet(hereFacet);
+    for (const m of text.matchAll(REF)) b.add(from + m.index, from + m.index + m[0].length, Decoration.replace({ widget: new RefChip(m[1], names.get(m[1]) ?? null) }));
   }
   return b.finish();
 }
@@ -114,21 +124,39 @@ const BUILTINS = [
   ["text", "String -> Block", "a block of text"],
   ["origin", "Block -> Option(Ref)", "where a quoted block came from"],
   ["content", "Block -> Block", "what a quoted block holds"],
-  ["title", "Ref -> String", "its title"],
+  ["title", "Ref -> String", "its title (written, or from its first line)"],
+  ["writtenTitle", "Ref -> Option(String)", "the title written for it, if one is"],
   ["pericopes", "[Ref]", "every pericope"],
   ["tagged", "Ref -> [Ref]", "the pericopes with this tag"],
   ["tags", "Ref -> [Ref]", "its tags"],
+  ["notTags", "Ref -> [Ref]", "the tags it was said not to be"],
   ["wordCount", "Ref -> Int", "its words, as the header counts them"],
-  ["created", "Ref -> String", "when it was made (ISO)"],
-  ["updated", "Ref -> String", "when it last changed (ISO)"],
+  ["created", "Ref -> Date", "when it was made (its own: a block's, a pericope's)"],
+  ["updated", "Ref -> Date", "when it last changed"],
   ["visits", "Ref -> Int", "how many times it's been visited"],
-  ["backlinks", "Ref -> [Ref]", "the pericopes pointing at it"],
+  ["firstVisit", "Ref -> Option(Date)", "its first visit"],
+  ["lastVisit", "Ref -> Option(Date)", "its last visit"],
+  ["recentVisits", "Ref -> [Visit]", "its last visits: Visit((when, [Opened, Stayed, Wrote, Through]))"],
+  ["backlinks", "Ref -> [Ref]", "what points at it"],
+  ["isPericope", "Ref -> Bool", "a pericope, not a block inside one"],
+  ["pericopeOf", "Ref -> Ref", "the pericope it's in (a pericope: itself)"],
+  ["now", "Date", "this moment (moves on each minute)"],
+  ["year", "Date -> Int", ""], ["month", "Date -> Int", ""], ["day", "Date -> Int", ""],
+  ["hour", "Date -> Int", ""], ["minute", "Date -> Int", ""], ["weekday", "Date -> Int", "1 Monday … 7 Sunday"],
+  ["showDate", "Date -> String", "as fw writes it: Nov 25, 2026, 3:12 pm"],
+  ["before", "(Date, Date) -> Bool", "the first earlier than the second"],
+  ["daysBetween", "(Date, Date) -> Int", "the second less the first, in days"],
+  ["minutesBetween", "(Date, Date) -> Int", "the second less the first, in minutes"],
+  ["this", "Ref", "the pericope it's in, where it sits now (its own place in it: a loop)"],
+  ["here", "Ref", "the pericope it's viewed from (through a quote: the quoting one; in its own: this)"],
+  ["self", "Ref", "the block itself (read from inside: a loop)"],
   ["above", "Ref", "the block just above this one"],
   ["below", "Ref", "the block just below this one"],
   ["map", "", ""], ["filter", "", ""], ["length", "", ""],
 ];
 const CASES = [["Text", "[Inline] -> Block"], ["Paraphrase", "(Ref, String) -> Block"], ["Blocks", "[Block] -> Block"],
-  ["Plain", "String -> Inline"], ["Link", "(String, Ref) -> Inline"]];   // (no From: sealed; a quote is body(@x), TYPE.md)
+  ["Plain", "String -> Inline"], ["Link", "(String, Ref) -> Inline"],
+  ["Visit", "(Date, [Attention]) -> Visit"], ["Opened", "Attention"], ["Stayed", "Attention"], ["Wrote", "Attention"], ["Through", "Attention"]];   // (no From: sealed; a quote is body(@x), TYPE.md)
 
 async function refCompletions(ctx) {
   const m = ctx.matchBefore(/@[^\s@()\[\],]*/);
@@ -178,7 +206,7 @@ const look = EditorView.theme({
 }, { dark: true });
 
 /** A code box in `parent`, holding `source`. `changed(text)` on each change; `close()` for Esc or `isClose(e)`. */
-export function codeBox(parent, source, { changed, close, isClose }) {
+export function codeBox(parent, source, { changed, close, isClose, names = new Map(), inline = false, leave = null, away = null }) {
   // (Esc with the completions open closes them first; the `code` command always closes the box)
   const closing = (e, v) => {
     if (!(isClose(e) || (e.key === "Escape" && !completionStatus(v.state)))) return false;
@@ -189,16 +217,24 @@ export function codeBox(parent, source, { changed, close, isClose }) {
     state: EditorState.create({
       doc: source,
       extensions: [
+        hereFacet.of(names),
         history(),
         drawSelection({ cursorBlinkRate: 1000 }),   // (CodeMirror's own caret: the browser's, in an editable inside the page's, sometimes isn't painted)
         hazelSyntax, syntaxHighlighting(colours),
         refChips,
         autocompletion({ override: [refCompletions, nameCompletions], icons: false }),
         Prec.highest(EditorView.domEventHandlers({ keydown: (e, v) => closing(e, v) })),
-        Prec.high(keymap.of([{ key: "Tab", run: (v) => { v.dispatch(v.state.replaceSelection("  ")); return true; } }])),
+        // (↓ on its last line, ↑ on its first: out of it, to the block after or before; the completions' own first)
+        Prec.high(keymap.of([
+          { key: "ArrowDown", run: (v) => !!leave && !completionStatus(v.state) && v.state.doc.lineAt(v.state.selection.main.head).number === v.state.doc.lines && (leave(1), true) },
+          { key: "ArrowUp", run: (v) => !!leave && !completionStatus(v.state) && v.state.doc.lineAt(v.state.selection.main.head).number === 1 && (leave(-1), true) },
+        ])),
+        // (Tab takes the completion offered, when one is; else indents two spaces)
+        Prec.high(keymap.of([{ key: "Tab", run: (v) => acceptCompletion(v) || (v.dispatch(v.state.replaceSelection("  ")), true) }])),
         keymap.of([...completionKeymap, ...historyKeymap, ...defaultKeymap]),
         EditorView.inputHandler.of((v, from, to, text) => {   // (@ typed: the search opens at once)
           if (text === "@") queueMicrotask(() => startCompletion(v));
+          if (inline && text === "$") { close(); return true; }   // (an inline expression: its closing $ back to the line)
           return false;
         }),
         EditorView.updateListener.of((u) => { if (u.docChanged) changed(u.state.doc.toString()); }),
@@ -208,6 +244,12 @@ export function codeBox(parent, source, { changed, close, isClose }) {
     }),
   });
   parent.fwCode = view;   // (the browser tests write in it through this)
+  // (the focus gone elsewhere on the page, a click in another block, say: closed, never left open behind you; another
+  // window taking it keeps it open)
+  if (away) parent.addEventListener("focusout", (e) => {
+    const to = e.relatedTarget;
+    if (to && !parent.contains(to) && !to.closest?.(".cm-tooltip")) away();
+  });
   return view;
 }
 

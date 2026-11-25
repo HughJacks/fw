@@ -18,6 +18,20 @@
   };
   $effect(() => { drawn; focus; hidden; measure(); });
 
+  // a block changing height with nothing else changing (an expression's code opened or closed, a value drawn, a
+  // picture loaded): measured again, so a line between blocks never stays where a block used to end
+  $effect(() => {
+    const frame = doc?.querySelector(":scope > .ProseMirror");
+    if (!frame) return;
+    let queued = 0;
+    const seen = new ResizeObserver(() => { if (!queued) queued = requestAnimationFrame(() => { queued = 0; measure(); }); });
+    seen.observe(frame);
+    for (const b of frame.children) seen.observe(b);
+    const kids = new MutationObserver(() => { for (const b of frame.children) seen.observe(b); });
+    kids.observe(frame, { childList: true });
+    return () => { cancelAnimationFrame(queued); seen.disconnect(); kids.disconnect(); };
+  });
+
   // a block's room easing (padding transitions running in the body): measured each frame until none is (asked of the
   // page each frame, not counted from events: a block taken away mid-way never says it's done)
   $effect(() => {

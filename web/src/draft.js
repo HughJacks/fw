@@ -15,26 +15,60 @@ export function newId(now = new Date(), rand = Math.random) {
   return `${stamp}-${Math.floor(rand() * 0x10000).toString(16).padStart(4, "0")}`;
 }
 
-/** A block of text's content: its lines, a hard break between each; its hyperlinks (`links`: [{to, at:
- * [start, end], title}], offsets into the text, a line break one) as link marks over their spans. */
-export function inline(text, links = []) {
+/** A stored text's units (TYPE.md "Inline": a text is a string with code spliced in): each {k: "char", c, from, to},
+ * {k: "code", source, from, to} or {k: "break", from, to}, offsets into the stored text. `$…$` (closed on its line)
+ * is an inline expression; `\$` a dollar sign; a `$` with no partner on its line a dollar sign too. */
+export function units(text) {
   const out = [];
-  text = text || "";
-  const cuts = new Set([0, text.length]);
-  for (const l of links) for (const x of l.at) if (x >= 0 && x <= text.length) cuts.add(x);
-  for (let i = 0; i < text.length; i++) if (text[i] === "\n") { cuts.add(i); cuts.add(i + 1); }
-  const points = [...cuts].sort((a, b) => a - b);
-  for (let k = 0; k + 1 < points.length; k++) {
-    const [a, b] = [points[k], points[k + 1]];
-    const piece = text.slice(a, b);
-    if (piece === "\n") { out.push({ type: "hard_break" }); continue; }
-    if (!piece) continue;
-    const link = links.find((l) => l.at[0] <= a && b <= l.at[1]);
-    out.push(link ? { type: "text", text: piece, marks: [{ type: "link", attrs: { to: link.to, title: link.title || "" } }] }
-                  : { type: "text", text: piece });
+  for (let i = 0; i < text.length;) {
+    const c = text[i];
+    if (c === "\\" && text[i + 1] === "$") { out.push({ k: "char", c: "$", from: i, to: i + 2 }); i += 2; continue; }
+    if (c === "\n") { out.push({ k: "break", from: i, to: i + 1 }); i += 1; continue; }
+    if (c === "$") {
+      let j = i + 1;
+      while (j < text.length && text[j] !== "\n" && !(text[j] === "$" && text[j - 1] !== "\\")) j++;
+      if (j < text.length && text[j] === "$") { out.push({ k: "code", source: text.slice(i + 1, j), from: i, to: j + 1 }); i = j + 1; continue; }
+    }
+    out.push({ k: "char", c, from: i, to: i + 1 });
+    i += 1;
   }
   return out;
 }
+
+/** A block of text's content: its lines, a hard break between each; its inline expressions (`$…$`, icode); its
+ * hyperlinks (`links`: [{to, at: [start, end], title}], offsets into the stored text, a line break one) as link marks
+ * over their spans. With `raw`, the text as it is, nothing read as code (a masked quote's view: its lens puts text
+ * back as it was given). */
+export function inline(text, links = [], { raw = false } = {}) {
+  text = text || "";
+  const linkOf = (u) => links.find((l) => l.at[0] <= u.from && u.to <= l.at[1]) || null;
+  const marks = (l, code) => {
+    const ms = [...(code ? [{ type: "icode", attrs: { key: newCodeKey() } }] : []), ...(l ? [{ type: "link", attrs: { to: l.to, title: l.title || "" } }] : [])];
+    return ms.length ? { marks: ms } : {};
+  };
+  const out = [];
+  for (const u of units(text)) {
+    if (u.k === "break") { out.push({ type: "hard_break" }); continue; }
+    const l = linkOf(u);
+    if (u.k === "code") { out.push({ type: "text", text: `$${u.source}$`, ...marks(l, true) }); continue; }
+    const c = raw ? text.slice(u.from, u.to) : u.c;   // (raw: a dollar sign kept as written, \$, as the lens gave it)
+    const last = out[out.length - 1];
+    const linkTo = (n) => n.marks?.find((m) => m.type === "link")?.attrs.to ?? null;
+    if (last && last.type === "text" && !last.marks?.some((m) => m.type === "icode") && linkTo(last) === (l?.to ?? null)) last.text += c;
+    else out.push({ type: "text", text: c, ...marks(l, false) });
+  }
+  return out;
+}
+
+let codeKeys = 0;
+/** A key for a new inline expression's mark (two side by side stay two). */
+export const newCodeKey = () => `c${++codeKeys}`;
+
+/** One inline node's stored text: an inline expression (marked code) as written, $source$; a dollar sign elsewhere
+ * as \$. */
+const stored = (c) => (c.type === "hard_break" ? "\n"
+  : (c.marks || []).some((m) => m.type === "icode") ? c.text || ""
+  : (c.text || "").replaceAll("$", "\\$"));
 
 /** One node of the core's tree -> a ProseMirror node (JSON). */
 export function pmNode(node) {
@@ -55,9 +89,9 @@ export function pmDoc(children) {
   return { type: "doc", content: content.length ? content : [{ type: "text_block", attrs: { id: null } }] };
 }
 
-/** A block of text's text (JSON): its lines. */
-function textOf(node) {
-  return (node.content || []).map((c) => (c.type === "hard_break" ? "\n" : c.text || "")).join("");
+/** A block of text's text (JSON), as it's stored: its lines, its inline expressions as $source$. */
+export function textOf(node) {
+  return (node.content || []).map(stored).join("");
 }
 
 const within = (ids) => ids.map((c) => " " + c).join("");
@@ -110,7 +144,7 @@ function linksOf(node) {
   const out = [];
   let at = 0;
   for (const c of node.content || []) {
-    const len = c.type === "hard_break" ? 1 : (c.text || "").length;
+    const len = stored(c).length;   // (offsets into the stored text)
     const to = (c.marks || []).find((m) => m.type === "link")?.attrs.to;
     const last = out[out.length - 1];
     if (to && last && last.to === to && last.at[1] === at) last.at[1] = at + len;
@@ -144,7 +178,7 @@ export function pmLens(segments, hole) {
     const inl = [];
     seg.text.split(hole).forEach((piece, n) => {
       if (n) inl.push({ type: "hole" });
-      inl.push(...inline(piece));
+      inl.push(...inline(piece, [], { raw: true }));
     });
     return { type: "text_block", attrs: { id: seg.id, marker: seg.marker, empty: seg.empty }, content: inl };
   });

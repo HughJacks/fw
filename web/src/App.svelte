@@ -16,7 +16,7 @@
   let peri = $state(), foot = $state();
   let open = $state(null);   // (the pericope open, Pericope.svelte's: {id, base, reviewing}; null while home's waits)
   let homing = $derived(here.view === "home" && !here.written);   // (home's own parts showing)
-  // (home's pericope, typed in or not, stays centred: it grows from the middle, the user, 2026-11-19)
+  // (home's pericope, typed in or not, keeps home's room: at the top, the search below it (2026-11-25))
   let centred = $derived(here.view === "home" || here.written);
   // what the page says: the pericope's, derived from what it says, or the page's own (state.svelte.js status.from)
   let line = $derived(status.from === "pericope" ? (peri?.says() ?? "") : status.text);

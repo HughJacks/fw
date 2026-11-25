@@ -4,6 +4,7 @@
 // picture from a link. A picture file dropped or pasted on the page is quoted the same way.
 import { Plugin, PluginKey, TextSelection, NodeSelection } from "prosemirror-state";
 import { schema } from "./schema.js";
+import { codeMark, codeRuns, icodeKey } from "./inlinecode.js";
 import { api } from "./api.js";
 import { float } from "./float.svelte.js";
 import SearchBox from "./SearchBox.svelte";
@@ -62,6 +63,32 @@ export async function insertQuote(editor, target, at = null) {
  * shift, query)` once one's picked (the box gone). Esc closes it. */
 export function searchBox(view, pos, { prompt, keep = () => true, foot, onPick }) {
   return float(SearchBox, view.coordsAtPos(pos), { prompt, keep, foot, onPick }, () => view.focus());
+}
+
+/** @ in a line: fw's search; a pick puts `$@id$` in place of the @ (an inline expression, drawn as its chip), a new
+ * pericope titled with what's typed made first; Esc leaves the @ as it is. */
+function mentionSearch(editor, pos) {
+  const view = editor.view;
+  searchBox(view, pos, {
+    prompt: "@ › ",
+    keep: (r) => r.key === "new" || !r.dim,
+    foot: (it) => (it.key === "new" ? "↵ a new pericope, referred to here" : "↵ refer to it here"),
+    onPick: async (it, _, typed) => {
+      let id = it.source || it.key;
+      if (it.key === "new") {
+        const r = await api("/api/pericope", { method: "POST", body: JSON.stringify({ title: typed || null }) });
+        if (!r.ok) return;
+        id = r.body.id;
+      }
+      const at = view.state.doc.textBetween(pos, Math.min(pos + 1, view.state.doc.content.size)) === "@" ? pos : null;
+      const code = `$@${id}$`, node = schema.text(code, [codeMark()]);
+      const start = at ?? view.state.selection.from;
+      let tr = at !== null ? view.state.tr.replaceWith(at, at + 1, node) : view.state.tr.replaceSelectionWith(node, false);
+      tr = tr.setSelection(TextSelection.create(tr.doc, Math.min(start + code.length, tr.doc.content.size)));
+      view.dispatch(tr.scrollIntoView());
+      view.focus();
+    },
+  });
 }
 
 /** Stage two of Quote a block: a search, then Enter quotes. */
@@ -163,6 +190,39 @@ export function slashMenu(editor, enterNew) {
     },
     props: {
       handleTextInput(view, from, to, text) {
+        if (text === "$" && !editor.readOnly) {   // (TYPE.md "Inline": $ in an empty block makes it an expression; \$ a dollar sign)
+          const $at = view.state.doc.resolve(from);
+          if ($at.parent.type.name !== "text_block" || $at.parent.attrs.para) return false;
+          if (from === to && $at.parent.textBetween(Math.max(0, $at.parentOffset - 1), $at.parentOffset) === "\\") {
+            view.dispatch(view.state.tr.insertText("$", from - 1, to));
+            return true;
+          }
+          if ($at.parent.content.size === 0) { insertExpr(editor, from); return true; }
+          // (in an inline expression: its closing $ steps out of it, any other $ is nothing: Hazel has none)
+          const run = codeRuns(view.state.doc).find((r) => r.source !== null && r.from < from && from < r.to);
+          if (run) {
+            if (from === run.to - 1) view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, run.to)));
+            return true;
+          }
+          // (mid-text: an inline expression, two dollar signs, the caret between them)
+          const mark = codeMark(), tr = view.state.tr.replaceWith(from, to, schema.text("$$", [mark]));
+          view.dispatch(tr.setSelection(TextSelection.create(tr.doc, from + 1)).setMeta(icodeKey, { open: mark.attrs.key }));   // (typed: open)
+          return true;
+        }
+        if (text === "@" && !editor.readOnly) {   // (TYPE.md "Inline": @ is sugar for $@p$, a reference in the line, its chip)
+          const $at = view.state.doc.resolve(from);
+          if ($at.parent.type.name !== "text_block" || $at.parent.attrs.para) return false;
+          if (codeRuns(view.state.doc).some((r) => r.from < from && from < r.to)) return false;   // (in code: an @ reference, typed as is)
+          if (from === to && $at.parent.textBetween(Math.max(0, $at.parentOffset - 1), $at.parentOffset) === "\\") {   // (\@: an @, no search)
+            view.dispatch(view.state.tr.insertText("@", from - 1, to));
+            return true;
+          }
+          const before = $at.parent.textBetween(0, $at.parentOffset);
+          if (before && !/\s$/.test(before)) return false;   // (only at a line's start or after a space: an address stays text)
+          view.dispatch(view.state.tr.insertText("@", from, to));
+          mentionSearch(editor, from);
+          return true;
+        }
         if (text !== "/" || editor.readOnly) return false;
         const $at = view.state.doc.resolve(from);
         if ($at.parent.type.name !== "text_block") return false;

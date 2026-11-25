@@ -74,3 +74,41 @@ test("snapNode: the editor's document as the expression engine reads it", async 
   const own = { type: "doc", content: [{ type: "text_block", attrs: { id: "X", own: true }, content: [{ type: "text", text: "just" }] }] };
   assert.deepEqual(snapNode(own), { id: "X", t: "text", text: "just", links: [] });
 });
+
+// --- inline expressions (TYPE.md "Inline"): $…$ in the stored text, one piece; \$ a dollar sign ---------------------
+import { units, textOf as storedText, snapNode } from "../src/draft.js";
+
+test("inline expressions: $…$ closed on its line is code; \\$ and a lone $ are dollar signs", () => {
+  const kinds = (t) => units(t).map((u) => (u.k === "code" ? `[${u.source}]` : u.k === "break" ? "/" : u.c)).join("");
+  assert.equal(kinds("a $1 + 1$ b"), "a [1 + 1] b");
+  assert.equal(kinds("costs 30\\$ each"), "costs 30$ each");
+  assert.equal(kinds("300$ (from dept)"), "300$ (from dept)");
+  assert.equal(kinds("x $a\nb$ y"), "x $a/b$ y");   // (not closed on its line: dollar signs)
+  assert.equal(kinds("$@20261001T100000-a000$"), "[@20261001T100000-a000]");
+});
+
+test("inline expressions round-trip: stored text -> the editor's content -> stored text, links where they were", () => {
+  for (const [text, links] of [
+    ["the train $wordCount(@x)$ arrives", []],
+    ["30\\$ each, $1 + 1$ more", [{ to: "T", at: [0, 8] }]],
+    ["line one\nline $2$ two", [{ to: "T", at: [14, 17] }]],
+    ["a lone 300$ stays", []],
+  ]) {
+    const node = { type: "text_block", content: inline(text, links) };
+    assert.equal(storedText(node), text.replace("300$", "300\\$"));
+    const back = snapNode({ type: "text_block", attrs: { id: "b" }, content: node.content }).links;
+    assert.deepEqual(back.map((l) => l.at), links.map((l) => l.at), text);
+  }
+  const n = inline("x $5$ y $6$$7$");
+  const code = (c) => c.marks?.some((m) => m.type === "icode");
+  assert.deepEqual(n.map((c) => [c.text, !!code(c)]), [["x ", false], ["$5$", true], [" y ", false], ["$6$", true], ["$7$", true]]);
+  assert.notEqual(n[3].marks[0].attrs.key, n[4].marks[0].attrs.key);   // (side by side: still two)
+});
+
+test("a masked quote's view: its code marked, its text exactly as given (the lens puts it back)", () => {
+  const d = pmLens([{ t: "text", id: "b", text: "a $1$ b 3\\$" }], "\u0000");
+  const kids = d.content[0].content;
+  assert.equal(kids.map((c) => c.text).join(""), "a $1$ b 3\\$");
+  assert.ok(kids[1].marks.some((m) => m.type === "icode"));
+  assert.equal(lensOf(d, "\u0000"), "a $1$ b 3\\$");
+});

@@ -176,7 +176,7 @@ code, r = call("POST", "/api/act", {"do": "nothing"})
 same("  an action that isn't one", code, 404)
 
 code, st = call("GET", "/api/stamp")
-check("the stamp: the store's", code == 200 and st["stamp"] == S.DATA_PATH.stat().st_mtime_ns)
+check("the stamp: the store's (its document's)", code == 200 and st["stamp"] == S.LORO_PATH.stat().st_mtime_ns)
 code, page = 0, ""
 with urllib.request.urlopen(URL + "/") as r:
     code, page = r.status, r.read().decode()

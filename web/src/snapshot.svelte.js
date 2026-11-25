@@ -5,20 +5,27 @@
 import { untrack } from "svelte";
 import { api } from "./api.js";
 import { snapNode } from "./draft.js";
+import { onStore } from "./live.js";
 
-const FOLLOW = 1000;   // ms between asking whether the store has changed (as Pericope.svelte follows it)
+/** This moment as the store writes dates: ISO 8601, to the second, with this place's offset. */
+function isoNow() {
+  const d = new Date(), pad = (n) => String(Math.abs(n)).padStart(2, "0"), off = -d.getTimezoneOffset();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    + `${off < 0 ? "-" : "+"}${pad(Math.trunc(off / 60))}:${pad(off % 60)}`;
+}
 
 class Snapshot {
-  store = $state.raw(null);   // {pericopes: [{id, title, kinds, body}]}: the core's
+  store = $state.raw(null);   // {now, facts: {id: a block's own facts}, pericopes: [{id, title, kinds, body}]}: the core's
+  minute = $state(isoNow());  // (`now` in an expression: moved on each minute, so what reads it follows)
   live = $state.raw(null);    // {id, body}: the open pericope, from its editor's document
   /** The snapshot as the engine takes it: a JSON string (one per change, so the engine parses it once). */
   json = $derived.by(() => {
     const ps = this.store?.pericopes || [];
-    const live = this.live;
-    if (!live) return JSON.stringify({ pericopes: ps });
+    const live = this.live, rest = { now: this.minute, facts: this.store?.facts || {} };
+    if (!live) return JSON.stringify({ ...rest, pericopes: ps });
     const at = ps.findIndex((p) => p.id === live.id);
     const own = at >= 0 ? { ...ps[at], body: live.body } : { id: live.id, title: "", kinds: [], body: live.body };
-    return JSON.stringify({ pericopes: at >= 0 ? ps.with(at, own) : [...ps, own] });
+    return JSON.stringify({ ...rest, pericopes: at >= 0 ? ps.with(at, own) : [...ps, own] });
   });
 }
 export const snapshot = new Snapshot();
@@ -27,18 +34,13 @@ let following = null;
 /** The core's part fetched, then followed (once, from the first expression drawn). */
 export function follow() {
   if (following) return;
-  let stamp = null;
   const load = async () => {
     const r = await api("/api/snapshot");
     if (r.ok) snapshot.store = r.body;
   };
   following = load();
-  setInterval(async () => {
-    const r = await api("/api/stamp");
-    if (!r.ok) return;
-    if (stamp !== null && r.body.stamp !== stamp) await load();
-    stamp = r.body.stamp;
-  }, FOLLOW);
+  setInterval(() => { snapshot.minute = isoNow(); }, 60000);
+  onStore(load);   // (the first word too: a change between the load and it isn't missed)
 }
 
 /** The open pericope `id`'s document (ProseMirror JSON) as the engine reads it, live. */

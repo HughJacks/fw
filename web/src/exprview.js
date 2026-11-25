@@ -5,10 +5,11 @@
 // own, the result dim below it and Hazel's errors under that, following every key; ⌘⇧X or Esc again: back to the
 // result, the block selected. Each change to the code is a change to the document (its `source`), saved as any is. The
 // result follows the snapshot of the store (snapshot.svelte.js), so it follows every key anywhere on the page.
-import { NodeSelection, Plugin } from "prosemirror-state";
+import { NodeSelection, Plugin, Selection } from "prosemirror-state";
+import { enterCode } from "./inlinecode.js";
 import { levelKey } from "./blocks.js";
 import * as hazel from "./hazel.js";
-import { drawValue, quoteOf } from "./views.js";
+import { drawValue, quoteOf, insideOf, namesOf, hereOf } from "./views.js";
 import { onSnapshot } from "./snapshot.svelte.js";
 import { codeBox, setText, labelOf, refsIn } from "./codebox.js";
 import { pressed } from "./keys.js";
@@ -34,11 +35,17 @@ export async function valueTree(block) {
       case "text": return { t: "text", id: null, text: t.text, links: (t.links || []).map((l) => ({ ...l, title: labelOf(l.to) || "" })) };
       case "paraphrase": return { t: "text", id: null, text: t.text, para: { id: t.target, title: labelOf(t.target) || "", text: "", home: t.target } };
       case "blocks": return { t: "container", id: null, children: await Promise.all(t.children.map(conv)) };
-      case "from": {   // (blocks that came from a pericope unchanged: drawn as a quote of it, green, TYPE.md; what it
+      case "loop": {   // (x met again while showing x, the recursive case: its title and a loop, a window on it all the same)
+        const q = await quoteOf(t.target);
+        return { ...q, expr: undefined, t: "quote", id: null, target: t.target, fromExpr: true, loop: true, lens: null, masked: false, body: [],
+          tree: [{ t: "text", id: null, text: `${labelOf(t.target) ?? "?"} ↻`, links: [] }] };
+      }
+      case "from": {
+        if (t.child.t === "loop" && t.child.target === t.target) return conv(t.child);   // (a window on itself: just the loop)   // (blocks that came from a pericope unchanged: drawn as a quote of it, green, TYPE.md; what it
         // holds Hazel's value, so it follows every key as the rest does; its top line the core's)
         const q = await quoteOf(t.target);
         const kids = t.child.t === "blocks" ? t.child.children : [t.child];
-        return { ...q, t: "quote", id: null, target: t.target, fromExpr: true, lens: null, masked: false, body: [],
+        return { ...q, expr: undefined, t: "quote", id: null, target: t.target, fromExpr: true, lens: null, masked: false, body: [],   // (Hazel's value, worked out: never a call again)
           tree: await Promise.all(kids.map(conv)) };
       }
       default: return { t: "text", id: null, text: "?" };
@@ -73,12 +80,12 @@ export class ExprView {
   /** What it shows: its value (a Block value as blocks you can move through, not change), or why it can't yet; its
    * code shown, Hazel's errors under it. */
   draw() {
-    const r = hazel.run(this.node.attrs.source || "", this.node.attrs.id);
+    const r = hazel.run(this.node.attrs.source || "", this.node.attrs.id, hereOf(this.parent));
     this.top = r?.kind === "block" && r.block.t === "from" ? r.block.target : null;   // (its value one From: ⌘O opens that)
     if (r?.kind === "block" && this.parent) this.showBlocks(r);
     else {
       this.dropInner();
-      this.out = drawValue(this.dom, r, this.open);
+      this.out = drawValue(this.dom, r, this.open, insideOf(this.parent, this.node.attrs.id), namesOf(this.parent, this.node.attrs.id));
     }
     this.dom.querySelector(":scope > .fw-expr-errors")?.remove();
     if (this.code && r?.errors?.length) this.dom.appendChild(errorsEl(r));
@@ -142,6 +149,7 @@ export class ExprView {
     holder.className = "fw-expr-codebox fw-expr-code";
     this.dom.prepend(holder);
     this.code = codeBox(holder, this.node.attrs.source || "", {
+      names: namesOf(this.parent, this.node.attrs.id),
       changed: (text) => {
         const pos = this.getPos();
         if (pos == null || text === this.node.attrs.source) return;
@@ -149,6 +157,8 @@ export class ExprView {
       },
       close: () => this.close(),
       isClose: (e) => pressed(e, "code"),
+      leave: (dir) => this.leave(dir),
+      away: () => this.away(),
     });
     this.holder = holder;
     this.draw();
@@ -156,8 +166,31 @@ export class ExprView {
     this.code.dispatch({ selection: { anchor: this.code.state.doc.length } });
   }
 
+  /** Its code box taken away, nothing else touched (the focus gone elsewhere on the page). */
+  away() {
+    if (!this.code || this.closing) return;
+    const c = this.code;
+    this.code = null;
+    c.destroy();
+    this.holder?.remove();
+    this.holder = null;
+    this.draw();
+  }
+  /** Out of its code by ↑/↓ at its edge: closed, the caret in the block before (-1) or after (1) it. */
+  leave(dir) {
+    const pos = this.getPos();
+    this.closing = true;
+    this.view.focus();
+    this.closing = false;
+    this.away();
+    if (pos == null || this.view.isDestroyed) return;
+    const at = dir > 0 ? pos + this.node.nodeSize : pos;
+    this.view.dispatch(this.view.state.tr.setSelection(Selection.near(this.view.state.doc.resolve(at), dir)).scrollIntoView());
+  }
+
   /** Back to its result, the block selected. */
   close() {
+    this.closing = true;
     // (the editor focused first, the block selected whole, and only then the code box taken away: a focused box
     // removed leaves the browser a selection at the page's top, which the editor would read back as where you are;
     // put back once more after the browser's settled)
@@ -170,12 +203,17 @@ export class ExprView {
     };
     select();
     this.view.fwExprClosed = Date.now();   // (exprGuard: the browser's stray selection, just after, not read back)
+    // (a key pressed before the frame (↓ at once): where it went is yours, not put back)
+    let moved = false;
+    const mark = () => { moved = true; };
+    this.view.dom.addEventListener("keydown", mark, { once: true, capture: true });
     this.view.focus();
     this.code?.destroy();
     this.holder?.remove();
     this.code = null; this.holder = null;
+    this.closing = false;
     this.draw();
-    requestAnimationFrame(select);
+    requestAnimationFrame(() => { this.view.dom.removeEventListener("keydown", mark, { capture: true }); if (!moved) select(); });
   }
 
   update(node) {
@@ -200,16 +238,20 @@ export function exprGuard() {
     filterTransaction(tr, state) {
       const view = tr.getMeta("pointer") && !tr.docChanged && tr.selectionSet ? globalThis.__fwViews?.find((v) => v.state === state) : null;
       const sel = state.selection;
-      return !(view && Date.now() - (view.fwExprClosed || 0) < 400 && sel instanceof NodeSelection && sel.node.type.name === "expr");
+      return !(view && Date.now() - (view.fwExprClosed || 0) < 400 && sel instanceof NodeSelection && (sel.node.type.name === "expr" || !!sel.node.attrs.data?.expr));
     },
     view: (v) => { (globalThis.__fwViews ||= []).push(v); return { destroy: () => { globalThis.__fwViews = globalThis.__fwViews.filter((x) => x !== v); } }; },
   });
 }
 
-/** ⌘⇧X: on an expression block selected, its code shown or hidden. */
+/** ⌘⇧X: on an expression block selected, or a quote of one (a call), its code shown or hidden; on an inline
+ * expression against the caret, into its code (or out of it). */
 export function toggleCode(view) {
   const sel = view.state.selection;
-  if (!(sel instanceof NodeSelection) || sel.node.type.name !== "expr") return false;
+  if (enterCode(view)) return true;   // (an inline expression against the caret: into its code, or out of it)
+  if (!(sel instanceof NodeSelection)) return false;
+  if (sel.node.type.name === "quote" && sel.node.attrs.data?.expr) { view.nodeDOM(sel.from)?.fwCall?.toggle(); return true; }   // (a call: its expression's code, written through)
+  if (sel.node.type.name !== "expr") return false;
   view.nodeDOM(sel.from)?.fwExpr?.toggle();
   return true;
 }

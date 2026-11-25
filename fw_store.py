@@ -45,9 +45,11 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import tempfile
 import time
 from contextlib import contextmanager
+from typing import NamedTuple
 from datetime import datetime
 from pathlib import Path
 
@@ -113,23 +115,77 @@ def peer() -> int:
         return n
 
 
+def identity(path: Path, st=None) -> tuple | None:
+    """Which version of a file this is (it's always replaced whole, never written in place: write_file)."""
+    try:
+        st = st or path.stat()
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+_json_seen = [None, False]   # (the .json's and the mirror's identities, whether they differed) as last looked at
+
+
 def json_changed() -> bool:
     """The .json was written by something else since the document last wrote it
-    (an older tool, a test): what it says is taken in as edits."""
-    if not DATA_PATH.exists():
+    (an older tool, a test, an undo outside the editor): what it says is taken in as edits."""
+    key = (identity(DATA_PATH), identity(MIRROR_PATH))
+    if key[0] is None:
         return False
-    try:
-        mirror = MIRROR_PATH.read_text().strip()
-    except OSError:
-        mirror = ""
-    return hashlib.sha256(DATA_PATH.read_bytes()).hexdigest() != mirror
+    if _json_seen[0] != key:
+        try:
+            mirror = MIRROR_PATH.read_text().strip()
+        except OSError:
+            mirror = ""
+        _json_seen[:] = [key, hashlib.sha256(DATA_PATH.read_bytes()).hexdigest() != mirror]
+    return _json_seen[1]
+
+
+class Doc(NamedTuple):
+    """The document as the file held it when read or written here: `key` that file's identity, `doc` the Loro
+    document (changed only under the store lock, by a write), `data` what it says (fw_loro.to_data; never changed),
+    `version` its version (fw_loro.version)."""
+    key: tuple
+    doc: object
+    data: dict
+    version: str
+
+
+_doc: list = [None]   # (the Doc kept in memory: read again only when the file changes)
+_DOC = threading.RLock()
+
+
+def document() -> Doc | None:
+    """The document on disk, kept in memory (the core keeps it between requests): read again only when the file has
+    changed since it was read or written here (another process wrote it). None: there's no document yet, or its .json
+    was changed beside it (then the .json is what's on disk: on_disk)."""
+    if json_changed():
+        return None
+    with _DOC:
+        try:
+            with open(LORO_PATH, "rb") as fh:
+                key = identity(LORO_PATH, os.fstat(fh.fileno()))
+                if _doc[0] is None or _doc[0].key != key:
+                    doc = fw_loro.load(fh.read(), peer())
+                    _doc[0] = Doc(key, doc, fw_loro.to_data(doc), fw_loro.version(doc))
+        except FileNotFoundError:
+            _doc[0] = None
+        return _doc[0]
+
+
+def forget() -> None:
+    """The document in memory dropped (a write failed partway: it may say more than the file): read again next time."""
+    with _DOC:
+        _doc[0] = None
 
 
 def on_disk() -> dict | None:
     """The store as it is on disk (masks per block, any schema): the document,
     unless the .json has been changed beside it; None if there's none yet."""
-    if LORO_PATH.exists() and not json_changed():
-        return fw_loro.to_data(fw_loro.load(LORO_PATH.read_bytes(), peer()))
+    d = document()
+    if d is not None:
+        return copy.deepcopy(d.data)
     if DATA_PATH.exists():
         return json.loads(DATA_PATH.read_text(encoding="utf-8"))
     return None
@@ -172,32 +228,93 @@ def write_file(path: Path, data: bytes) -> None:
         raise
 
 
-def save_doc(doc) -> str:
-    """The document to disk, and the .json copy of what it says; returns that copy."""
+_later = {"after": None, "timer": None}   # (the .json copy written this long after the last save: json_later)
+
+
+def json_later(seconds: float) -> None:
+    """From now on in this process, the .json copy is written `seconds` after the last save, not with each one (the
+    web core: a save is then just the document). Harmless while it waits: its mirror still matches it, so it's never
+    taken in as edits, and every reader goes through the document."""
+    _later["after"] = seconds
+
+
+def save_doc(doc) -> None:
+    """The document to disk, and kept in memory as it is now (document); the .json copy of what it says written too,
+    now or a moment later (json_later). Under the store lock."""
     write_file(LORO_PATH, fw_loro.snapshot(doc))
-    text = json.dumps(fw_loro.to_data(doc), ensure_ascii=False, indent=2) + "\n"
-    write_file(DATA_PATH, text.encode("utf-8"))
-    MIRROR_PATH.write_text(hashlib.sha256(text.encode("utf-8")).hexdigest())
-    return text
+    with _DOC:
+        _doc[0] = Doc(identity(LORO_PATH), doc, fw_loro.to_data(doc), fw_loro.version(doc))
+    if _later["after"] is None:
+        write_json(_doc[0].data)
+        return
+    if _later["timer"]:
+        _later["timer"].cancel()
+    _later["timer"] = threading.Timer(_later["after"], flush_json)
+    _later["timer"].daemon = True
+    _later["timer"].start()
 
 
-def save_data(data: dict, upgrading: bool = False, rebased: frozenset = frozenset()) -> None:
-    """The store written: the document edited to say `data` (fw_loro.write,
-    the fewest edits), then saved with its .json copy (the old .json kept as
-    .bak). `updated` stamped on what changed (stamp_updated), unless the
-    store was `upgrading` (read behind the schema: load_store); `rebased`:
-    quotes whose anchors only moved along with an edit (rebase_quotes)."""
-    data["schemaVersion"] = SCHEMA_VERSION
-    old = on_disk()
-    stamp_updated(data, [] if upgrading or old is None else on_disk_read(old), rebased, now_local())
-    doc = fw_loro.load(LORO_PATH.read_bytes() if LORO_PATH.exists() else None, peer())
-    fw_loro.name_peer(doc, os.uname().nodename)
+def json_text(data: dict) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+
+
+def write_json(data: dict) -> None:
+    """The .json copy of `data` (what the document says) written, the old one kept as .bak, its mirror with it."""
+    text = json_text(data).encode("utf-8")
     if DATA_PATH.exists():
         bak = DATA_PATH.with_suffix(".json.bak")
         bak.write_bytes(DATA_PATH.read_bytes())
         os.chmod(bak, 0o600)
-    fw_loro.write(doc, {**data, "blocks": masks_out(data["blocks"])})
-    save_doc(doc)
+    write_file(DATA_PATH, text)
+    MIRROR_PATH.write_text(hashlib.sha256(text).hexdigest())
+
+
+def flush_json() -> None:
+    """The .json copy brought up to what the document says, if it isn't (json_later's wait over; and before this
+    process goes). Never over a .json someone else wrote meanwhile: that's theirs, taken in by the next write."""
+    t = _later["timer"]
+    if t:
+        t.cancel()
+    _later["timer"] = None
+    with store_lock():
+        d = document()
+        if d is None:
+            return
+        try:
+            mirror = MIRROR_PATH.read_text().strip()
+        except OSError:
+            mirror = ""
+        if hashlib.sha256(json_text(d.data).encode("utf-8")).hexdigest() != mirror or not DATA_PATH.exists():
+            write_json(d.data)
+
+
+def store_text() -> str | None:
+    """The store as its .json copy says it, as of now (the document's, even while that copy waits: json_later)."""
+    d = document()
+    if d is not None:
+        return json_text(d.data)
+    return DATA_PATH.read_text(encoding="utf-8") if DATA_PATH.exists() else None
+
+
+def save_data(data: dict, upgrading: bool = False, rebased: frozenset = frozenset()) -> None:
+    """The store written: the document edited to say `data` (fw_loro.write:
+    just the blocks that changed), then saved with its .json copy (the old
+    .json kept as .bak). `updated` stamped on what changed (stamp_updated),
+    unless the store was `upgrading` (read behind the schema: load_store);
+    `rebased`: quotes whose anchors only moved along with an edit
+    (rebase_quotes)."""
+    data["schemaVersion"] = SCHEMA_VERSION
+    d = document()
+    old = d.data if d is not None else on_disk()
+    stamp_updated(data, [] if upgrading or old is None else on_disk_read(old), rebased, now_local())
+    doc = d.doc if d is not None else fw_loro.load(LORO_PATH.read_bytes() if LORO_PATH.exists() else None, peer())
+    try:
+        fw_loro.name_peer(doc, os.uname().nodename)
+        fw_loro.write(doc, {**data, "blocks": masks_out(data["blocks"])}, d.data if d is not None else None)
+        save_doc(doc)
+    except BaseException:
+        forget()
+        raise
 
 
 def merge_file(path: str) -> str:
@@ -223,7 +340,7 @@ def merge_file(path: str) -> str:
             raise StoreError("the merged store is invalid, nothing saved: " + "; ".join(errs))
         fw_loro.write(doc, {**data, "blocks": masks_out(data["blocks"])})
         save_doc(doc)
-        after = {b["id"]: b for b in fw_loro.to_data(doc)["blocks"]}
+        after = {b["id"]: b for b in _doc[0].data["blocks"]}
         was = {b["id"]: b for b in before["blocks"]}
         new = sum(i not in was for i in after)
         changed = sum(i in was and after[i] != was[i] for i in after)
@@ -347,10 +464,12 @@ def on_disk_read(old: dict) -> list:
     return masks_in(old["blocks"]) if old.get("schemaVersion", 0) >= 11 else old["blocks"]
 
 
-def invalid(data: dict, schema: dict) -> list:
-    """What's wrong with the blocks, as they'll be written (masks per block)."""
+def invalid(data: dict, schema: dict, old: dict | None = None) -> list:
+    """What's wrong with the blocks, as they'll be written (masks per block). With `old` (the store as on disk, valid),
+    only the blocks that differ from it are looked at."""
+    was = {b["id"]: b for b in old["blocks"]} if old is not None else {}
     return [f"block {b.get('id') or f'index {i}'}: {e}"
-            for i, b in enumerate(masks_out(data["blocks"])) for e in validate_instance(b, schema)]
+            for i, b in enumerate(masks_out(data["blocks"])) if was.get(b.get("id")) != b for e in validate_instance(b, schema)]
 
 
 class StoreError(Exception):
@@ -992,13 +1111,14 @@ def _apply_header(fw: dict, fields: list[dict], data: dict, schema: dict) -> lis
 
 
 def commit(entry_id: str, draft: str | None, fields: list[dict], final: bool = False,
-           base: str | None = None) -> tuple[list[str], str, dict | None, dict]:
+           base: str | None = None, at: str | None = None) -> tuple[list[str], str, dict | None, dict]:
     """Write one block's draft text and header fields into the store. The
     editor calls this on every autosave, so the store always holds the current
     text; `end` calls it with final=True, which also discards an entry left
     with no text and no title. Blocks no entry reaches any more are erased.
     With `base` (the content_hash the draft was built on), a block changed
-    elsewhere since then is refused rather than overwritten. A draft of None
+    elsewhere since then is refused rather than overwritten; with `at` too
+    (the version it was built on), it's merged instead (transact). A draft of None
     leaves text and header as they are. A block the edit takes out (held by
     nothing now) goes as a deleted entry does: each quote of it elsewhere
     keeps the last of what it showed, as text (`let_go`). Returns (notes,
@@ -1028,7 +1148,7 @@ def commit(entry_id: str, draft: str | None, fields: list[dict], final: bool = F
             fw.pop("entry")  # (erased by collect, below)
             notes.append("nothing written, discarded empty pericope")
         return notes, record, moved
-    return transact(editing(change), answer=lambda saved, r: (r[0], content_hash(index(saved), entry_id), r[1], r[2]))
+    return transact(editing(change), answer=lambda saved, r: (r[0], content_hash(index(saved), entry_id), r[1], r[2]), at=at)
 
 
 def let_go(data: dict, blocks: dict, gone: set) -> dict | None:
@@ -1046,7 +1166,53 @@ def let_go(data: dict, blocks: dict, gone: set) -> dict | None:
     return undo
 
 
-def transact(change, tidy: bool = True, answer=None):
+_written = threading.local()  # (the version the last write in this thread left: written_version)
+
+
+def written_version() -> str | None:
+    """The version of the store (fw_loro.version) that this thread's last transact wrote: what the writer's view is
+    now. After a merge (transact's `at`), the writer's own edits on what it saw, not the merged store: the page
+    then follows the merge as any change made elsewhere."""
+    return getattr(_written, "version", None)
+
+
+def current_version() -> str | None:
+    """The store's version now (None: no document yet, or its .json changed beside it)."""
+    d = document()
+    return d.version if d is not None else None
+
+
+def load_versioned() -> tuple[dict, str | None]:
+    """The store as load_data reads it, and its version, from one reading (so they agree)."""
+    d = document()
+    if d is None:
+        return load_data(), None
+    return prepared(copy.deepcopy(d.data)), d.version
+
+
+def prepared(data: dict) -> dict:
+    """The store as on disk, ready to use (load_store): masks as anchors, brought up to date."""
+    if data.get("schemaVersion", SCHEMA_VERSION) >= 11 and isinstance(data.get("blocks"), list):
+        data = {**data, "blocks": masks_in(data["blocks"])}
+    try:
+        return upgrade(data, now=now_local(), new_id=new_id)
+    except BadStore as e:
+        raise StoreError(str(e)) from e
+
+
+def finished(new: dict, tidy: bool, schema: dict, old: dict | None = None) -> dict:
+    """A new store tidied (unless not `tidy`), its words recounted, and validated (StoreError if it isn't valid;
+    with `old`, the store on disk, only what changed is looked at)."""
+    if tidy:
+        tidy_store(new, clip_holds())
+    sync_words(new)
+    errs = invalid(new, schema, old)
+    if errs:
+        raise StoreError("refusing to save, a block became invalid: " + "; ".join(errs))
+    return new
+
+
+def transact(change, tidy: bool = True, answer=None, at: str | None = None):
     """One write to the store, in one shape: under the lock, the store loaded
     and handed to `change(store)`, which returns (the new store, a result),
     or (the new store, a result, the quotes whose anchors only moved along
@@ -1054,19 +1220,38 @@ def transact(change, tidy: bool = True, answer=None):
     new store tidied (what's unreachable erased, unless `tidy` is off), its
     words recounted, validated and saved. Returns the result, or
     `answer(the store as saved, the result)`; raises StoreError (and saves
-    nothing) on refusal."""
+    nothing) on refusal.
+    `at`: the version (fw_loro.version) the writer saw. If the store has moved on since (written elsewhere: another
+    window, the other machine), the change is made on the store as the writer saw it, and that edit is merged by
+    Loro with everything since: nothing refused for being written elsewhere meanwhile, nothing lost. `answer` is then
+    given the writer's own view (what it wrote, on what it saw), and written_version says that view's version."""
     with store_lock():
         schema = load_schema()
+        d = document()
+        doc = d.doc if d is not None else None
+        if at and doc is not None and d.version != at:
+            fork = fw_loro.fork_at(doc, at)
+            seen = fw_loro.to_data(fork)
+            new, result, *flags = change(prepared(seen))
+            new = finished(copy.deepcopy(new), tidy, schema)
+            new["schemaVersion"] = SCHEMA_VERSION
+            stamp_updated(new, on_disk_read(seen), frozenset(flags[0]) if flags else frozenset(), now_local())
+            fw_loro.write(fork, {**new, "blocks": masks_out(new["blocks"])})
+            try:
+                fw_loro.merge_fork(doc, fork, at)
+                merged = finished(prepared(fw_loro.to_data(doc)), tidy, schema)   # (both sides' edits: tidied and checked again)
+                fw_loro.write(doc, {**merged, "blocks": masks_out(merged["blocks"])})
+                save_doc(doc)
+            except BaseException:
+                forget()   # (the document in memory may say more than the file now)
+                raise
+            _written.version = fw_loro.version(fork)
+            return answer(new, result) if answer else result
         store, upgrading = load_store()
         new, result, *flags = change(store)
-        new = copy.deepcopy(new)  # (finished below, tidied, recounted, stamped: a copy of its own, so nothing it shares with the store given changes)
-        if tidy:
-            tidy_store(new, clip_holds())
-        sync_words(new)
-        errs = invalid(new, schema)
-        if errs:
-            raise StoreError("refusing to save, a block became invalid: " + "; ".join(errs))
+        new = finished(copy.deepcopy(new), tidy, schema, d.data if d is not None else None)  # (a copy of its own, so nothing it shares with the store given changes)
         save_data(new, upgrading, frozenset(flags[0]) if flags else frozenset())
+        _written.version = current_version()
         return answer(new, result) if answer else result
 
 
@@ -1147,7 +1332,7 @@ def quote_of(blocks: dict, qid: str) -> tuple:
 
 
 def commit_view(qid: str, text: str, opened: int | None = None, base: str | None = None,
-                seen: list | None = None) -> tuple[dict, dict]:
+                seen: list | None = None, at: str | None = None) -> tuple[dict, dict]:
     """Save an edited view of masked quote `qid` into the block it shows
     (the lens's put), and move its mask along. `seen`: the mask it was seen
     with, when quotes around it narrow it (their inner masks); then the
@@ -1174,9 +1359,8 @@ def commit_view(qid: str, text: str, opened: int | None = None, base: str | None
             put_block(data, blocks, with_mask(blocks[qid], normalize(stored, rebase(draft, stored, new_mask), keep_empty=True)))
             moved.update(rebase_quotes(data, target, old, stored, skip=qid, blocks=blocks))
         return target
-    target = transact(editing(change))
-    data = load_data()
-    return hashes(data, target, *parents(index(data), qid)), moved
+    # (the hashes of the writer's view: after a merge (`at`), what it wrote on what it saw, so it follows the rest)
+    return transact(editing(change), answer=lambda saved, target: hashes(saved, target, *parents(index(saved), qid)), at=at), moved
 
 
 def set_quote_mask(qid: str, draft: str | None, mask: list | None, inner: bool = False) -> tuple[dict, dict]:

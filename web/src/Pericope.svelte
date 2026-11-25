@@ -12,6 +12,7 @@
   import { onDestroy, untrack } from "svelte";
   import { NodeSelection, Selection } from "prosemirror-state";
   import { api, TEST } from "./api.js";
+  import { onStore } from "./live.js";
   import { BlockEditor, selectBox, spotOf, keepSpot, focusOf, wordsIn } from "./editor.js";
   import { actions } from "./actions.js";
   import { readClip } from "./clipboard.js";
@@ -31,7 +32,7 @@
   // now (bound by App.svelte): what's open, {id, base, reviewing} (base: changes with each save), or null while it
   // waits: the suggestions below it follow it (Suggested.svelte, one for the page)
   let { opening, go, begun = null, bottom = null, now = $bindable(null) } = $props();
-  const FOLLOW = TEST ? 150 : 1000;
+  const LATER = 50;   // ms: how often a change put off (written in here just then) is looked at again (here, no asking)
   // (nothing open: the header's fields as a blank pericope's)
   const NONE = { id: null, title: null, shown: "", type: "pericope", kind: false, words: 0, created: null, updated: null, visited: null, kinds: "",
     kindTokens: [], maybes: null, backlinks: "", base: null, children: [] };
@@ -48,7 +49,7 @@
   let hasMembers = $derived(p.kind && !!p.members?.length);
   // what belongs to the pericope open now, made again each time one opens (show)
   let ed = $state.raw(null);   // (the editor over its blocks: what's derived reads its $state, editor.svelte.js)
-  let deleted = false, pending = false, stamp = null, leaving = null;
+  let deleted = false, pending = false, following = false, again = false, leaving = null;
   let gone = false;   // (left: an answer that comes after is for a pericope no longer here)
 
   // --- what the header shows: derived ---------------------------------------------------------------------------
@@ -116,12 +117,12 @@
     if (!r.ok) { go("#/"); return; }
     if (e.base !== asked) { pending = true; return; }   // (saved meanwhile: older than the page; ask again)
     const was = p.base;
-    fresh(r.body);
+    if (JSON.stringify(r.body) !== JSON.stringify(p)) fresh(r.body);   // (the header as it is; just as it was, not drawn again)
     if (headerOnly) return;
     if (e.busy() || titleChanged) { pending = true; return; }   // (written in here, or through a quote just now: later)
     pending = false;
-    if (p.base === e.base) return;
-    e.reload(p.children, p.base);
+    if (p.base === e.base) { e.followQuotes(p.children, p.version); return; }   // (its own blocks as they were: what it quotes may not be)
+    e.reload(p.children, p.base, p.version);
     e.message = was !== p.base ? "updated from another session" : "";
     status();
   }
@@ -148,7 +149,7 @@
       const r = await api(`/api/pericope/${id}`);
       if (!r.ok || gone || e !== ed) return;
       fresh(r.body);
-      e.reload(p.children, p.base);
+      e.reload(p.children, p.base, p.version);
       if (focus) e.view.focus();
       if (selectQuote) {
         let at3 = null;
@@ -168,7 +169,7 @@
   function show(o) {
     if (ed && !ed.gone) ed.destroy();   // (left already, as main.js does before opening another: else gone unsaved)
     ed = null;
-    deleted = false; pending = false; stamp = null; leaving = null; gone = false;
+    deleted = false; pending = false; leaving = null; gone = false;
     const first = o?.first || NONE;
     id = o?.home ? null : o?.id ?? null;
     p = first;
@@ -177,7 +178,7 @@
     if (!o) { status(); return; }
     readClip();   // (what fw last clipped: a paste here can be live quotes of it, or a move)
     const picture = first.children.length === 1 && first.children[0].t === "image" && !first.children[0].id;
-    ed = new BlockEditor(host, { id, children: first.children, base: first.base, readOnly: picture, open, status, act,
+    ed = new BlockEditor(host, { id, children: first.children, base: first.base, version: first.version, readOnly: picture, open, status, act,
       top: () => header.focusTitle(),
       fields: () => (titleChanged ? { title: titleValue } : {}),   // (the title goes with the editor's next save)
       saved: (sent) => { if (sent.title !== undefined) titleSaved = sent.title; if (!sent.final) refresh(true); },
@@ -187,22 +188,26 @@
     ed.view.focus();
     if (o.quiet) ed.hush();   // (from a block selected whole: nothing shown as where you are until you move or type)
     if (o.flash) ed.message = o.flash;
+    pending = true;   // (looked at once it's drawn: a change between its fetch and now isn't missed)
     status();
   }
   $effect(() => { const o = opening; untrack(() => show(o)); });   // (opened: shown; nothing else it reads shows it again)
   $effect(() => { now = id ? { id, base: p.base, reviewing } : null; });   // (what's open, told the page: its suggestions follow)
 
+  /** The store's change followed: one refresh at a time (each asks for the store as it is then; one more if it
+   * changed meanwhile), so an older answer never lands after a newer one. */
+  async function follow() {
+    if (!id || !ed || gone) { pending = true; return; }
+    if (following) { again = true; return; }
+    following = true;
+    try { do { again = false; await refresh(); } while (again && !gone); } finally { following = false; }
+  }
   $effect(() => untrack(() => {   // changes made elsewhere, followed (once, for whatever's open)
-    const follow = setInterval(async () => {
-      if (!id || !ed || gone) return;
-      const r = await api("/api/stamp");
-      if (!r.ok || gone) return;
-      if ((stamp !== null && r.body.stamp !== stamp) || (pending && !ed.busy())) await refresh();
-      stamp = r.body.stamp;
-    }, FOLLOW);
+    const stop = onStore(follow);
+    const later = setInterval(() => { if (pending && id && ed && !gone && !ed.busy()) follow(); }, LATER);
     const redraw = () => { width = innerWidth; };   // (a new width moves the boxes: the tabs with them)
     window.addEventListener("resize", redraw);
-    return () => { clearInterval(follow); window.removeEventListener("resize", redraw); };
+    return () => { stop(); clearInterval(later); window.removeEventListener("resize", redraw); };
   }));
 
   /** Home's waiting pericope, its first key (typed in it, or its title): made in the store in the background (typing

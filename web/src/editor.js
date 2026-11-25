@@ -12,7 +12,7 @@ import { BlockSelection, blocksPlugin, selectAround, grow, removeSelected, remov
 import { history, undo, redo } from "prosemirror-history";
 import { schema } from "./schema.js";
 import { pmDoc, draftOf, freshIds, pmLens, lensOf } from "./draft.js";
-import { quoteEl, drawBody, drawValue } from "./views.js";
+import { quoteEl, drawBody, drawValue, insideOf, namesOf, hereOf } from "./views.js";
 import { ui } from "./state.svelte.js";
 import { EditorRunes } from "./editor-state.svelte.js";
 import { stopMasking } from "./masking.js";
@@ -27,6 +27,8 @@ export const waiting = new Set();     // the editors with a save scheduled, not 
 import { api, TEST } from "./api.js";
 import { slashMenu } from "./menu.js";
 import { ExprView, toggleCode, exprGuard, valueTree } from "./exprview.js";
+import { inlineCode } from "./inlinecode.js";
+import { codeBox, setText } from "./codebox.js";
 import * as hazel from "./hazel.js";
 import { onSnapshot } from "./snapshot.svelte.js";
 import { setLive } from "./snapshot.svelte.js";
@@ -90,7 +92,10 @@ function setCurrent(ed) {
   if (ed && !ed.gone) ed.view.dispatch(ed.view.state.tr.setMeta(hereKey, { current: true }).setMeta("addToHistory", false));
 }
 /** How many words a document holds (the header's count). */
-export const wordsIn = (doc) => doc.textBetween(0, doc.content.size, " ", " ").split(/\s+/).filter(Boolean).length;
+/** A word: a run without spaces with something in it besides punctuation (fw_block.is_word: one rule wherever fw counts). */
+const PUNCT = new Set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~–—…“”‘’«»•·");
+export const isWord = (w) => [...w].some((c) => !PUNCT.has(c));
+export const wordsIn = (doc) => doc.textBetween(0, doc.content.size, " ", " ").split(/\s+/).filter((w) => w && isWord(w)).length;
 
 /** Where you are in `root`'s editors, from their states (the tabs' path, Tabs.svelte; nothing read from the page):
  * {editor, chosen, from, to}, the editor you're in and what's drawn there: blocks selected whole (`chosen`, the first
@@ -277,8 +282,9 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
   /** `host`: where it's drawn; `id`: the block it writes into; `children`: what it holds (the core's tree);
    * `base`: the content it was built on; `around`: the editors this one's inside (outermost last), whose
    * shown text a save here changes; `exit(dir)`: leave it (a quote's editor: -1 up, 1 down, 0 select it);
-   * `open(target, at)`: Open it; `status()`: something changed worth saying. */
-  constructor(host, { id, children, base, readOnly = false, browse = false, around = [], exit = null, open, status = () => {}, act = () => false, holder = null, top = null, lens = null,
+   * `open(target, at)`: Open it; `status()`: something changed worth saying; `version`: the store's version it was read
+   * at, sent with its saves: written elsewhere since, they merge (fw_store.transact). */
+  constructor(host, { id, children, base, version = null, readOnly = false, browse = false, around = [], exit = null, open, status = () => {}, act = () => false, holder = null, top = null, lens = null,
     fields = () => ({}), saved = () => {}, bottom = null, begin = null }) {
     super();
     // (bottom(): ↓ past the last line, home's search; begin(): no id yet (home's waiting pericope, 2026-11-19): its
@@ -288,7 +294,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
     // (browse: an expression's value, the user, 2026-11-24: "we should be able to use the cursor to step through the blocks
     // of an evaluation just not delete or edit": the cursor, selecting and copying work, nothing changes it but its value)
     readOnly = readOnly || browse;
-    Object.assign(this, { id, base, readOnly, browse, around, exit, open, status, act, holder, top, lens, fields, onSaved: saved, bottom, begin });
+    Object.assign(this, { id, base, version, readOnly, browse, around, exit, open, status, act, holder, top, lens, fields, onSaved: saved, bottom, begin });
     this.making = null;   // (the pericope being made, begin()'s promise: until then nothing's written)   // (act: the Ctrl+/ menu's; holder: the QuoteView it's in)
     this.peeking = new Set();    // the paraphrases whose source shows inside them (Show its source), this session
     this.saving = null;   // (a save in flight: a promise, settled when it's done)
@@ -315,7 +321,8 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
         }
         this.view.updateState(this.view.state.apply(tr));
         this.pm = this.view.state;
-        if (tr.docChanged) {
+        if (tr.docChanged && tr.getMeta("fw-follow")) this.tellLive();   // (the store's change, followed: nothing to save, no visit)
+        else if (tr.docChanged) {
           this.tellLive();
           visits.changed(this);
           this.schedule();
@@ -463,7 +470,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
       const guard = new Plugin({ filterTransaction: (tr, state) => !tr.docChanged || count(tr.doc) === count(state.doc) });
       const lensKeys = keymap({ "Enter": (state, dispatch) => { if (dispatch) dispatch(state.tr.replaceSelectionWith(schema.nodes.hard_break.create())); return true; } });
       return EditorState.create({ doc: schema.nodeFromJSON(pmLens(this.lens.segments, this.lens.hole)),
-        plugins: [lensKeys, this.keys(), keymap(baseKeymap), history(), guard, here] });
+        plugins: [lensKeys, inlineCode(this), this.keys(), keymap(baseKeymap), history(), guard, here] });
     }
     const slash = slashMenu(this, (at) => this.enterQuote(at));
     // a block marked (mark(id, cls): the block a step between pericopes goes through, motion.js): its element given the
@@ -482,7 +489,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
       },
     });
     return EditorState.create({ doc: schema.nodeFromJSON(pmDoc(children)),
-      plugins: [...(this.browse ? [browsing(this)] : []), slash, exprGuard(), blocksPlugin(), clipboardPlugin(this), this.keys(), keymap(baseKeymap), history(), ids, here, guide, marking] });
+      plugins: [...(this.browse ? [browsing(this)] : []), slash, inlineCode(this), exprGuard(), blocksPlugin(), clipboardPlugin(this), this.keys(), keymap(baseKeymap), history(), ids, here, guide, marking] });
   }
 
   keys() {
@@ -724,10 +731,12 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
     return this.lens ? lensOf(this.view.state.doc.toJSON(), this.lens.hole) : draftOf(this.view.state.doc.toJSON());
   }
   dirty() { return this.draft() !== this.saved; }
-  /** Busy: unsaved, saving, or written in through a quote just now (then the store isn't followed here). */
+  /** Busy: unsaved or saving here or in a quote it holds, or a menu open (positions in use); then what changed
+   * elsewhere waits, for a moment (saves are instant). Being in it isn't busy: a view follows the store while you're in
+   * it, its cursor carried along (reload). */
   busy() {
-    return this.dirty() || this.saving || ui.menus > 0   // (a menu's open: positions in use)
-      || [...this.kids].some((k) => k.busy() || k.view.hasFocus());
+    return this.dirty() || this.saving || ui.menus > 0
+      || [...this.kids].some((k) => k.busy());
   }
 
   schedule() {
@@ -764,7 +773,8 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
     // (nothing changed here: no draft, so the store's blocks stay just as they are; the save is for `extra`, the
     // title or the last save's discarding an empty pericope, as the terminal's finish skips a draft it has)
     const draft = this.dirty() ? sent : null;
-    const body = this.lens ? { text: sent, base: this.base } : { draft, base: this.base, also: this.around.map((e) => e.id), ...extra };
+    const body = this.lens ? { text: sent, base: this.base, version: this.version }
+      : { draft, base: this.base, version: this.version, also: this.around.map((e) => e.id), ...extra };
     let r;
     try {
       r = await api(this.lens ? `/api/lens/${this.lens.qid}` : `/api/pericope/${this.id}`, { method: "PUT", body: JSON.stringify(body) });
@@ -774,6 +784,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
     }
     if (r.ok) {
       this.base = this.lens ? (r.body.bases || {})[this.id] || this.base : r.body.base;
+      this.version = r.body.version ?? this.version;   // (what it wrote, on what it saw: after a merge, it follows the rest)
       this.saved = sent;
       for (const e of this.around) if (r.body.bases && r.body.bases[e.id]) e.base = r.body.bases[e.id];   // (their shown text changed)
       this.message = (r.body.notes || []).slice(-1)[0] || "";
@@ -787,34 +798,57 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
     return false;
   }
 
-  /** What it holds as the store now has it (nothing unsaved here): drawn again, the cursor kept near. */
-  reload(children, base) {
+  /** Its quotes kept live (its own blocks unchanged): `children` as the core has them now; a quote whose source changed
+   * elsewhere redrawn, just it (its editor, when written through; else the whole, as it holds no editor); one being
+   * written in left till it isn't (asked again on the next change). Never anything it wrote itself: its saves keep its
+   * quotes' bases up (save). */
+  followQuotes(children, version) {
+    const now = new Map();
+    const walk = (n) => { if (!n) return; if (n.t === "quote") { now.set(n.id, n); (n.tree || []).forEach(walk); } else (n.children || []).forEach(walk); };
+    (children || []).forEach(walk);
+    let whole = false;
+    const visit = (e) => {
+      for (const k of e.kids) {
+        if (k.holder?.node.attrs.data?.expr) continue;   // (a call's result: it follows the snapshot)
+        const q = now.get(k.holder?.node.attrs.id);
+        if (q && q.base && q.base !== k.base && !k.busy()) { if (k.lens || !q.tree) whole = true; else k.reload(q.tree, q.base, version); }
+        else visit(k);
+      }
+    };
+    visit(this);
+    this.view.state.doc.descendants((n, pos) => {   // (a quote drawn from its data, nothing written through it: a locked one, say)
+      if (n.type.name !== "quote" || !n.attrs.data) return;
+      const q = now.get(n.attrs.id);
+      if (n.attrs.data.expr) {   // (a call: its result follows the snapshot, its code the store)
+        const here = this.view.nodeDOM(pos)?.fwCall?.source ?? n.attrs.data.expr.source;
+        if (q?.expr && q.expr.source !== here) whole = true;
+        return;
+      }
+      if (n.attrs.data.tree || n.attrs.data.lens) return;
+      if (q && q.base && n.attrs.data.base && q.base !== n.attrs.data.base) whole = true;
+    });
+    if (whole && !this.busy()) this.reload(children, this.base, version);
+  }
+
+  /** What it holds as the store now has it (nothing unsaved here): just what differs changed, as one step, so the
+   * cursor, a selection and undo are carried through it, as a collaborator's edit would be; the quotes whose node is
+   * the same keep their views (and their editors), one whose source changed follows it (QuoteView.update). */
+  reload(children, base, version) {
     if (this.view.isDestroyed) return;   // (left meanwhile: nothing to draw into)
+    if (version !== undefined) this.version = version;   // (first: the quotes drawn new in it take it, QuoteView)
     window.fw && (window.fw.reloads = (window.fw.reloads || 0) + 1);   // (counted, for the tests' reports)
-    // the cursor kept by the block it's in and how far into it (positions move when blocks before it change)
-    const { $from } = this.view.state.selection;
-    let keep = null;
-    for (let d = $from.depth; d > 0 && !keep; d--) if ($from.node(d).attrs.id) keep = { id: $from.node(d).attrs.id, off: $from.pos - $from.start(d) };
-    const at = this.view.state.selection.from;
-    const whole = this.view.state.selection instanceof NodeSelection ? this.view.state.selection.node.attrs.id : null;   // (a block selected whole: kept so)
-    // (the quotes' editors are their views': ProseMirror keeps a view whose node is the same, and a view it
-    // drops takes its editor with it, QuoteView.destroy)
-    this.view.updateState(this.make(children));
-    this.giveIds();
-    this.tellLive();
-    this.since = wordsIn(this.pm.doc);   // (its words as the store has them now)
+    const now = this.view.state.doc, next = this.make(children).doc;
+    const from = now.content.findDiffStart(next.content);
+    if (from !== null) {
+      let { a, b } = now.content.findDiffEnd(next.content);
+      const over = from - Math.min(a, b);   // (a repeated stretch: the ends found past the start)
+      if (over > 0) { a += over; b += over; }
+      this.view.dispatch(this.view.state.tr.replace(from, a, next.slice(from, b)).setMeta("fw-follow", true).setMeta("fw-value", true).setMeta("addToHistory", false));   // (fw-value: a value, browsed, takes it too)
+      this.giveIds();
+    }
+    this.since = wordsIn(this.view.state.doc);   // (its words as the store has them now)
     this.base = base;
     this.saved = this.draft();
-    let pos = Math.min(at, this.view.state.doc.content.size);
-    if (keep) this.view.state.doc.descendants((n, p) => {
-      if (n.attrs.id === keep.id && n.isTextblock) pos = Math.min(p + 1 + keep.off, p + 1 + n.content.size);
-    });
-    let node = null;
-    if (whole) this.view.state.doc.descendants((n, p) => { if (node === null && n.attrs.id === whole && !n.isTextblock) node = p; });
-    try {
-      this.view.dispatch(this.view.state.tr.setSelection(node !== null ? NodeSelection.create(this.view.state.doc, node)
-        : Selection.near(this.view.state.doc.resolve(pos))));
-    } catch {}
   }
 
   /** Where the cursor goes, and the view (the user, 2026-11-18): at block `at` (its start, or `off` characters in:
@@ -936,10 +970,13 @@ export class QuoteView {
     this.dom = quoteEl({ ...data, body: data.tree || data.lens ? [] : data.body }, parent.open);
     this.dom.contentEditable = "false";
     if (data.fromExpr) this.dom.classList.add("fw-from");   // (an expression's From: green, TYPE.md)
+    if (data.loop) this.dom.classList.add("fw-loop");   // (Loop: x met again while showing x, its title and ↻)
     if (data.expr) {   // a quote of one expression is a call (TYPE.md): evaluated where this quote sits, its result its
       // blocks, as a quote's are, red; moved through, not written in (for now)
       this.host = this.dom.querySelector(".fw-body");
       this.host.replaceChildren();
+      this.dom.fwCall = this;   // (⌘⇧X finds it from the quote selected)
+      this.source = data.expr.source;   // (its code: as the store has it, or as written here through it)
       this.stop = onSnapshot(() => this.call());
       hazel.load(() => this.call());
       return;
@@ -948,7 +985,7 @@ export class QuoteView {
     if (data.tree || data.lens) {   // (written through: what it holds, or through its mask, the lens)
       const host = this.dom.querySelector(".fw-body");
       this.inner = new BlockEditor(host, {
-        id: data.target, children: data.tree, base: data.base, around: [parent, ...parent.around], browse: !!parent.browse,
+        id: data.target, children: data.tree, base: data.base, version: data.version ?? parent.version, around: [parent, ...parent.around], browse: !!parent.browse,
         exit: (dir) => this.exit(dir), open: parent.open, status: parent.status, act: parent.act, holder: this,
         lens: data.lens ? { qid: data.id, segments: data.lens, hole: data.hole } : null,
       });
@@ -958,13 +995,87 @@ export class QuoteView {
     }
   }
 
+  /** A call's code shown (or hidden again), from the quote selected (⌘⇧X): written in the code box an expression
+   * has, through to the expression itself (its pericope's editor, unseen, saving as any written-through quote does);
+   * the result here follows each key. */
+  toggle() {
+    if (this.code) { this.close(); return; }
+    const data = this.node.attrs.data;
+    if (!this.through) {
+      this.through = new BlockEditor(document.createElement("div"), { id: data.target, children: data.tree, base: data.base,
+        version: data.version ?? this.parent.version, around: [this.parent, ...this.parent.around], open: this.parent.open,
+        status: this.parent.status, act: this.parent.act, holder: null });
+      this.parent.kids.add(this.through);
+    }
+    const holder = document.createElement("div");
+    holder.className = "fw-expr-codebox fw-expr-code";
+    this.dom.querySelector(".fw-body").before(holder);
+    this.code = codeBox(holder, this.source, {
+      names: namesOf(this.parent, this.node.attrs.id),
+      changed: (text) => {
+        if (text === this.source) return;
+        this.source = text;
+        const v = this.through.view;
+        v.state.doc.descendants((n, pos) => {
+          if (n.type.name === "expr" && n.attrs.id === data.expr.id) v.dispatch(v.state.tr.setNodeMarkup(pos, null, { ...n.attrs, source: text }));
+        });
+        this.call();
+      },
+      close: () => this.close(),
+      isClose: (e) => pressed(e, "code"),
+      leave: (dir) => this.leave(dir),
+      away: () => this.away(),
+    });
+    this.holder = holder;
+    this.code.focus();
+    this.code.dispatch({ selection: { anchor: this.code.state.doc.length } });
+  }
+  /** From inside its result (the `code` key there): the quote selected, its code open. */
+  showCode() {
+    const pos = this.getPos();
+    if (pos == null) return;
+    this.outer.focus();
+    this.outer.dispatch(this.outer.state.tr.setSelection(NodeSelection.create(this.outer.state.doc, pos)));
+    this.toggle();
+  }
+  /** Back to its result, the quote selected. */
+  close() {
+    const pos = this.getPos();
+    this.closing = true;
+    if (pos != null && !this.outer.isDestroyed) this.outer.dispatch(this.outer.state.tr.setSelection(NodeSelection.create(this.outer.state.doc, pos)));
+    this.outer.fwExprClosed = Date.now();   // (exprGuard: the browser's stray selection, just after, not read back)
+    this.outer.focus();
+    this.closing = false;
+    this.away();
+  }
+  /** Its code box taken away, nothing else touched (the focus gone elsewhere on the page). */
+  away() {
+    if (!this.code || this.closing) return;
+    const c = this.code;
+    this.code = null;
+    c.destroy();
+    this.holder?.remove();
+    this.holder = null;
+  }
+  /** Out of its code by ↑/↓ at its edge: closed, the caret in the block before (-1) or after (1) it. */
+  leave(dir) {
+    const pos = this.getPos();
+    this.closing = true;
+    this.outer.focus();
+    this.closing = false;
+    this.away();
+    if (pos == null || this.outer.isDestroyed) return;
+    const at = dir > 0 ? pos + this.node.nodeSize : pos;
+    this.outer.dispatch(this.outer.state.tr.setSelection(Selection.near(this.outer.state.doc.resolve(at), dir)).scrollIntoView());
+  }
+
   /** A call (a quote of one expression): its result, worked out where this quote sits, drawn in its body. */
   async call() {
-    const r = hazel.run(this.node.attrs.data.expr.source, this.node.attrs.id);
+    const r = hazel.run(this.source, this.node.attrs.id, hereOf(this.parent));
     if (r?.kind !== "block") {   // (not blocks: its value, as an expression shows one)
       if (this.inner) { this.parent.dropValue(this.inner); this.inner = null; this.host.replaceChildren(); }
       this.shown = null;
-      drawValue(this.host, r, this.parent.open);
+      drawValue(this.host, r, this.parent.open, insideOf(this.parent, this.node.attrs.id), namesOf(this.parent, this.node.attrs.id));
       return;
     }
     const key = JSON.stringify(r.block);
@@ -1004,12 +1115,25 @@ export class QuoteView {
 
   // (events inside it are its own, not the page's: its editor's, and masking's panel, whose keys and clicks the page
   // must never take: an arrow moving the page's selection, a click focusing the page and ending masking)
-  stopEvent(e) { return !!((this.inner && this.inner.view.dom.contains(e.target)) || e.target.closest?.(".fw-masking")); }
+  stopEvent(e) { return !!((this.inner && this.inner.view.dom.contains(e.target)) || this.holder?.contains(e.target) || e.target.closest?.(".fw-masking")); }
   ignoreMutation() { return true; }
   selectNode() { this.dom.classList.add("ProseMirror-selectednode"); }
   deselectNode() { this.dom.classList.remove("ProseMirror-selectednode"); }
   update(node) {
-    if (node.attrs.data !== this.node.attrs.data || node.attrs.target !== this.node.attrs.target) return false;
+    if (node.attrs.target !== this.node.attrs.target) return false;
+    const was = this.node.attrs.data, now = node.attrs.data;
+    if (was !== now && now?.expr) {   // (a call: its result follows the snapshot, never what the core says it holds)
+      if (this.code && was?.expr?.id === now.expr.id) {   // (its code open here: kept open, following what's stored)
+        if (!this.through.busy()) { this.through.reload(now.tree, now.base, this.parent.version); if (now.expr.source !== this.source) { this.source = now.expr.source; setText(this.code, this.source); this.call(); } }
+      } else if (!was?.expr || was.expr.source !== now.expr.source) return false;
+    } else if (was !== now) {
+      // (written through, the same box: what it holds followed in its own editor, the cursor in it kept; anything
+      // else about it changed (its top line, a mask, a lock): drawn again)
+      const box = (d) => JSON.stringify({ ...d, tree: null, body: null, base: null, ...(d.show?.length ? {} : { words: null, updated: null }) });
+      if (!(this.inner && was?.tree && now?.tree && box(was) === box(now))) return false;
+      const moved = now.base && !now.fromExpr ? now.base !== this.inner.base : JSON.stringify(now.tree) !== JSON.stringify(was.tree);   // (a value's: what it holds is Hazel's, not the store's)
+      if (moved && !this.inner.busy()) this.inner.reload(now.tree, now.base, this.parent.version);
+    }
     this.node = node;   // (its id given since, say)
     return true;
   }
@@ -1017,6 +1141,8 @@ export class QuoteView {
     stopMasking(this.dom);   // (masking it, its box going: the panel too)
     this.gone = true;
     this.stop?.();
+    this.code?.destroy();
+    if (this.through) { this.parent.kids.delete(this.through); if (this.through.dirty()) this.through.save(); this.through.destroy(); this.through = null; }
     if (this.node.attrs.data?.expr && this.inner) { this.parent.dropValue(this.inner); this.inner = null; return; }
     if (!this.inner) return;
     this.parent.kids.delete(this.inner);

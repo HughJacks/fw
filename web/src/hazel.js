@@ -38,7 +38,7 @@ const answer = (call) => {
 
 /** Source `source` evaluated (the answer above), or null until the engine's loaded; an empty source: {kind: "empty"}.
  * `self`: the expression block's id, where it sits (above and below are its peers there). */
-export function run(source, self = "") {
+export function run(source, self = "", here = "") {   // (here: the pericope it's viewed from, the page's; TYPE.md)
   if (!(source || "").trim()) return state === "ready" ? { kind: "empty", errors: [] } : null;
-  return answer((snap) => globalThis.hazelRun(source, snap, self || ""));
+  return answer((snap) => globalThis.hazelRun(source, snap, self || "", here || ""));
 }

@@ -14,14 +14,14 @@
 </script>
 <script>
   import { tick } from "svelte";
-  import { api, TEST } from "./api.js";
+  import { api } from "./api.js";
+  import { onStore } from "./live.js";
   import { say } from "./state.svelte.js";
   import { ask } from "./ask.js";
   import { reveal } from "./scrolling.js";
   import { keyOf as keyFor, pressed, pretty } from "./keys.svelte.js";
 
   let { go, home } = $props();   // (go: open a place; home: Esc)
-  const FOLLOW = TEST ? 150 : 1000;
   const keyName = (id) => pretty(keyFor(id));
   const NONE = "none";   // (the group of no kind: no kind's id, a pericope's being a date)
   let kinds = $state(null), unkinded = $state([]), at = $state("new"), naming = $state(false), name = $state("");
@@ -134,18 +134,10 @@
   }
   const click = (e, r) => { e.preventDefault(); at = keyOf(r); list?.focus(); if (r.t === "kind") (opened.has(r.path) ? opened.delete(r.path) : opened.add(r.path)); else if (r.t === "new") name1(); else open(r); };
 
-  $effect(() => {   // (opened: its kinds, then followed as the store changes; the stamp taken first, so a change made
-    // before the first look isn't missed)
-    let stamp = null;
-    api("/api/stamp").then((r) => { if (r.ok) stamp ??= r.body.stamp; });
+  $effect(() => {   // (opened: its kinds, then followed as the store changes)
+    const stop = onStore(load);   // (the first word too: a change made before the first look isn't missed)
     load().then(() => list?.focus());
-    const follow = setInterval(async () => {
-      const r = await api("/api/stamp");
-      if (!r.ok) return;
-      if (stamp !== null && r.body.stamp !== stamp) load();
-      stamp = r.body.stamp;
-    }, FOLLOW);
-    return () => clearInterval(follow);
+    return stop;
   });
   $effect(() => { sel; tick().then(() => reveal(list?.querySelector(".fw-sel"))); });   // (smoothly, with room: scrolling.js)
 </script>

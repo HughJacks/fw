@@ -21,11 +21,11 @@
   import { pressed } from "./keys.svelte.js";
   import { keep as keepSel, MOVE } from "./results.js";
   import { say } from "./state.svelte.js";
+  import { onStore } from "./live.js";
 
   // (go: open a place, its address; up(): back into the pericope above; from: the pericope open, or none: home;
   // version: its base, new with each save)
   let { go, up, from = null, version = null } = $props();
-  const FOLLOW = TEST ? 150 : 1000;       // ms: how often home looks at the store for changes made elsewhere
   const MEANING_AFTER = TEST ? 50 : 400;  // ms after the last key: the mini asked too
   const AGAIN = TEST ? 200 : 8000;        // ms: how often, at most, a pericope being written in has its suggestions asked again
   const NEW = { key: "new", label: "+ new pericope", right: "" };
@@ -156,14 +156,7 @@
   // written elsewhere: home again (home's own: a page's suggestions are asked as it opens)
   $effect(() => {
     if (from) return;
-    let stamp = null;
-    const follow = setInterval(async () => {
-      const r = await api("/api/stamp");
-      if (!r.ok) return;
-      if (stamp !== null && r.body.stamp !== stamp) { await load(); if (query) search(false); }
-      stamp = r.body.stamp;
-    }, FOLLOW);
-    return () => clearInterval(follow);
+    return onStore(async () => { await load(); if (query) search(false); }, { first: false });
   });
   // what's open: another pericope (or home), its rows asked, in place of the last one's as they come; the same one,
   // saved again, asked again at most every AGAIN ms

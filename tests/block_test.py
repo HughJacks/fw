@@ -84,4 +84,13 @@ g = F.editor("t/g.txt", "--meta", META, cols=40, rows=10)
 rows = [l.rstrip() for l in g.scr.display[:8]]
 g.close()
 check("gutter numbers blocks, each on its box's top: 1 (two lines), 2, 3 (quote)", [r[:1] for r in rows] == ["1", " ", " ", " ", "2", " ", " ", "3"] and "{{block" not in "".join(rows), rows)
+# words: an inline expression ($…$, TYPE.md "Inline") counts as one word, never its code's tokens
+check("words: an inline expression counts one, its code none", S.word_count("the train $wordCount(@20261001T100000-aaaa) + 1$ arrives") == 4)
+check("  a lone $, or \\$, is just part of its word", S.word_count("a lone 300$ stays, 30\\$ each") == 6)
+json.dump({"schemaVersion": 4, "entries": [SELF], "blocks": [blk(SELF, "see $1 + 2 + 3$ go")]}, open("t/store.json", "w"))
+S.cmd_migrate(None)
+check("  the stored count: three", S.index(S.load_data())[SELF]["words"] == 3, S.index(S.load_data())[SELF].get("words"))
+# a word: something besides punctuation (fw_block.is_word; the page's isWord and Hazel's is_word, one rule)
+check("words: a + or a ? alone isn't one (an unfinished value's `31 + ?` is one word)", S.word_count("31 + ?") == 1)
+check("  nor a dash, a bullet, dots or a typographic mark; letters, digits, accents are", S.word_count("- café — naïve ... “x” 1974 •") == 4)
 F.report("BLOCK")

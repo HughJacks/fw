@@ -51,10 +51,10 @@ body.fw { background: var(--bg); color: var(--fg); font: var(--write)/1.6 var(--
 .fw-sel.fw-kind .fw-row-label { color: #1c3a78; }
 .fw-foot { padding-top: .4rem; font-size: var(--small); }
 .fw-search { position: relative; z-index: 5; margin-bottom: 1rem; }
-/* home's waiting pericope (2026-11-19): in the middle of the first screen, the search and garden starting near its bottom */
-/* home's pericope sits in the middle of the first screen, and stays there once typed in: it grows taller from the
-   centre, up and down alike, until it fills the space, then on down as any page (the user, 2026-11-19) */
-.fw-centre { min-height: calc(100vh - 14rem); display: flex; flex-direction: column; justify-content: center; }
+/* home's waiting pericope: at the top, as any page, growing down (the user, 2026-11-25: "just start new pericopes from
+   the top, none of this grow from the middle stuff"); the search and the suggestions below, from near the bottom of
+   the first screen */
+.fw-centre { min-height: calc(100vh - 14rem); display: flex; flex-direction: column; justify-content: flex-start; }
 .fw-centre > * { width: 100%; }   /* (as wide as any pericope: a flex item with auto margins would shrink to its text) */
 .fw-centre .fw-doc { padding-bottom: 0; }
 .fw-centre + .fw-suggested { margin-top: 1.5rem; }
@@ -251,16 +251,17 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 .fw-doc .fw-value > :only-child { border-color: transparent !important; border-image: none !important; outline: none !important;
   padding-top: 0; padding-bottom: 0; margin: 0; }
 .fw-value > .fw-quote:only-child > .fw-top > .fw-open { visibility: hidden; }   /* (a window unwrapped: its holder's tab says it) */
-/* its ƒ tab: in the right margin, as a paraphrase's ↗; faint at rest, drawn when you're on it, filled selected whole */
+/* its ƒ tab: in the right margin, as a paraphrase's ↗; faint at rest, drawn when you're on it, filled selected whole;
+   lit by fw's own marks (fw-chosen), as its box is, never ProseMirror's selectednode, which stays after the editor's left */
 .fw-expr { position: relative; }
 .fw-expr > .fw-fn { position: absolute; top: .15rem; line-height: 1.2rem; width: 1.2rem; height: 1.2rem; padding: 0; text-align: center;
   right: calc(-1 * (var(--d, 0) * var(--u) + var(--fp) + 1px + 2rem)); color: var(--expr); opacity: .45; background: none; border: none;
   font: italic .8rem/1.2rem Georgia, serif; cursor: pointer; transition: opacity .18s ease; }
-.fw-expr:is(.fw-here, .fw-chosen, .ProseMirror-selectednode, .fw-expr-coding, :has(.fw-current)) > .fw-fn { opacity: 1; outline: 1px solid var(--expr-mid); }
-.fw-expr:is(.fw-here, .fw-chosen, .ProseMirror-selectednode, .fw-expr-coding, :has(.fw-current)) > .fw-fn::before { content: ""; position: absolute; right: 100%; top: 50%; height: 1px;
+.fw-expr:is(.fw-here, .fw-chosen, .fw-expr-coding, :has(.fw-current)) > .fw-fn { opacity: 1; outline: 1px solid var(--expr-mid); }
+.fw-expr:is(.fw-here, .fw-chosen, .fw-expr-coding, :has(.fw-current)) > .fw-fn::before { content: ""; position: absolute; right: 100%; top: 50%; height: 1px;
   background: var(--expr-mid); width: calc(var(--d, 0) * var(--u) + var(--fp) + 2rem - 1.2rem); }
-.fw-doc .fw-expr:is(.fw-chosen, .ProseMirror-selectednode) > .fw-fn { background: var(--expr-hi); color: var(--bg); outline-color: var(--expr-hi); }
-.fw-doc .fw-expr:is(.fw-chosen, .ProseMirror-selectednode) > .fw-fn::before { background: var(--expr-hi); }
+.fw-doc .fw-expr.fw-chosen > .fw-fn { background: var(--expr-hi); color: var(--bg); outline-color: var(--expr-hi); }
+.fw-doc .fw-expr.fw-chosen > .fw-fn::before { background: var(--expr-hi); }
 .fw-doc > .ProseMirror > .fw-expr::before { color: #4f6b5a; }   /* (its number in the gutter: green, at rest too) */
 .fw-expr-out.fw-expr-block .fw-container > * { margin-bottom: var(--gap); }
 .fw-expr-out.fw-expr-block .fw-container > *:last-child { margin-bottom: 0; }
@@ -565,6 +566,26 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-expr-out.fw-expr-wait { color: var(--dim); font-style: italic; }
 .fw-expr-out.fw-expr-holes { color: var(--dim); }
 .fw-expr.fw-expr-coding .fw-expr-out { color: var(--dim); font-size: .9em; padding-left: .5rem; }
+/* an inline expression (TYPE.md "Inline"): its value in the line, faintly marked as worked out; its code in place */
+/* (the user, 2026-11-25: "insert 2 green dollar signs in the text and we type between them, no green underline or gray
+   background, just mono, code highlighted font … the result should just be in mono and highlighted green, references
+   should use this style too and have a little inline arrow") */
+.fw-icode-folded { display: none; }
+.fw-icode-src, .fw-icode-out { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .86em; }
+.fw-icode-dollar { color: var(--expr-hi); }
+.fw-icode-out { color: var(--expr-hi); cursor: text; }
+.fw-icode-sel { background: rgba(124, 203, 154, .16); box-shadow: 0 0 0 2px rgba(124, 203, 154, .16); }   /* (selected: the caret's middle stop over it) */
+.fw-icode-out::selection, .fw-icode-out *::selection, .fw-icode-tail::selection, .fw-icode-folded::selection { background: transparent; }
+/* (its closing $, kept so the caret after it has a place, taking no room: mono, its own width taken back) */
+.fw-icode-tail { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .86em; color: transparent; letter-spacing: -1ch; caret-color: var(--fg); }
+.fw-icode-folded { caret-color: var(--fg); }   /* (a caret there takes its colour from the text it's in: never the hidden text's) */
+.fw-icode-wait { color: var(--dim); }
+.fw-tok-keyword { color: #c49bd6; } .fw-tok-number { color: #d7a46f; } .fw-tok-string { color: #a3c48a; }
+.fw-tok-type { color: var(--blue); } .fw-tok-comment { color: var(--dim); font-style: italic; } .fw-tok-operator { color: var(--dim); }
+.fw-tok-relative { color: #e2b56b; font-style: italic; }
+/* a reference, in an inline expression's code or its value: its title, green, a small ↗ (a click on the value opens it) */
+.fw-iref, .fw-icode-out .fw-ref { color: var(--expr-hi); background: none; padding: 0; font: inherit; cursor: pointer; }
+.fw-iref::after, .fw-icode-out .fw-ref::after { content: "↗"; font-size: .7em; vertical-align: .35em; margin-left: .05em; }
 .fw-expr-code { display: block; width: 100%; resize: none; box-sizing: border-box;
   background: rgba(255, 255, 255, .03); color: var(--fg); border: none; border-radius: 2px; outline: none;
   font: 14px/1.55 ui-monospace, "SF Mono", Menlo, monospace; padding: .35rem .5rem; margin-bottom: .35rem; tab-size: 2; }
@@ -581,7 +602,17 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-expr-errors { color: var(--dim); font-size: .8em; padding: .2rem .5rem 0; white-space: pre-wrap; }
 .fw-expr-errors > div::before { content: "⦃ "; }
 .fw-expr-errors > div::after { content: " ⦄"; }
-/* the code in CodeMirror (codebox.js): a reference drawn as its pericope's title, a chip (TYPE.md, references) */
-.fw-ref { color: var(--blue); background: rgba(111, 147, 219, .14); border-radius: 3px; padding: 0 .25em;
+/* a reference drawn as its pericope's title, a chip (TYPE.md, references), in the code and in what it shows: grey,
+   square, nothing more (the user, 2026-11-25: "drastically simplify reference chips, grey only, no rounded corners") */
+.fw-ref { color: var(--fg); background: rgba(255, 255, 255, .09); padding: 0 .25em;
   font-family: "Source Sans 3 Variable", system-ui, sans-serif; }
-.fw-ref.fw-ref-gone { color: var(--dim); background: rgba(255, 255, 255, .06); }
+.fw-ref.fw-ref-gone { color: var(--dim); }
+/* this, above, below: where the expression sits, relative to it and worked out as it's viewed (the user, 2026-11-25:
+   "relational to the user, give these unique styling"): amber, outlined, not filled like a reference's chip */
+/* the recursive case (the user, 2026-11-25): a thing met again inside itself, its title and a loop ↻; a window on
+   it all the same (↗ opens it), dashed so it doesn't read as one more level of it */
+.fw-loop { border-style: dashed !important; }
+.fw-loop .fw-text { color: var(--dim); font-style: italic; }
+/* a reference to the pericope it's in, `this`, and one to where it's seen from (↻): the same chip, its words italic */
+.fw-ref.fw-ref-this, .fw-ref.fw-ref-loop { font-style: italic; }
+.fw-relative { color: #e2b56b; font-style: italic; border: 1px dashed rgba(226, 181, 107, .55); border-radius: 3px; padding: 0 .2em; }

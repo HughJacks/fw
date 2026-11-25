@@ -43,20 +43,24 @@ Standard library only (and loro, through fw_store). Listens on 127.0.0.1.
     GET  /api/masking?quote=        what masking a quote works on: its target's draft, the mask, the lines
     POST /api/maskop                {draft, mask, op, a, b, i}: one key while masking, the mask back
     GET  /api/snapshot              every pericope as the expression engine reads it (snapshot_json)
-    GET  /api/stamp                 when the store last changed (the page follows it)
+    GET  /api/stamp                 when the store last changed
+    GET  /api/live                  the same, pushed as it changes (server-sent events: the page follows it)
     GET  /api/keys, PUT /api/keys   the user's key bindings for the web editor (web-keys.json beside the store)
     GET  /images/<file>             a picture
 """
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import mimetypes
 import os
 import re
+import signal
 import sys
 import threading
 import webbrowser
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -186,6 +190,7 @@ def keep_current() -> None:
                 idle = ACTIVE[0] == 0
             if code_stamp() != CODE and idle:
                 print("fw web: fw's code changed; starting again", file=sys.stderr, flush=True)
+                store.flush_json()   # (the .json copy brought up to date first: json_later)
                 os.execv(sys.executable, [sys.executable, *sys.argv])
         except (OSError, ValueError):
             continue
@@ -630,7 +635,19 @@ def snapshot_json(library: dict) -> dict:
             if h != i and h not in out:
                 out.append(h)
         return out
-    return {"pericopes": [{"id": i, "title": e["title"] or "",
+    def when(minute):   # (a visit's minute since the epoch, as an ISO date here, as the store writes dates)
+        return datetime.fromtimestamp(minute * 60).astimezone().isoformat(timespec="seconds")
+    def facts(i, b):   # (a block's own: the Hazel built-ins read these, TYPE.md "Every fact typed")
+        v = b.get("visits") or {}
+        recent = [[when(m), flags] for m, flags in v.get("recent") or []]
+        return {"title": store.display_title(blocks, i) or "", "written": b.get("title"),
+                "created": b.get("created") or "", "updated": b.get("updated") or "",
+                "visits": v.get("total", 0), "first": when(v["first"]) if v.get("first") is not None else None,
+                "recent": recent, "kinds": store.kinds_of(b) if b.get("entry") else {},
+                "pericope": home(i) or i, "entry": bool(b.get("entry")), "backlinks": backs(i)}
+    return {"now": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "facts": {i: facts(i, b) for i, b in blocks.items()},
+            "pericopes": [{"id": i, "title": e["title"] or "",
                            "kinds": [k for k, yes in store.kinds_of(e["block"]).items() if yes],
                            "created": e["block"].get("created") or "", "updated": e["block"].get("updated") or "",
                            "visits": (e["block"].get("visits") or {}).get("total", 0),
@@ -644,10 +661,19 @@ def library() -> dict:
 
 
 def stamp() -> int:
-    try:
-        return store.DATA_PATH.stat().st_mtime_ns
-    except OSError:
-        return 0
+    """When the store last changed: its document (the .json copy is written a moment later: store.json_later), or
+    the .json when something wrote that beside it."""
+    def mtime(path):
+        try:
+            return path.stat().st_mtime_ns
+        except OSError:
+            return 0
+    return mtime(store.LORO_PATH) + (mtime(store.DATA_PATH) if store.json_changed() else 0)
+
+
+JSON_LATER = 1.0   # s: the store's .json copy written this long after the last save (store.json_later)
+LIVE_TICK = 0.02   # s: how often a page's stream looks at the store (a stat: cheap)
+LIVE_QUIET = 15    # s: a comment sent this often on a quiet stream, so a dead page is noticed
 
 
 def refusal(method: str, path: str, host: str | None, origin: str | None, ctype: str | None, port: int) -> str | None:
@@ -693,6 +719,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.file(store.IMAGES_PATH / name) if IMAGE_RE.match(name) else self.send(404, {"error": "no such picture"})
             if path == "/api/stamp":
                 return self.send(200, {"stamp": stamp()})
+            if path == "/api/live":
+                return self.live()
             if path == "/api/keys":   # the user's key bindings (#/keys), over the page's defaults
                 return self.send(200, {"keys": read_keys()})
             if path == "/api/version":   # the code this core started with, and the page built now (the page reloads on a change)
@@ -738,7 +766,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"kinds": [{"id": k, "name": lib[k]["title"]} for k in store.kind_ids(lib)]})
             if path == "/api/quote":   # a new quote of `target`, as the page draws it (what it shows, what it holds)
                 target = (ask.get("target") or [""])[0]
-                lib = library()
+                data, version = store.load_versioned()
+                lib = store.build_library(data)
                 if target not in lib:
                     return self.send(404, {"error": "no such block"})
                 # where it's going (`into`: the block it'll be in and what holds it; `depth`: quotes around it there).
@@ -748,13 +777,14 @@ class Handler(BaseHTTPRequestHandler):
                 into, depth = (ask.get("into") or [""])[0], int((ask.get("depth") or ["0"])[0] or 0)
                 blocks = blocks_of(lib)
                 here = tuple(i for i in into.split(",") if i in blocks)
-                return self.send(200, quote_json(lib, None, target, None, [], {}, depth + 1, here))
+                return self.send(200, {**quote_json(lib, None, target, None, [], {}, depth + 1, here), "version": version})
             m = re.fullmatch(r"/api/pericope/([^/]+)", path)
             if m and ID_RE.match(m.group(1)):
-                lib = library()
+                data, version = store.load_versioned()   # (the version it was read at: its editors' saves merge from there)
+                lib = store.build_library(data)
                 if m.group(1) not in lib:
                     return self.send(404, {"error": "no such pericope"})
-                return self.send(200, pericope_json(lib, m.group(1)))
+                return self.send(200, {**pericope_json(lib, m.group(1)), "version": version})
             return self.send(404, {"error": "not found"})
         except (store.StoreError, OSError, ValueError) as e:
             return self.send(500, {"error": str(e)})
@@ -773,8 +803,9 @@ class Handler(BaseHTTPRequestHandler):
         if lens and ID_RE.match(lens.group(1)):   # {text, base}: a masked quote's view, written through (store.commit_view)
             try:
                 body = self.body()
-                hashes, _ = store.commit_view(lens.group(1), body.get("text") or "", None, base=body.get("base"))
-                return self.send(200, {"bases": hashes})
+                hashes, _ = store.commit_view(lens.group(1), body.get("text") or "", None, base=body.get("base"),
+                                              at=body.get("version"))
+                return self.send(200, {"bases": hashes, "version": store.written_version()})
             except store.StoreError as e:
                 return self.send(409, {"error": str(e)})
             except (OSError, ValueError) as e:
@@ -786,10 +817,14 @@ class Handler(BaseHTTPRequestHandler):
             body = self.body()
             fields = [{"key": "title", "value": body.get("title") or "", "editable": True}] if "title" in body else []
             notes, base, _, _ = store.commit(m.group(1), body.get("draft"), fields, final=bool(body.get("final")),
-                                             base=body.get("base"))
+                                             base=body.get("base"), at=body.get("version"))
+            version = store.written_version()
             blocks = blocks_of(library())
-            also = {i: store.content_hash(blocks, i) for i in body.get("also") or [] if i in blocks}
-            return self.send(200, {"base": base, "notes": notes, "gone": m.group(1) not in blocks, "bases": also})
+            # (the editors around it, their bases now; not after a merge: the store holds more than they've seen, and they
+            # follow it)
+            merged = bool(body.get("version")) and version != store.current_version()
+            also = {} if merged else {i: store.content_hash(blocks, i) for i in body.get("also") or [] if i in blocks}
+            return self.send(200, {"base": base, "notes": notes, "gone": m.group(1) not in blocks, "bases": also, "version": version})
         except store.StoreError as e:
             return self.send(409, {"error": str(e)})
         except (OSError, ValueError) as e:
@@ -931,6 +966,36 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def live(self):
+        """GET /api/live: the store's stamp, sent at once and again whenever the store changes, by whoever (this
+        core, another, a sync, a script), until the page goes (TYPE.md "Live: the rule"): the page's one way of
+        hearing about changes, pushed, not asked for. A page following isn't an answer being given: a restart
+        doesn't wait for it (the page reconnects by itself)."""
+        import time
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        with ACTIVE_LOCK:
+            ACTIVE[0] -= 1
+        try:
+            self.wfile.write(b"retry: 300\n\n")
+            last, quiet = None, 0.0
+            while True:
+                now = stamp()
+                if now != last:
+                    self.wfile.write(f"data: {json.dumps({'stamp': now})}\n\n".encode())
+                    last, quiet = now, 0.0
+                elif quiet >= LIVE_QUIET:
+                    self.wfile.write(b": \n\n")
+                    quiet = 0.0
+                self.wfile.flush()
+                time.sleep(LIVE_TICK)
+                quiet += LIVE_TICK
+        finally:
+            with ACTIVE_LOCK:
+                ACTIVE[0] += 1
+
     def log_message(self, *args):  # (quiet)
         pass
 
@@ -971,6 +1036,9 @@ def main() -> int:
             build_page()
         threading.Thread(target=keep_current, daemon=True).start()
     threading.Thread(target=keep_flushing, daemon=True).start()
+    store.json_later(JSON_LATER)   # (a save is just the document; its .json copy a moment after the last one)
+    atexit.register(store.flush_json)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # (stopped: atexit's flush still runs)
     httpd = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     url = f"http://127.0.0.1:{a.port}/"
     print(f"fw web: {url}", file=sys.stderr, flush=True)

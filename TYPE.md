@@ -39,6 +39,117 @@ Link = { to : Ref, at : (start, end) }
   type: one `Text` → "text", one `Quote` → "quote", several → "pericope", a picture → "picture", one `Expr` → its value's.
 - **No subtyping** (Hazel has none): sums and records only.
 
+## Live: the rule (the user, 2026-11-25)
+
+"this is the rule not a hard coded in anyway, this is the point of hazel, and the point of loro … all other forms of
+dependence and linking follow this."
+
+**What's written is the only source; everything else is a function of it, kept current wherever it's seen.**
+
+- **Sources** are what someone wrote: a block's text, its links, an expression's source, a quote's target and mask,
+  titles, tags answered. They live once, in the store.
+- **Everything else is derived**, never a second copy: what a quote shows, an expression's value, backlinks, a
+  pericope's type, word counts, a quote's top line, a tag's members, search and home's order.
+- **Never stale.** When a source changes, anywhere (this window, another window, the other machine, a friend later),
+  every view depending on it follows, including the one you're in, with your caret carried along.
+- **Never refused.** Two writers at once are merged, not turned away. A write is made on what its writer saw and merged
+  with everything since.
+- **Never meaningless.** A view of something missing, cyclic, too deep or unfinished shows that (a hole, ↻, ⋯), never
+  an error or a stale copy.
+
+Hazel and Loro are the two halves of this rule. They meet only at the store.
+
+| | Hazel | Loro |
+|---|---|---|
+| live in | computation: what a source *means* | time and place: who wrote what, where, when |
+| its promise | every program state has a meaning and a value (holes) | every replica converges; every edit is kept (no conflicts) |
+| in fw | every view is a function of the store, total, recomputed on change | the store: one document, every writer a peer, writes merged |
+
+Neither knows about the other. Loro says what the store holds now, and Hazel-style evaluation says what that means
+wherever it's shown. So a new kind of dependence (a new view, a new link, a new built-in) gets liveness by being a
+function of the store. A new kind of writer (a window, another machine, a friend) gets merging by being a Loro peer. Nothing
+is special-cased.
+
+How far the code is there: the rule holds today and is enforced by tests (e2e `live`). In the
+code, the page hears of every change one way (`web/src/live.js`: the core pushes the store's stamp, GET
+/api/live), and each view refetches what it shows; not yet each view saying what it reads, and the core still
+rereads the whole store per request.
+
+## Projection: `x.f` as sugar (agreed 2026-11-25, not built)
+
+The user: "because this is simultaneously a live code notebook and a personal database, they sort of ARE fields, so i
+think we should lean on the syntactic sugar method". `x.f` is written for `f(x)`, for any function (fw's and your
+own), rewritten before typing, never resolved by x's type: so a hole stays meaningful (`?.wordCount` is
+`wordCount(?)`), no overloading. `@p.wordCount + @p2.wordCount`, `@p.title.length`. Against it, weighed: it reads as
+stored data when facts are computed (and depend on `here`); two ways to write the same thing; a clash if pericopes
+ever get labelled fields. Pays off once completion after the dot lists what can be projected (the code-writing
+experience).
+
+## Inline: mentions and inline expressions (agreed 2026-11-25; inline expressions built the same day)
+
+Text is `[Inline]`; two new cases, the same ideas as a quote and an expression block one level down:
+
+```
+Inline = + Plain(String) + Link(String, Ref)
+         + Code(source)      -- $ 5 + 5 $ in text: drawn as its value, live
+```
+
+`@` in text is sugar for `$ @p $` (the user, 2026-11-25): an inline expression whose value is a Ref, drawn as the grey
+chip a Ref is; no Mention case of its own. A link keeps your words and stays separate.
+
+**Editing an inline expression** (the user, 2026-11-25: "insert 2 green dollar signs in the text and we type between
+them … cursor out of the dollar signs like normal, and the result should just be in mono and highlighted green"): it's
+text. `$` in a line puts two dollar signs (green) with the caret between; what's typed between them is code (mono,
+coloured as code, references drawn as their titles); with the caret anywhere else its code folds away and its value
+shows, mono and green, a reference green with a small ↗. Closed, the caret crosses it in three stops (the user,
+2026-11-25): before it, it selected (lit, the caret hidden; a click lands here too), after it; never opening it.
+Only a key opens it (⌘⇧X, selected or against it; typing `$` opens the new one); the closing `$`, Esc, ⌘⇧X or the
+caret leaving close it. ⌫ takes it whole; left empty, it goes. Its closing `$` stays in the line but takes no room, so
+the caret after it is drawn after its value. In the editor it's text marked as code (the `icode` mark, inlinecode.js), so
+pasting `$…$` makes code too and copying gives the `$…$` back. An expression block keeps its code box (⌘⇧X).
+
+- `$` at the start of an empty block makes it an expression block (its code box open); mid-text, `$ … $` is an inline
+  expression; `\$` is a literal dollar sign.
+- **An inline expression's value must be inline**: text, or anything cast to text (a number, a date, a list, a
+  chip). A value of blocks draws as `!` with a note saying blocks can't sit in a line (the user: "having the visual
+  blocks stray from data blocks will cause problems"). Drawn boxes stay one to one with written blocks for now.
+  Talked through, put aside: a written block drawn as several boxes (its value), the pieces addressed as spans;
+  "eventually we might not need this kind of thing".
+- **Stored in the text itself** (the user chose it, 2026-11-25): a block of text is a string with code spliced in,
+  `the train $wordCount(@x)$ arrives`, string interpolation. `$…$` closed on its line is code; `\$` a dollar sign, and
+  so is a `$` with no partner on its line (the store's two old dollars stayed text, no migration). Every character
+  merges through Loro as now; no schema change; the terminal and search see the code as text. An inline
+  expression is a span of its block (addressed by position), not its own id. Worked out where its block sits (`self`
+  is the block: `this` its pericope, `above`/`below` its peers). Its @references are backlinks; a title reads it with
+  references named (fw_block.readable).
+- **In the engine** (2026-11-25): a text's `$…$` is worked out while the text is shown, where its block sits, and
+  its value goes into the line as ordinary Inlines, so what a block shows is a value (no Code case in `Inline`): a
+  Ref as `Link(title, ref)` (it stays a reference), a string its words, anything else as fw prints it (a list its
+  things, a Ref in it its title, a date pretty), blocks `!`, a hole `?`. Adjacent plain words are one `Plain`, so
+  `Text([Plain(s)])` still matches. Words count what's shown; a block counting itself (its code reading its own
+  block, `wordCount(this)` inside it) leaves its inline expressions out, the recursive case. A value's text is
+  handed to the page with each `$` as `\$`, so a value is never read as code again. The core's stored count (it
+  can't run Hazel) counts each inline expression as one word, never its code.
+- Masks stay spans of someone else's text: a sealed `Span` (Loro cursors), `mask(body(@x), [spans])`.
+
+## Every fact typed (built 2026-11-25)
+
+The user: "all meta data should be well typed in hazel and should have functions"; a block's facts are its own (the
+same function means the same thing at every level). On dates: "in the spirit of our auto casting everything should
+try to be pretty".
+
+```
+title : Ref -> String            writtenTitle : Ref -> Option(String)
+created, updated : Ref -> Date   now : Date
+visits : Ref -> Int              firstVisit, lastVisit : Ref -> Option(Date)     recentVisits : Ref -> [Visit]
+tags, notTags : Ref -> [Ref]     isPericope : Ref -> Bool    pericopeOf : Ref -> Ref    backlinks : Ref -> [Ref]
+Date   sealed (only fw makes one), drawn "Nov 25, 2026, 3:12 pm"; year, month, day, hour, minute, weekday,
+       showDate, before, daysBetween, minutesBetween
+Visit  = + Visit((Date, [Attention]))     Attention = + Opened + Stayed + Wrote + Through
+```
+
+Printed values: a list is its things with commas between ("nothing" when empty), a Ref a chip with its title.
+
 ## Changes from schema v19/v20
 
 1. Kind leaves the content cases: a pericope's `role`.
@@ -109,6 +220,21 @@ An expression is a whole program inside its one block. Functions are defined and
 inside an expression's code stay.
 
 ## Every block in the dialect (agreed 2026-11-24; theory, not built yet)
+
+**Where this is going** (the user, 2026-11-25): "the goal is eventually to basically have our entire store written in
+our extended version of hazel (or elm ig), and how our editor use hazel and render and write to those programs". The
+store is one program; showing a pericope is evaluating it; writing in the editor is editing that program (as Hazel's
+structure editor does), never a separate data model with a language beside it. Every step (typed facts, `this`, Loop,
+calls, windows) should move toward that, not around it. Not to be built in one go: think, then build in steps.
+
+Agreed (2026-11-25, talking it through): **the program holds what's written**; what fw observes (created, updated,
+visits, backlinks) stays beside it, read through the typed functions, so a visit never rewrites the program. Later
+(the user: "i would like to be able to reference anything visible but i dont think we need this now"): a way to refer
+to anything on screen; the suggestions below a pericope stay apart from the program.
+
+Agreed (2026-11-25): **every block has its name in the program** (`@b1 = …`), always there and never shown, as ids
+are now. The user: "if we pop something out it should already have an id ready for it": turning a block into a
+pericope of its own, quoting it, linking to it never has to invent identity, it's already written.
 
 The user: "a quote is just syntactic sugar for a referencing and calling body on that reference, we should rewrite it
 that way, and we should i think treat equivalent results with the same treatment"; "what im sure of is that other
@@ -218,7 +344,44 @@ below : Ref        -- the peer block just after it
 - **None there: a hole**, so `f(below)` is f applied to a hole and shows `?` where it can't finish. A wrong type is
   Hazel's type error (automatic casting, agreed, isn't built yet).
 - An expression read through `body` has its own above and below (where it sits), not the reader's.
-- `this` (the expression block itself) is for later.
+- `this : Ref` (built 2026-11-25; the user: "this should be the current pericope, we dont need a word for self
+  yet"): the pericope the expression is in, where it sits now (a call's: the quote's pericope). Read from inside, the
+  expression's own place in it is the recursive case: `body(this)` shows the pericope with that place as its loop,
+  and `wordCount(this)` counts everything but it ("render recursively as much as it can"). While it runs, the
+  expression counts as being read, so nothing loops forever. `this`, `above` and `below` are drawn apart in the code
+  (amber, outlined: relative to where it sits, worked out as it's viewed). A reference to the pericope it's in, in
+  its code or in what it shows, is drawn as `this` too (the user: "any self referential references should render as
+  'this'"); a reference to anything else it's seen through keeps its title, with ↻.
+- **Three self-references** (built 2026-11-25; the user: "one to reference the pericope, one to reference the pericope
+  where the expression is currently being viewed from, one to reference the block … two people can look at one value
+  from two perspectives and the value is different"):
+  - `this`: the pericope it's written in (lexical: wherever it's seen);
+  - `here`: the pericope it's viewed from, the one open on the page; seen through a quote, the quoting one; in its own
+    pericope, the same as `this`. Passed inward: an expression read through another has the reader's `here` (the
+    person looking). No one looking (the core's counts, search, backlinks): `here` is `this`. Values were never stored,
+    each page works its own out, so two windows on two pericopes see two values, both live; a cache would have to be
+    per view;
+  - `self`: the block itself (an expression block, an inline expression's block, a call's quote); read from inside,
+    a loop (`body(self)`, `wordCount(self)` ↻).
+  A reference to one of them is drawn as its word, in results and in code (`this` when `here` is `this`).
+- **The recursive case** (the user, 2026-11-25: "if we are ever going to render a block while looking through it,
+  that is the recursive case, so we render the title and a loop … in the case we render the reference while in the
+  current pericope … we show this with a little loop"). A block met again while showing it is `Loop(@x)`, a sealed
+  Block case (only fw makes one, as `From`): drawn as a dashed window on x, its title and ↻ (↗ still opens it).
+  A printed `Ref` to anything the value is seen from inside (the expression, its pericope, every quote it's looked
+  through) is a chip with ↻. Too deep (past the nesting cap) is still a hole.
+- **Words of what's shown** (2026-11-25): an expression's words are the words of what it shows, worked out where it
+  sits, so `wordCount` of a pericope counts its expressions' results. Counting from inside (`wordCount(this)`)
+  counts everything but the expression itself (the user: "show 2": as much as can be worked out; the loop counts
+  none). An expression's own words, asked for while it's being made (its id), are ↻.
+- **What a word is** (2026-11-25; the user: count real words, "not hard code it, only … an elegant solution that
+  applies to all situations"): a run without spaces with something in it besides punctuation (ASCII's, and the
+  typographic dashes, quotes and dots). One rule wherever fw counts: the core (`fw_block.is_word`), the page's live
+  count (`editor.js` `isWord`), the engine (`FwPrelude.is_word`). So an unfinished value's `31 + ?` is one word, a
+  bullet `-` or a lone `—` none.
+- **Runaway evaluation** (2026-11-25): Hazel allows recursion with no end; every run has a step budget (100,000 steps,
+  ~75 ms: "a relatively short step limit", the user), and one that runs out shows "∞ ran too long", never freezing
+  the page. Each expression read through another gets its own budget.
 - The page keeps an empty block after a pericope's last block, so an expression at the end has an empty block below,
   not a hole.
 

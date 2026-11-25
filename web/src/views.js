@@ -3,6 +3,7 @@
 import * as hazel from "./hazel.js";   // (the expr branch: an expression in a quote, worked out here)
 import { api } from "./api.js";
 import { snapshot, onSnapshot } from "./snapshot.svelte.js";
+import { labelOf } from "./codebox.js";
 
 const el = (tag, cls, text) => {
   const e = document.createElement(tag);
@@ -131,14 +132,89 @@ export function blockEl(t, open) {
 /** What an expression (or an application) works out to, drawn into `box` (replacing what was there): a Block value as
  * blocks; any other value printed; a function its type, dim; why it can't be worked out yet. Hazel's errors in its
  * title. */
-export function drawValue(box, r, open) {
+/** The ids a value drawn in editor `ed` is seen from inside: the expression itself (`self`), the pericope it's in and
+ * every block it's being looked through (the quotes around it, their targets). A reference to one of them is the
+ * recursive case (the user, 2026-11-25): drawn with a loop. */
+export function insideOf(ed, self) {
+  const ids = new Set(self ? [self] : []);
+  for (const e of ed ? [ed, ...ed.around] : []) {
+    if (e.id) ids.add(e.id);
+    const t = e.holder?.node?.attrs?.target;
+    if (t) ids.add(t);
+  }
+  return ids;
+}
+
+/** The pericope `this` is for an expression (or a call) `self` in editor `ed`: the core's (its facts), else the
+ * pericope open on the page (a block not saved yet). */
+export function thisOf(ed, self) {
+  const chain = ed ? [ed, ...ed.around] : [];
+  return snapshot.store?.facts?.[self]?.pericope ?? chain.at(-1)?.id ?? null;
+}
+/** The pericope it's viewed from (`here`): the one open on the page, whatever it's seen through. */
+export function hereOf(ed) {
+  return (ed ? [ed, ...ed.around] : []).at(-1)?.id ?? null;
+}
+/** The words a reference is drawn as, relative to where it's seen (TYPE.md: this, here, self): {id: word}; the
+ * pericope it's in is `this` even when it's also `here`. */
+export function namesOf(ed, self) {
+  const m = new Map();
+  if (self) m.set(self, "self");
+  const h = hereOf(ed), t = thisOf(ed, self);
+  if (h) m.set(h, "here");
+  if (t) m.set(t, "this");
+  return m;
+}
+
+/** A value as Hazel prints it, each Ref in it drawn as a chip, as references are in the code (its pericope's title; a
+ * click opens it); a Ref to where it's seen from (`inside`), the recursive case, with a loop: ↻. */
+function printedEl(printed, open, inside = new Set(), names = new Map()) {
+  const out = el("div", "fw-expr-out");
+  let at = 0;
+  for (const m of printed.matchAll(/Ref\("([0-9]{8}T[0-9]{6}-[0-9a-f]{4})"\)/g)) {
+    if (m.index > at) out.append(printed.slice(at, m.index));
+    if (names.has(m[1])) {   // (this, here, self: as the code says them)
+      const word = names.get(m[1]), chip = el("span", "fw-ref fw-ref-this", word);
+      chip.title = `@${m[1]}: ${{ this: "the pericope it's in", here: "the pericope it's seen from", self: "the block itself" }[word]}`;
+      out.append(chip);
+      at = m.index + m[0].length;
+      continue;
+    }
+    const label = labelOf(m[1]), loop = inside.has(m[1]);
+    const chip = el("span", "fw-ref" + (label === null ? " fw-ref-gone" : "") + (loop ? " fw-ref-loop" : ""), (label ?? "?") + (loop ? " ↻" : ""));
+    chip.title = `@${m[1]}`;
+    if (open && label !== null) chip.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); open({ target: m[1] }); });
+    out.append(chip);
+    at = m.index + m[0].length;
+  }
+  if (at < printed.length) out.append(printed.slice(at));
+  return out;
+}
+
+/** An inline expression's value, as it sits in a line (TYPE.md "Inline"): text, or anything cast to text (a string
+ * its words, a list its things, a Ref its chip, `this` its pericope); blocks can't sit in a line: `!`, a note why. */
+export function inlineValueEl(r, open, names = new Map()) {
+  const span = (cls, text, title = "") => { const s = el("span", "fw-icode-out" + (cls ? " " + cls : ""), text); s.title = title; return s; };
+  if (!r) return span("fw-icode-wait", "…");
+  if (r.kind === "empty") return span("fw-icode-wait", "$ $", "an empty inline expression · ⌘⇧X to write it");
+  if (r.kind === "error") return span("fw-icode-hole", "?", r.message);
+  if (r.kind === "function") return span("fw-icode-wait", r.type);
+  if (r.kind === "block") return span("fw-icode-bad", "!", "this works out to blocks, which can't sit in a line: write it as an expression block ($ in an empty block)");
+  let printed = r.printed;
+  if (r.type === "String") { try { printed = JSON.parse(printed); } catch { printed = printed.replace(/^"|"$/g, ""); } }
+  const out = span(r.errors?.length ? "fw-icode-hole" : "", "", r.type || "");
+  out.append(...printedEl(printed, open, new Set(), names).childNodes);
+  return out;
+}
+
+export function drawValue(box, r, open, inside = new Set(), names = new Map()) {
   let out;
   if (!r) out = el("div", "fw-expr-out fw-expr-wait", hazel.status() === "failed" ? "(the expression engine didn't load)" : "…");
   else if (r.kind === "empty") out = el("div", "fw-expr-out fw-expr-wait", "an empty expression · ⌘⇧X to write it");
   else if (r.kind === "error") out = el("div", "fw-expr-out fw-expr-holes", r.message);
   else if (r.kind === "function") out = el("div", "fw-expr-out fw-expr-fn", r.type);
   else if (r.kind === "block") { out = el("div", "fw-expr-out fw-expr-block"); out.appendChild(blockEl(r.block, open)); }
-  else out = el("div", "fw-expr-out", r.printed);
+  else out = printedEl(r.printed, open, inside, names);
   if (r?.errors?.length) out.classList.add("fw-expr-holes");
   out.title = r?.type ? `${r.type}${r.errors?.length ? " · " + r.errors.map((e) => e.message).join("; ") : ""}` : "";
   const was = box.querySelector(":scope > .fw-expr-out");

@@ -14,7 +14,8 @@ deprecated, kept working (`fw term`); new work goes into the web editor.
 Slow and without bloat; standard library only, except the store's `loro`
 (in `.venv`); functional code: a block is a recursive option type, pure
 functions, I/O at the edges; one user, whose copies of the store on
-several machines merge; undo is total; everything is a block.
+several machines merge; undo is total; everything is a block. **Live is the rule** (TYPE.md, "Live: the rule"): what's written is the only source,
+everything else is a function of it, kept current wherever it's seen; writes are merged (Loro), never refused.
 
 ## Files
 
@@ -41,12 +42,12 @@ several machines merge; undo is total; everything is a block.
 | `fw_screen.py` | the terminal: character widths, soft wrap, word steps, `put`, `draw_box`, terminal modes, the test-only `$FW_SYNC` signal |
 | `fw_app.py` | the loop: `stage` → edit → `finish` → home; the Open it trail |
 | `fw_web.py` | the web editor's core: a local server over the store (127.0.0.1), the only part of the web editor that touches it (fw_store's functions; drafts saved through `commit`); JSON to the page. It rebuilds the page when `web/src` changes and restarts itself when `fw_*.py` change; the open tab reloads itself. `fw`, `fw web` |
-| expressions | a block that's a program in fw's dialect of Hazel (schema v20; the theory in `TYPE.md`), evaluated in the page: `web/src/hazel.js` loads the engine (`web/vendor/hazel.js`, [Hazel](https://github.com/hazelgrove/hazel), MIT, compiled to JavaScript with fw's prelude and bridge, whose sources are in `hazel-bridge/`); `snapshot.svelte.js` is the store as the engine reads it (the core's `GET /api/snapshot`, the open pericope's own live over it); `exprview.js` the block (its value as a browsed editor, block level only; ⌘⇧X its code, `codebox.js`, CodeMirror); a quote of one expression is a call (`QuoteView.call`, `fw_web.quoted_expr`); `fw_block.expr_refs` its @references (backlinks) |
+| expressions | a block that's a program in fw's dialect of Hazel (schema v20; the theory in `TYPE.md`), evaluated in the page: `web/src/hazel.js` loads the engine (`web/vendor/hazel.js`, [Hazel](https://github.com/hazelgrove/hazel), MIT, compiled to JavaScript with fw's prelude and bridge, whose sources are in `hazel-bridge/`); `snapshot.svelte.js` is the store as the engine reads it (the core's `GET /api/snapshot`, the open pericope's own live over it) (following `live.js`, the page's one way of hearing the store changed: the core's `GET /api/live` push); `exprview.js` the block (its value as a browsed editor, block level only; ⌘⇧X its code, `codebox.js`, CodeMirror); a quote of one expression is a call (`QuoteView.call`, `fw_web.quoted_expr`); `fw_block.expr_refs` its @references (backlinks) |
 | `web/` | the web editor's page: Svelte 5 components with runes (`App.svelte` the shell and the view open; `Home`, `Pericope`, `Keys`; `Tabs`, `Kinds`, `Ask`, `Masking`; the floating menus `SearchBox`, `ActionsMenu`, `SlashList`, `PictureLink`, through `float.svelte.js`), shared state in `*.svelte.js` (`state`, `keys`, `review`); ProseMirror the editing engine (`editor.js`, `schema.js`, `views.js`; `src/draft.js` pure: tree to document to draft); `main.js` routes; `motion.js` moving between places; keys as data in `keys.svelte.js`; Tailwind; `npm run build` → `dist/`; `npm test`, `node test/e2e.mjs` |
 | `fw_meaning.py` | search by meaning, optional: asks a search service you run apart from fw (`$FW_MEANING_URL`; none by default) in the background after a pause in typing (`Asker`); the search list mixes its answer in (`fw_picker.fuse`). fw has no model of its own and works the same without one |
 | `schema/block.schema.json` | the shape of a block; the source of truth for validation and the header fields |
 | `tests/` | the suites, `fwtest.py` (their shared helpers) and `run.sh` |
-| `freewrites.loro` | your store, beside the code unless `$FW_DATA` names another: a Loro document; `freewrites.json` beside it is a copy written with it, for reading (`.bak` beside it; a change made to it by something else is taken in as edits: `.freewrites.mirror`); `.freewrites.peer` is this machine's peer id; pictures in `images/` |
+| `freewrites.loro` | your store, beside the code unless `$FW_DATA` names another: a Loro document, always one whole snapshot; a process keeps it in memory between reads (read again only when another process wrote it), and a save writes into it just the blocks that changed; `freewrites.json` beside it is a copy for reading, written with each save (the web core writes it a second after its last save) (`.bak` beside it; a change made to it by something else is taken in as edits: `.freewrites.mirror`); `.freewrites.peer` is this machine's peer id; pictures in `images/` |
 | `.venv/` | fw's Python, with `loro` (the `fw` launcher uses it when it's there) |
 
 Where each kind of change goes is in `CLAUDE.md`.

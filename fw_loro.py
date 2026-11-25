@@ -322,24 +322,40 @@ def masked_encoded(c, sp: Spans):
     return c
 
 
-def write(doc: loro.LoroDoc, data: dict) -> None:
-    """Make `doc` say `data` (the store as on disk), with the fewest edits; commits."""
+def same_block(a: dict | None, b: dict) -> bool:
+    """Block `b` just as `a` says it (its tags' order too: they're kept in the order given)."""
+    return a == b and list((a.get("kinds") or {}).items()) == list((b.get("kinds") or {}).items())
+
+
+def has_spans(b: dict) -> bool:
+    """Block `b` holds spans into texts (links, or a quote's or picture's masks), which can move with another's text."""
+    c = b["content"]
+    return bool(b.get("links")) or isinstance(c, dict) and not ("kind" in c or "paraphrase" in c)
+
+
+def write(doc: loro.LoroDoc, data: dict, old: dict | None = None) -> None:
+    """Make `doc` say `data` (the store as on disk), with the fewest edits; commits. With `old`, what `doc` says now
+    (to_data), only the blocks that differ from it are written (and every block's spans, which follow others' texts):
+    a save writes what changed, not the whole store."""
     blocks = doc.get_map("blocks")
     want = {b["id"]: b for b in data["blocks"]}
+    was = {b["id"]: b for b in old["blocks"]} if old is not None else {}
     for i in blocks.keys():
         if i not in want:
             blocks.delete(i)
     have = set(blocks.keys())
-    at = max((v.get("at", 0) for v in blocks.get_deep_value().values()), default=0)
-    for i, b in want.items():
+    new = [i for i in want if i not in have]
+    at = max((v.get("at", 0) for v in blocks.get_deep_value().values()), default=0) if new else 0
+    changed = [i for i in want if old is None or not same_block(was.get(i), want[i])]
+    for i in changed:
         m = child(blocks, i, loro.LoroMap)
         if i not in have:
             at += 1
             m.insert("at", at)
-        write_block(m, b)
+        write_block(m, want[i])
     sp = Spans(doc, blocks)  # then the spans, every text now as the data has it
-    for i, b in want.items():
-        write_spans(child(blocks, i, loro.LoroMap), b, sp)
+    for i in dict.fromkeys(changed + [i for i, b in want.items() if has_spans(b)]):
+        write_spans(child(blocks, i, loro.LoroMap), want[i], sp)
     store = doc.get_map("store")
     for k in store.keys():
         if k not in data:
@@ -370,6 +386,21 @@ def name_peer(doc: loro.LoroDoc, name: str) -> None:
     if peers.get_deep_value().get(str(doc.peer_id)) != name:
         peers.insert(str(doc.peer_id), name)
         doc.commit()
+
+
+def version(doc: loro.LoroDoc) -> str:
+    """Where `doc` is now, as a string a page keeps and sends back with its edits (its frontiers, hex)."""
+    return doc.oplog_frontiers.encode().hex()
+
+
+def fork_at(doc: loro.LoroDoc, at: str) -> loro.LoroDoc:
+    """A copy of `doc` as it was at version `at` (version), a peer of its own: edits made in it merge back (merge_fork)."""
+    return doc.fork_at(loro.Frontiers.decode(bytes.fromhex(at)))
+
+
+def merge_fork(doc: loro.LoroDoc, fork: loro.LoroDoc, at: str) -> None:
+    """What was written in `fork` since version `at` merged into `doc`, with whatever `doc` has had since."""
+    doc.import_(fork.export(loro.ExportMode.Updates(doc.frontiers_to_vv(loro.Frontiers.decode(bytes.fromhex(at))))))
 
 
 def merge(doc: loro.LoroDoc, raw: bytes) -> None:

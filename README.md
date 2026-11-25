@@ -12,10 +12,14 @@ fw runs on 127.0.0.1, and no model. Everything you write is made of
 - marked as a **paraphrase** of another block (the same thing said another way),
 - **tagged** (a poem, a letter, a class you're taking…), tags being blocks too,
 - or an **expression**: a small program that shows what it works out to, live,
-  from the blocks around it or from anything you've written (`/` → Expression,
-  ⌘⇧X for its code). Quote one and it's worked out where the quote sits.
+  from the blocks around it or from anything you've written (`/` → Expression, or `$` in
+  an empty block; ⌘⇧X for its code). Quote one and it's worked out where the quote sits;
+  `this`, `here` and `self` say where it's written, where it's seen from, and its block.
+- with **inline expressions** in a line of text: `$` starts one, typed between two dollar
+  signs, its value shown live in the sentence once you move out; `@` in a line refers to
+  another entry by name.
 
-Home has an empty pericope waiting in the middle: start typing and it's
+Home has an empty pericope waiting at the top: start typing and it's
 yours. Below it are the search and the **garden** (cards of what you've been
 writing, mixed with what's been slipping out of memory, worked out from when
 you last visited each), and below that everything you've written.

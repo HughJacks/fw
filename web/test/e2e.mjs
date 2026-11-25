@@ -8,7 +8,7 @@
 // or a selection where a test wants it. Keys are real key events (Input.dispatchKeyEvent): what's tested is
 // the page's own handling of them.
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -141,9 +141,19 @@ async function run(name, fn) {
   try { await fn(t); } catch (e) { t.check("no error", false, e.stack.split("\n").slice(0, 3).join(" / ")); }
   if (thrown.length) t.check("the page threw nothing", false, thrown.join(" | "));
   close();
+  const gone = new Promise((r) => (server.exitCode !== null ? r() : server.once("exit", r)));
   server.kill();
+  await gone;   // (it writes its .json copy as it goes: store.json_later)
   rmSync(dir, { recursive: true, force: true });
   return { name, ok, out, ms: Date.now() - t0 };
+}
+
+/** The store's .json copy in `dir`, once it's caught up with the document (the core writes it a moment after its
+ * last save: store.json_later). */
+async function storedIn(dir) {
+  const mtime = (f) => { try { return statSync(join(dir, f)).mtimeMs; } catch { return 0; } };
+  for (let n = 0; n < 60 && mtime("freewrites.json") < mtime("freewrites.loro"); n++) await sleep(50);
+  return JSON.parse(readFileSync(join(dir, "freewrites.json"), "utf8"));
 }
 
 // --- the scenarios -----------------------------------------------------------------------------------------
@@ -365,7 +375,7 @@ const scenarios = {
       d = document.querySelector(".fw-waiting .fw-doc").getBoundingClientRect(), s = document.querySelector(".fw-search").getBoundingClientRect(),
       g = document.querySelector(".fw-library .fw-row")?.getBoundingClientRect();
       return { mid: (h.top + d.bottom) / 2, search: s.top, card: g && g.top, h: innerHeight }; })()`);
-    t.check("home: an empty, untitled pericope in the middle of the first screen", box && Math.abs(box.mid - box.h / 2) < box.h / 6
+    t.check("home: an empty, untitled pericope at the top of the screen", box && box.mid < box.h / 4
       && await t.js(`window.fw.editor() && !window.fw.editor().id && document.querySelector(".fw-waiting .fw-title").value === ""`), JSON.stringify(box));
     t.check("  the cursor in it", await t.js(`!!document.activeElement.closest(".fw-waiting .ProseMirror")`));
     t.check("  below it the search and the list, from near the bottom of the screen and off it", box.search > box.h * 0.6 && box.search < box.h
@@ -388,7 +398,7 @@ const scenarios = {
     await t.type("q");
     t.check("typed in: no longer waiting, the suggestions kept below it (2026-11-20)", await t.js(`!document.querySelector(".fw-waiting") && !!document.querySelector(".fw-centre + .fw-suggested .fw-library .fw-row")`));
     const now = await t.js(span);
-    t.check("  the pericope still where it was, in the middle (no jump to the top)", Math.abs(now.mid - was.mid) < 12 && now.y === 0, JSON.stringify([was, now]));
+    t.check("  the pericope still where it was, at the top (no jump)", Math.abs(now.top - was.top) < 12 && now.y === 0, JSON.stringify([was, now]));
     const words = "uick, a note typed fast while the pericope is being made";
     for (const ch of words) await t.type(ch);
     await t.settle();
@@ -400,8 +410,8 @@ const scenarios = {
     for (const line of ["two", "three", "four"]) { await t.key("Enter"); for (const ch of line) await t.type(ch); }
     await t.settle();
     const grown = await t.js(span);
-    t.check("  growing, it grows from the centre: its top up, its bottom down, its middle kept", grown.top < one.top - 20 && grown.bottom > one.bottom + 20
-      && Math.abs(grown.mid - one.mid) < 12 && grown.y === 0, JSON.stringify([one, grown]));
+    t.check("  growing, it grows down, as any page: its top kept, its bottom down", Math.abs(grown.top - one.top) < 4 && grown.bottom > one.bottom + 40
+      && grown.y === 0, JSON.stringify([one, grown]));
     for (let i = 0; i < ["two", "three", "four"].join("").length + 3; i++) await t.key("Backspace");   // (the three lines and their three Enters, taken back)
     await t.settle();
     const k = made && await t.kids(made);
@@ -660,7 +670,8 @@ const scenarios = {
     const q = (await t.kids(M))[0], shown = q.body.map((b) => b.text).join(" ");
     t.check("  Esc: finished, the mask saved; the quote shows just that", q.masked && shown.includes("quick brown") && !shown.includes("jumps"), JSON.stringify(q.body));
     t.check("    drawn so: …quick brown…", await t.until(`document.querySelector(".fw-doc .fw-quote")?.innerText.includes("quick brown") && document.querySelector(".fw-doc .fw-quote").innerText.includes("…")`, 2000));
-    t.check("(the cursor after \"brown\", in the quote)", await t.select("brown", { collapse: true }));
+    const r0 = await t.js("window.fw.reloads || 0");
+    t.check("(the cursor after \"brown\", in the quote)", await t.select("brown", { collapse: true }), "reloads " + r0 + " " + await t.js("window.fw.reloads || 0") + " " + await t.js(`document.querySelector(".fw-doc").innerText`));
     await t.type(" red");   // (written through the mask, the lens)
     await t.settle();
     const tk = await t.kids(T);
@@ -686,8 +697,9 @@ const scenarios = {
     await t.settle();
     t.check("  written in: your words, the dim source gone", (await t.kids(M))[0].text === "a fox, quick" && await t.until(`!document.querySelector(".fw-doc .fw-guide")`, 2000));
     const pid = (await t.kids(M))[0].id;
-    const stored = () => JSON.parse(readFileSync(join(t.dir, "freewrites.json"), "utf8")).blocks.find((b) => b.id === pid)?.content;
-    t.check("  in the store, a block of its own (2026-11-21, v18): {paraphrase, text}", JSON.stringify(stored()) === JSON.stringify({ paraphrase: T, text: "a fox, quick" }), JSON.stringify(stored()));
+    await t.settle();
+    const stored = (await storedIn(t.dir)).blocks.find((b) => b.id === pid)?.content;
+    t.check("  in the store, a block of its own (2026-11-21, v18): {paraphrase, text}", JSON.stringify(stored) === JSON.stringify({ paraphrase: T, text: "a fox, quick" }), JSON.stringify(stored));
     // found in the search: never opened itself, its original is (2026-11-21)
     await t.open("#/");
     await t.key("ArrowDown");
@@ -1483,6 +1495,14 @@ scenarios.codebox = async (t) => {   // the code written in CodeMirror (2026-11-
   await t.until(`!!document.activeElement?.closest(".fw-expr-code")`, 2000);
   await t.type("let n = 3 in ");
   await t.settle();
+  await t.type("wordC");
+  await t.until(`!!document.querySelector(".cm-tooltip-autocomplete")`, 2000);
+  await sleep(150);   // (CodeMirror takes no accept in the first 75 ms of the list: a slip never picks)
+  await t.key("Tab");
+  t.check("Tab takes the completion offered", await t.until(`document.querySelector(".fw-expr-codebox").fwCode.state.doc.toString().endsWith("wordCount")`, 2000),
+    await t.js(`document.querySelector(".fw-expr-codebox").fwCode.state.doc.toString()`));
+  await t.js(`(() => { const v = document.querySelector(".fw-expr-codebox").fwCode; v.dispatch({ changes: { from: v.state.doc.length - "wordCount".length, to: v.state.doc.length, insert: "" } }); return 1; })()`);
+  await t.settle();
   const caretIn = `(() => { const s = getSelection(); const c = document.querySelector(".fw-expr-code .cm-cursor");
     return !!s.anchorNode && !!s.anchorNode.parentElement?.closest(".cm-content") && s.isCollapsed && !!document.activeElement?.closest(".fw-expr-code")
       && !!c && c.getBoundingClientRect().height > 0 && getComputedStyle(c).borderLeftColor !== "rgba(0, 0, 0, 0)"; })()`;
@@ -1604,6 +1624,277 @@ scenarios.neighbours = async (t) => {   // above and below: the peer blocks arou
   t.check("  the first still reads its own neighbour above", await t.js(`${first}?.textContent`) === "5", await t.js(`${first}?.textContent`));
 };
 
+scenarios.facts = async (t) => {   // every fact typed, and its own (TYPE.md "Every fact typed", 2026-11-25)
+  await t.open(`#/p/${B}`);
+  await addExpr(t, `title(pericopeOf(above))`);
+  t.check("a block's pericope, and its title", await t.until(`${lastOut}?.textContent === '"beta"'`, 8000), await t.js(`${lastOut}?.textContent`));
+  await addExpr(t, `created(@${A})`);
+  t.check("  created: a Date, drawn as fw writes dates", await t.until(`${lastOut}?.textContent === '"Oct 1, 2026, 10:00 am"'`, 4000)
+    && await t.js(`${lastOut}?.title`) === "Date", await t.js(`${lastOut}?.textContent + " | " + ${lastOut}?.title`));
+  await addExpr(t, `(year(created(@${A})), weekday(created(@${A})), daysBetween((created(@${A}), created(@${A}))), isPericope(@${A1}))`);
+  t.check("  read with functions: year, weekday, days between; a block isn't a pericope", await t.until(`${lastOut}?.textContent === "(2026, 4, 0, false)"`, 4000),
+    await t.js(`${lastOut}?.textContent`));
+  await addExpr(t, `[@${A}, @${B}]`);
+  t.check("a list: its things, commas between; a Ref drawn as a chip, its title (beta, the pericope it's in: this)", await t.until(`${lastOut}?.textContent === "alpha, this"`, 4000)
+    && await t.js(`${lastOut}.querySelectorAll(".fw-ref").length`) === 2 && await t.js(`!!${lastOut}.querySelector(".fw-ref-this")`), await t.js(`${lastOut}?.innerHTML`));
+  await t.js(`[...document.querySelectorAll(".fw-doc .fw-expr")].at(-1).fwExpr.showCode()`);
+  t.check("  in its code too: @beta drawn as this, @alpha as its title", await t.until(
+    `(() => { const c = [...document.querySelectorAll(".fw-expr-codebox .fw-ref")].map((x) => x.textContent); return c.join("|") === "alpha|this"; })()`, 2000),
+    await t.js(`[...document.querySelectorAll(".fw-expr-codebox .fw-ref")].map((x) => x.textContent).join("|")`));
+  await t.key("x", 4 | 8);
+  await t.until(`!document.querySelector(".fw-expr-code")`, 2000);
+  await t.settle();
+  await addExpr(t, `filter(pericopes, fun p -> false)`);
+  t.check("  an empty one: nothing", await t.until(`${lastOut}?.textContent === "nothing"`, 4000), await t.js(`${lastOut}?.textContent`));
+
+  // this: the expression itself, where it sits (2026-11-25)
+  await addExpr(t, `(title(pericopeOf(this)), isPericope(this))`);
+  t.check("this: the pericope it's in, beta", await t.until(`${lastOut}?.textContent === '("beta", true)'`, 4000), await t.js(`${lastOut}?.textContent`));
+  await t.js(`[...document.querySelectorAll(".fw-doc .fw-expr")].at(-1).fwExpr.showCode()`);
+  t.check("  in the code: drawn apart (where it sits, like above and below)", await t.until(`[...document.querySelectorAll(".fw-expr-codebox .fw-relative")].some((x) => x.textContent === "this")`, 2000),
+    await t.js(`document.querySelector(".fw-expr-codebox")?.innerHTML.slice(0, 600)`));
+  await t.key("x", 4 | 8);
+  await t.until(`!document.querySelector(".fw-expr-code")`, 2000);
+  await t.settle();
+  await addExpr(t, `body(this)`);
+  t.check("  body(this): its pericope, and in it, its own place: the recursive case, its title and a loop, never a loop forever", await t.until(
+    `!!${lastOut}?.querySelector(".fw-from .fw-loop") && ${lastOut}.querySelector(".fw-loop").textContent.endsWith("↻")`, 4000), await t.js(`${lastOut}?.textContent`));
+  await addExpr(t, `[pericopeOf(this), @${A}]`);
+  t.check("  a reference to the pericope it's in: this; another, a plain chip", await t.until(
+    `${lastOut}?.querySelector(".fw-ref-this")?.textContent === "this" && ${lastOut}.textContent === "this, alpha"`, 4000),
+    await t.js(`${lastOut}?.innerHTML`));
+  await t.end();
+  await t.key("Enter");
+  await t.type("two - words ? + —");
+  await addExpr(t, `wordCount(above)`);
+  t.check("  a word is something besides punctuation (the engine's count, as the core's and the page's)", await t.until(`${lastOut}?.textContent === "2"`, 4000), await t.js(`${lastOut}?.textContent`));
+  await addExpr(t, `wordCount(this)`);
+  t.check("  wordCount(this): its pericope's words, all but its own (\"beta's words\": 2, and the values above it)", await t.until(`/^[0-9]+$/.test(${lastOut}?.textContent || "") && +${lastOut}.textContent >= 2`, 4000), await t.js(`${lastOut}?.textContent`));
+  await addExpr(t, `let f = fun x -> f(x + 1) in f(1)`);
+  t.check("a program that never ends: stopped, ∞, the page not frozen", await t.until(`${lastOut}?.textContent.startsWith("∞")`, 6000), await t.js(`${lastOut}?.textContent`));
+  await addExpr(t, `text("three more words")`);
+  await addExpr(t, `wordCount(pericopeOf(this))`);
+  t.check("  and the page still answers; its pericope's words: what's written and what its expressions show (\"beta's words\" 2, \"three more words\" 3, the rest's values), never its own",
+    await t.until(`/^[0-9]+$/.test(${lastOut}?.textContent || "") && +${lastOut}.textContent >= 5`, 4000), await t.js(`${lastOut}?.textContent`));
+};
+
+scenarios.dollar = async (t) => {   // $ in an empty block: an expression; \$ a dollar sign (TYPE.md "Inline", 2026-11-25)
+  await t.open(`#/p/${B}`);
+  await t.end();
+  await t.key("Enter");
+  await t.type("$");
+  t.check("$ in an empty block: it's an expression, its code open", await t.until(`!!document.activeElement?.closest(".fw-expr-code")`, 2000),
+    await t.js(`document.activeElement?.className`));
+  await setCode(t, "2 + 3");
+  await t.key("x", 4 | 8);
+  t.check("  written and closed: its value", await t.until(`${lastOut}?.textContent === "5"`, 4000), await t.js(`${lastOut}?.textContent`));
+  await t.settle();
+  t.check("  in the store: an expression block", (await t.kids(B)).some((k) => k.t === "expr" && k.source === "2 + 3"), JSON.stringify(await t.kids(B)));
+  await t.key("ArrowDown");   // (the empty block below it)
+  for (const c of ["\\", "$", "5"]) await t.type(c);
+  await t.type(" costs $3");
+  await t.settle();
+  const texts = (await t.kids(B)).filter((k) => k.t === "text").map((k) => k.text);
+  t.check("\\$ in an empty block: a dollar sign (stored \\$, TYPE.md \"Inline\"); a $ within typing, a dollar sign too", texts.includes("\\$5 costs \\$3")
+    && await t.js(`document.querySelector(".fw-doc").textContent.includes("$5 costs $3")`), JSON.stringify(texts));
+  t.check("  and no second expression", (await t.kids(B)).filter((k) => k.t === "expr").length === 1, JSON.stringify(await t.kids(B)));
+};
+
+scenarios.inline = async (t) => {   // inline expressions: $…$ typed in a line, its value shown when the caret's away (TYPE.md "Inline")
+  await t.open(`#/p/${B}`);
+  const outs = `[...document.querySelectorAll(".fw-doc .fw-icode-out")]`;
+  const b1 = async () => (await t.kids(B))[0].text;
+  const blocks0 = (await t.kids(B)).length;
+  await t.select("beta's words", { collapse: true });
+  await t.type(" is ");
+  await t.type("$");
+  t.check("$ mid-text: two green dollar signs, the caret between them", await t.until(`document.querySelectorAll(".fw-doc .fw-icode-dollar").length === 2`, 2000),
+    await t.js(`document.querySelector(".fw-doc")?.innerHTML.slice(0, 600)`));
+  await t.type("2 + 3");
+  const src = `[...document.querySelectorAll(".fw-doc .fw-icode-src")].map((x) => x.textContent).join("")`;
+  t.check("  typed between them: code, mono", await t.until(`${src} === "$2 + 3$"`, 2000), await t.js(src));
+  await t.type("$");   // (its closing $: out of it)
+  t.check("  the closing $: out, its value in the line, green", await t.until(`${outs}.length === 1 && ${outs}[0].textContent === "5" && !document.querySelector(".fw-doc .fw-icode-src")`, 3000),
+    await t.js(`${outs}.map((x) => x.textContent).join("|")`));
+  await t.type(" more");
+  await t.settle();
+  t.check("  stored as $…$ in the text, the writing after it after it; still one block, no new line", (await b1()) === "beta's words is $2 + 3$ more" && (await t.kids(B)).length === blocks0,
+    JSON.stringify(await t.kids(B)));
+  await t.select("is", { collapse: true, start: true });
+  await t.type("X");
+  await t.settle();
+  t.check("  the caret goes before it, as before any word", (await b1()) === "beta's words Xis $2 + 3$ more", await b1());
+  await t.select(" more", { collapse: true, start: true });   // (just after it)
+  const caretAfter = `(() => { const s = getSelection(); if (!s.rangeCount || !s.isCollapsed) return false; const c = s.getRangeAt(0).getBoundingClientRect(), v = ${outs}[0].getBoundingClientRect();
+    const at = s.getRangeAt(0).startContainer, el = at.nodeType === 1 ? at : at.parentElement;
+    return c.height > 0 && Math.abs(c.left - v.right) < 6 && getComputedStyle(el).caretColor !== "rgba(0, 0, 0, 0)"; })()`;
+  t.check("  the caret just after it: drawn, just after its value (never lost in its folded code)", await t.until(caretAfter, 1000),
+    await t.js(`JSON.stringify([getSelection().getRangeAt(0).getBoundingClientRect(), ${outs}[0].getBoundingClientRect()])`));
+  await t.key("ArrowLeft");
+  t.check("← onto it: selected, the caret hidden, its code not open", await t.until(`!!document.querySelector(".fw-doc .fw-icode-sel") && !document.querySelector(".fw-doc .fw-icode-src") && !getSelection().isCollapsed`, 1000));
+  await t.key("ArrowLeft");
+  await t.type("<");
+  await t.key("ArrowRight");
+  t.check("  → from before it: selected again", await t.until(`!!document.querySelector(".fw-doc .fw-icode-sel")`, 1000));
+  await t.key("ArrowRight");
+  t.check("  → out of it, selected: after it, the caret drawn (its own colour, not the folded code's)", await t.until(caretAfter, 1000),
+    await t.js(`(() => { const s = getSelection(), a = s.getRangeAt(0).startContainer; return (a.nodeType === 1 ? a : a.parentElement).className + " " + getComputedStyle(a.nodeType === 1 ? a : a.parentElement).caretColor; })()`));
+  await t.type(">");
+  await t.settle();
+  t.check("←/→: before it, it selected, after it; never opening it", (await b1()) === "beta's words Xis <$2 + 3$> more" && !(await t.js(`!!document.querySelector(".fw-doc .fw-icode-src")`)), await b1());
+  await t.key("Backspace");
+  await t.key("ArrowLeft");
+  await t.key("ArrowLeft");
+  await t.key("Backspace");
+  await t.key("ArrowRight");
+  await t.key("x", 4 | 8);   // (⌘⇧X on it selected: open)
+  t.check("⌘⇧X on it: its code open", await t.until(`!!document.querySelector(".fw-doc .fw-icode-src")`, 2000), await b1());
+  for (let n = 0; n < 5; n++) await t.key("Backspace");
+  await t.type("10 * 10");
+  await t.key("ArrowRight");
+  await t.key("ArrowRight");
+  t.check("  → out past its $: its value again, changed", await t.until(`${outs}[0]?.textContent === "100" && !document.querySelector(".fw-doc .fw-icode-src")`, 3000), await t.js(`${outs}.map((x) => x.textContent).join("|")`));
+  await t.settle();
+  t.check("  and stored", (await b1()) === "beta's words Xis $10 * 10$ more", await b1());
+  const r = await t.js(`(() => { const b = ${outs}[0].getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`);
+  await t.click(r[0], r[1]);
+  await sleep(200);
+  t.check("a click on a value: selected, not in its code; the block still the one you're in", await t.until(`!!document.querySelector(".fw-doc .fw-icode-sel") && !document.querySelector(".fw-doc .fw-icode-src") && !!document.querySelector(".fw-doc .fw-here, .fw-doc .fw-current")`, 2000),
+    await t.js(`[...document.querySelectorAll(".fw-doc .fw-text")].map((x) => x.className).join(" | ")`));
+  await t.end();
+  for (const c of [" costs ", "\\", "$", "7"]) await t.type(c);
+  await t.settle();
+  t.check("\\$: a dollar sign, stored escaped", (await b1()).endsWith(" costs \\$7") && await t.js(`${outs}.length`) === 1, await b1());
+  await t.type(" ");
+  await t.type("$");
+  await t.type(`body(@${A})`);
+  await t.type("$");
+  t.check("a value of blocks can't sit in a line: !, with a note", await t.until(`${outs}[1]?.textContent === "!" && /can't sit in a line/.test(${outs}[1].title || "")`, 3000),
+    await t.js(`${outs}.map((x) => x.textContent).join("|")`));
+  await t.type(" ");
+  await t.type("$");
+  await t.type(`@${A}`);
+  await t.type("$");
+  t.check("a reference: its title, green, a little ↗", await t.until(`${outs}[2]?.querySelector(".fw-ref")?.textContent === "alpha"`, 3000), await t.js(`${outs}.map((x) => x.textContent).join("|")`));
+  await t.settle();
+  const back = (await t.get(`/api/pericope/${A}`)).backlinkRows || [];
+  t.check("  and it's a backlink of what it names", back.some((x) => x.open === B), JSON.stringify(back));
+  await t.key("Backspace");
+  await t.settle();
+  t.check("⌫ just after one: it goes whole", await t.js(`${outs}.length`) === 2 && !(await b1()).includes(`$@${A}$`), await b1());
+
+  // @ in a line: sugar for $@p$
+  await t.type(" see ");
+  await t.type("@");
+  t.check("@ after a space: fw's search", await t.until(`document.querySelector(".fw-menu")?.innerText.includes("@ ›")`, 2000));
+  await t.type("alpha");
+  await t.until(`[...document.querySelectorAll(".fw-menu .fw-row.fw-sel")].some(r => r.innerText.includes("alpha"))`, 2000);
+  await t.key("Enter");
+  t.check("  ending its line: no empty line under it", await t.until(`(() => { const b = ${outs}.at(-1)?.closest(".fw-text"); return !!b && !b.querySelector("br.ProseMirror-trailingBreak"); })()`, 2000),
+    await t.js(`${outs}.at(-1)?.closest(".fw-text")?.innerHTML.slice(-300)`));
+  t.check("  a pick: its reference in the line", await t.until(`${outs}.at(-1)?.querySelector(".fw-ref")?.textContent === "alpha"`, 3000), await t.js(`${outs}.map((x) => x.textContent).join("|")`));
+  await t.type(" then");
+  await t.settle();
+  t.check("  stored as $@id$, the typing after it after it", (await b1()).endsWith(` see $@${A}$ then`), await b1());
+  await t.type(" ");
+  await t.type("@");
+  await t.until(`document.querySelector(".fw-menu")?.innerText.includes("@ ›")`, 2000);
+  await t.key("Escape");
+  await t.type("x");
+  await t.type(" ");
+  await t.type("\\");
+  await t.type("@");
+  await t.type(" me");
+  await t.type("@");
+  await t.type("mail.com");
+  await t.settle();
+  t.check("  Esc keeps the @; \\@ an @ with no search; an @ mid-word (an address) just an @", (await b1()).endsWith(" then @x @ me@mail.com") && !(await t.js(`!!document.querySelector(".fw-menu")`)), await b1());
+};
+
+scenarios.exprleave = async (t) => {   // ↓ out of an expression: nothing of it lit any more, its ƒ tab included (2026-11-25)
+  await t.open(`#/p/${B}`);
+  await addExpr(t, `1 + 1`);
+  await t.key("ArrowDown");
+  await t.settle();
+  const lit = `[...document.querySelector(".fw-doc .fw-expr").classList].filter((c) => c !== "fw-expr").join(" ")`;
+  t.check("↓ out of an expression: it isn't lit (its ƒ tab with it)", await t.until(`!document.querySelector(".fw-doc .fw-expr:is(.fw-here, .fw-chosen, .ProseMirror-selectednode, .fw-expr-coding, :has(.fw-current))")`, 2000),
+    await t.js(lit));
+  const r = await t.js(`(() => { const b = document.querySelector(".fw-doc .fw-expr").getBoundingClientRect(); return [b.left + 40, b.top + b.height / 2]; })()`);
+  await t.click(r[0], r[1]);
+  await t.until(`!!document.querySelector(".fw-doc .fw-expr.ProseMirror-selectednode")`, 2000);
+  await t.key("ArrowDown");
+  await t.settle();
+  t.check("  clicked on, then ↓: not lit either", await t.until(`!document.querySelector(".fw-doc .fw-expr:is(.fw-here, .fw-chosen, .ProseMirror-selectednode, .fw-expr-coding, :has(.fw-current))")`, 2000),
+    await t.js(lit) + " | active: " + await t.js(`document.activeElement?.className`));
+  await t.key("ArrowUp");
+  await t.key("ArrowUp");
+  await t.key("ArrowDown");
+  await t.key("ArrowDown");
+  await t.settle();
+  t.check("  up through it and down again: not lit", await t.until(`!document.querySelector(".fw-doc .fw-expr:is(.fw-here, .fw-chosen, .ProseMirror-selectednode, .fw-expr-coding, :has(.fw-current))")`, 2000),
+    await t.js(lit));
+  for (let n = 0; n < 4; n++) {   // (its code changed, Esc, ↓ at once: while its save and the store's follow are still coming)
+    await t.js(`document.querySelector(".fw-doc .fw-expr").fwExpr.showCode()`);
+    await t.until(`!!document.activeElement?.closest(".fw-expr-code")`, 2000);
+    await setCode(t, `1 + ${n + 2}`);
+    await t.key("Escape");
+    await t.key("ArrowDown");
+    await t.settle();
+    await sleep(300);
+    const on = await t.js(`!!document.querySelector(".fw-doc .fw-expr:is(.fw-here, .fw-chosen, .ProseMirror-selectednode, .fw-expr-coding, :has(.fw-current))")`);
+    if (on) { t.check("  its code written, Esc, ↓ at once: not lit", false, await t.js(lit) + ` (try ${n}) sel ` + await t.js(`JSON.stringify(window.fw.editor().view.state.selection.toJSON()) + " expr at " + (() => { let at = null; window.fw.editor().view.state.doc.forEach((n, pos) => { if (n.type.name === "expr") at = pos; }); return at; })() + " views " + document.querySelectorAll(".fw-doc .fw-expr").length + " focus " + document.activeElement?.className`)); return; }
+  }
+  t.check("  its code written, Esc, ↓ at once: not lit", true);
+  const inside = `(() => { const e = document.querySelector(".fw-doc .fw-expr").getBoundingClientRect();
+    return [...document.querySelectorAll(".fw-link-line")].filter((l) => { const r = l.getBoundingClientRect(); return r.bottom > e.top + 1 && r.top < e.bottom - 1; }).length; })()`;
+  await t.js(`document.querySelector(".fw-doc .fw-expr").fwExpr.showCode()`);
+  await t.until(`!!document.activeElement?.closest(".fw-expr-code")`, 2000);
+  await sleep(150);
+  t.check("  its code open: the lines to the blocks around it outside its box, not where it used to end", await t.until(`${inside} === 0`, 2000), await t.js(String(inside)));
+  await setCode(t, `Blocks([text("one"), text("two"), text("three"), text("four")])`);
+  await sleep(400);   // (its value drawn a moment later, taller: nothing else changed)
+  t.check("  its value grown taller while open: the lines still outside it", await t.until(`${inside} === 0`, 1000), await t.js(String(inside)));
+  await t.key("Escape");
+  await sleep(150);
+  t.check("  closed again: still outside it", await t.until(`${inside} === 0`, 2000), await t.js(String(inside)));
+  const lit2 = `document.querySelectorAll(".fw-doc .fw-expr:is(.fw-chosen, .ProseMirror-selectednode, .fw-expr-coding)").length`;
+  await t.js(`document.querySelector(".fw-doc .fw-expr").fwExpr.showCode()`);
+  await t.until(`!!document.activeElement?.closest(".fw-expr-code")`, 2000);
+  await setCode(t, "1 + 1");
+  await t.js(`(() => { const v = document.querySelector(".fw-expr-codebox").fwCode; v.dispatch({ selection: { anchor: v.state.doc.length } }); return 1; })()`);
+  await t.key("ArrowDown");
+  t.check("↓ on its code's last line: closed, out to the block below, nothing of it lit", await t.until(`!document.querySelector(".fw-expr-codebox") && ${lit2} === 0 && !!document.activeElement?.closest(".fw-doc .ProseMirror")`, 2000),
+    await t.js(`${lit2} + " " + document.activeElement?.className`));
+  await t.js(`document.querySelector(".fw-doc .fw-expr").fwExpr.showCode()`);
+  await t.until(`!!document.activeElement?.closest(".fw-expr-code")`, 2000);
+  await t.select("beta's words", { collapse: true });   // (a click elsewhere, as good as)
+  t.check("  open, then somewhere else in the page: closed, nothing of it left lit", await t.until(`!document.querySelector(".fw-expr-codebox") && ${lit2} === 0`, 2000), await t.js(String(lit2)));
+  const fn = `getComputedStyle(document.querySelector(".fw-doc .fw-expr > .fw-fn"))`;
+  await t.js(`document.querySelector(".fw-doc .fw-expr").fwExpr.showCode()`);
+  await t.until(`!!document.activeElement?.closest(".fw-expr-code")`, 2000);
+  await t.key("Escape");
+  await t.until(`!!document.querySelector(".fw-doc .fw-expr.fw-chosen")`, 2000);
+  t.check("  selected whole: its tab filled", await t.until(`${fn}.opacity === "1" && ${fn}.backgroundColor !== "rgba(0, 0, 0, 0)"`, 2000), await t.js(`${fn}.opacity + " " + ${fn}.backgroundColor`));
+  // (the editor left for something else on the page, its selection kept: ↓ past the last block into what's below, say)
+  await t.js(`(() => { const b = document.createElement("button"); b.id = "elsewhere"; document.body.append(b); b.focus(); })()`);
+  await sleep(250);   // (its fade)
+  t.check("  the editor left, the selection kept: its tab not lit (as its box)", await t.until(`${fn}.opacity !== "1" && ${fn}.backgroundColor === "rgba(0, 0, 0, 0)"`, 2000),
+    await t.js(`${fn}.opacity + " " + ${fn}.backgroundColor + " | " + [...document.querySelector(".fw-doc .fw-expr").classList].join(" ")`));
+};
+
+scenarios.perspective = async (t) => {   // this, here, self: here is where it's viewed from (the user, 2026-11-25)
+  await t.open(`#/p/${A}`);
+  await addExpr(t, `(title(here), title(this), isPericope(self))`);
+  t.check("in its own pericope: here is this", await t.until(`${lastOut}?.textContent === '("alpha", "alpha", false)'`, 8000), await t.js(`${lastOut}?.textContent`));
+  await addExpr(t, `(here, this, self)`);
+  t.check("  drawn as the words: this (here is this), self", await t.until(`${lastOut}?.textContent === "(this, this, self)"`, 4000), await t.js(`${lastOut}?.textContent`));
+  await t.settle();
+  await t.open(`#/p/${N}`);   // (nested quotes alpha: the same expressions, seen from nested)
+  const seen = `[...document.querySelectorAll(".fw-doc .fw-quote .fw-expr-out")].map((x) => x.textContent)`;
+  t.check("seen through a quote from another pericope: here is that one, this still its own", await t.until(`${seen}.includes('("nested", "alpha", false)')`, 8000), await t.js(`JSON.stringify(${seen})`));
+  t.check("  drawn as the words: here, this, self", await t.until(`${seen}.includes("(here, this, self)")`, 4000), await t.js(`JSON.stringify(${seen})`));
+};
+
 scenarios.exprcall = async (t) => {   // a quote of an expression is a call: evaluated where the quote sits, one red box (2026-11-24)
   await t.open(`#/p/${A}`);
   await t.end();
@@ -1706,7 +1997,7 @@ scenarios.exprblocks = async (t) => {   // fw's type is Hazel's: a value of type
   await addExpr(t, `wordCount(@${T})`);
   t.check("a pericope's facts: wordCount", await t.until(`${lastOut}?.textContent === "8"`, 4000), await t.js(`${lastOut}?.outerHTML`));
   await addExpr(t, `created(@${B})`);
-  t.check("  created (ISO, a String)", await t.until(`${lastOut}?.textContent.startsWith('"2026-10-01T10:00:00')`, 4000), await t.js(`${lastOut}?.textContent`));
+  t.check("  created (a Date, drawn as fw writes dates)", await t.until(`${lastOut}?.textContent === '"Oct 1, 2026, 10:00 am"'`, 4000), await t.js(`${lastOut}?.textContent`));
   await addExpr(t, `length(backlinks(@${B}))`);
   t.check("  backlinks (alpha and two quotes quote beta)", await t.until(`${lastOut}?.textContent === "2"`, 4000), await t.js(`${lastOut}?.textContent`));
   await addExpr(t, `visits(@${B})`);
@@ -1726,6 +2017,187 @@ scenarios.exprblocks = async (t) => {   // fw's type is Hazel's: a value of type
   await t.key("x", 4 | 8);
   t.check("Hazel's own errors, under the code", await t.until(`document.querySelector(".fw-expr-errors")?.textContent.includes("Expecting type Int but got inconsistent type String")`, 4000),
     await t.js(`document.querySelector(".fw-expr-coding")?.outerHTML`));
+};
+
+scenarios.twowindows = async (t) => {   // two windows on one store: a source in one, a pericope quoting it in the other
+  const other = await tab();
+  const ojs = async (e) => (await other.cdp("Runtime.evaluate", { expression: e, returnByValue: true, awaitPromise: true })).result?.result?.value;
+  await other.cdp("Page.navigate", { url: `http://127.0.0.1:${t.port}/?test#/p/${B}` });
+  for (let n = 0; n < 200 && !(await ojs(`window.fw?.editor()?.id === "${B}"`)); n++) await sleep(25);
+  await t.open(`#/p/${R}`);
+  const quoted = `[...document.querySelectorAll(".fw-quote")].map((q) => q.textContent).join(" | ")`;
+  await ojs(`window.fw.select("beta's words", { collapse: true })`);
+  const t0 = Date.now();
+  await other.cdp("Input.insertText", { text: " LIVE" });
+  const seen = await t.until(`(${quoted}).includes("LIVE")`, 5000);
+  t.check(`typed in the source: the quote in the other window follows (${Date.now() - t0} ms)`, seen, await t.js(quoted));
+  await t.settle();
+  await t.select("beta's words LIVE", { collapse: true });
+  const t1 = Date.now();
+  await t.type(" BACK");
+  const back = await (async () => { for (const end = Date.now() + 5000; Date.now() < end; await sleep(25)) if ((await ojs(`document.querySelector(".fw-doc").textContent`))?.includes("LIVE BACK")) return true; return false; })();
+  t.check(`typed through the quote: the source's window follows (${Date.now() - t1} ms)`, back, await ojs(`document.querySelector(".fw-doc").textContent`));
+  // (then back in the source's window: the quote, written through a moment ago, its caret still in it, follows too)
+  await ojs(`window.fw.select("LIVE BACK", { collapse: true })`);
+  const t2 = Date.now();
+  await other.cdp("Input.insertText", { text: " AGAIN" });
+  const again = await t.until(`(${quoted}).includes("BACK AGAIN")`, 5000);
+  t.check(`after writing through it: the source edited elsewhere, the quote follows (${Date.now() - t2} ms)`, again, await t.js(quoted));
+  other.close();
+};
+
+/** Another window on the same core (the user's two windows): its own tab, at `hash`. */
+async function window2(t, hash) {
+  const w = await tab();
+  const js = async (e) => (await w.cdp("Runtime.evaluate", { expression: e, returnByValue: true, awaitPromise: true })).result?.result?.value;
+  const until = async (e, ms = 4000) => { for (const end = Date.now() + ms; Date.now() < end; await sleep(25)) if (await js(e)) return true; return false; };
+  const id = hash.match(/^#\/p\/([^@]+)/)[1];
+  await w.cdp("Page.navigate", { url: `http://127.0.0.1:${t.port}/?test${hash}` });
+  await until(`window.fw?.editor()?.id === "${id}"`, 6000);
+  await until(`window.fw?.settled()`);
+  return { js, until, close: w.close, type: (text) => w.cdp("Input.insertText", { text }),
+    select: (text, o = {}) => js(`window.fw.select(${JSON.stringify(text)}, ${JSON.stringify(o)})`),
+    async key(k, mods = 0) {
+      const p = { key: k, code: `Key${k.toUpperCase()}`, windowsVirtualKeyCode: k.toUpperCase().charCodeAt(0), modifiers: mods };
+      await w.cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", ...p }); await w.cdp("Input.dispatchKeyEvent", { type: "keyUp", ...p });
+    } };
+}
+
+// Live: every view of a block follows it, wherever it was written (the user, 2026-11-25: "this a is a very fundamental
+// idea… not just in this case but in every case… its about live enviroments and dependencies"). Each case: the source
+// written in one window, what depends on it seen in another.
+const LX = "20261009T100000-c100", LXQ = "20261009T100000-c101", LXE = "20261009T100000-c102";
+scenarios.live = async (t) => {
+  const text = (sel) => `[...document.querySelectorAll(${JSON.stringify(sel)})].map((q) => q.textContent).join(" | ")`;
+  const src = await window2(t, `#/p/${B}`);   // beta, the source, in a window of its own
+  const step = async (label, write, seen, detail) => {
+    const t0 = Date.now();
+    await write();
+    const ok = await t.until(seen, 5000);
+    t.check(`${label} (${Date.now() - t0} ms)`, ok, await t.js(detail));
+  };
+
+  // a quote inside a quote: nested (N quotes alpha, which quotes beta)
+  await t.open(`#/p/${N}`);
+  await src.select("beta's words", { collapse: true });
+  await step("a quote of a quote: the source written, the nested quote follows", () => src.type(" one"),
+    `(${text(".fw-quote")}).includes("words one")`, text(".fw-quote"));
+
+  // a masked quote: what shows grows with what's written inside it
+  await t.open(`#/p/${LX}`);
+  await src.select("beta", { collapse: true });
+  await step("a masked quote: written inside what shows, it follows", () => src.type("X"),
+    `(${text(".fw-quote")}).includes("betaX's")`, text(".fw-quote"));
+  // an expression reading it
+  const was = await t.js(text(".fw-expr"));
+  await src.select("words one", { collapse: true });
+  await step("an expression reading it: its value follows", () => src.type(" two three"),
+    `(${text(".fw-expr")}) !== ${JSON.stringify(was)}`, text(".fw-expr"));
+
+  // the caret in the quote, carried: written elsewhere before it, then typing here goes where it was
+  await t.open(`#/p/${R}`);
+  await t.select("two three", { collapse: true });
+  await src.select("betaX's", { collapse: true, start: true });
+  await step("the caret in a quote, the source written before it elsewhere: followed", () => src.type("AT START "),
+    `(${text(".fw-quote")}).includes("AT START")`, text(".fw-quote"));
+  await t.type("!");
+  await t.settle();
+  const b1 = async () => (await t.kids(B))[0].text;
+  t.check("  typing here after it: where the caret was (carried, not reset)", (await b1()) === "AT START betaX's words one two three!", await b1());
+
+  // undo here takes back only what was written here, never what came from elsewhere
+  await t.select("r words", { collapse: true });
+  await t.type(" mine");
+  await t.settle();
+  await src.until(`document.querySelector(".fw-doc").textContent.includes("three!")`);   // (the source's window has it: then its caret goes there)
+  await src.select("three!", { collapse: true });
+  await step("  written here, then the source elsewhere: followed", () => src.type(" theirs"),
+    `(${text(".fw-quote")}).includes("theirs")`, text(".fw-quote"));
+  await t.select("r words mine", { collapse: true });
+  await t.key("z", 4);
+  await t.settle();
+  const r1 = (await t.kids(R))[0].text;
+  t.check("  ⌘Z here: only what was written here taken back", r1 === "r words" && (await b1()).endsWith("theirs"), JSON.stringify([r1, await b1()]));
+
+  // the same pericope in both windows: each follows the other, the caret carried
+  await t.open(`#/p/${B}`);
+  await t.select("AT START", { collapse: true });
+  await src.until(`document.querySelector(".fw-doc").textContent.includes("theirs")`);
+  await src.select("AT", { collapse: true, start: true });
+  await step("the same pericope in two windows: written in one, the other follows", () => src.type(">> "),
+    `document.querySelector(".fw-doc").textContent.includes(">> AT START")`, `document.querySelector(".fw-doc").textContent`);
+  await t.type("|");
+  await t.settle();
+  t.check("  and its caret carried", (await b1()).startsWith(">> AT START|"), await b1());
+
+  // both at once, the same block: neither refused, neither lost, and both windows end up saying the same
+  await t.select("AT START|", { collapse: true });
+  await src.until(`document.querySelector(".fw-doc").textContent.includes("AT START|")`);
+  await src.select("three!", { collapse: true });
+  await Promise.all([t.type(" HERE"), src.type(" THERE")]);
+  const both = `(() => { const x = document.querySelector(".fw-doc").textContent; return x.includes(" HERE") && x.includes(" THERE"); })()`;
+  const merged = await t.until(both, 5000) && await src.until(both, 5000);
+  await t.settle();
+  t.check("both windows writing the same block at once: merged, both kept, in both windows", merged && (await b1()).includes(" HERE") && (await b1()).includes(" THERE"),
+    JSON.stringify([await b1(), await t.js(`document.querySelector(".fw-doc").textContent`), await src.js(`document.querySelector(".fw-doc").textContent`)]));
+  t.check("  and neither window is stuck (nothing unsaved, nothing refused)", await t.until(`!window.fw.editor().dirty()`) && await src.until(`!window.fw.editor().dirty() && !/not saved/.test(window.fw.editor().message)`),
+    await src.js(`window.fw.editor().message`));
+  src.close();
+};
+scenarios.live.setup = (dir, data) => {   // a pericope with a masked quote of beta (just "beta's") and an expression reading beta
+  const like = (id, content, extra = {}) => ({ ...data.blocks.find((b) => b.id === B1), id, content, title: null, ...extra });
+  data.blocks.push(like(LX, [LXQ, LXE], { entry: true, title: "watcher" }),
+    like(LXQ, { quote: B, mask: { [B1]: [[0, 6]] } }), like(LXE, { expr: `wordCount(@${B})` }));
+  writeFileSync(join(dir, "freewrites.json"), JSON.stringify(data));
+};
+
+// An expression's code is written like anything else (Hazel: every editor state means something): what shows it
+// follows each change elsewhere, unfinished states included, in its own pericope and through a quote of it (a call).
+const EP = "20261009T100000-c200", EE = "20261009T100000-c201", EC = "20261009T100000-c202", ECQ = "20261009T100000-c203";
+scenarios.liveexpr = async (t) => {
+  const out = `document.querySelector(".fw-doc .fw-expr-out, .fw-doc .fw-quote .fw-body")?.textContent`;
+  const src = await window2(t, `#/p/${EP}`);
+  await src.js(`document.querySelector(".fw-expr").fwExpr.showCode()`);
+  await src.until(`!!document.querySelector(".fw-expr-codebox")`);
+  const write = (code) => src.js(`(() => { const v = document.querySelector(".fw-expr-codebox").fwCode;
+    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: ${JSON.stringify(code)} } }); return 1; })()`);
+  const step = async (label, code, seen) => {
+    await write(code);
+    const t0 = Date.now(), ok = await t.until(`${out} === ${JSON.stringify(seen)}`, 5000);
+    t.check(`${label} (${Date.now() - t0} ms)`, ok, await t.js(out));
+  };
+  await t.open(`#/p/${EP}`);
+  t.check("its own pericope, both windows: the value", await t.until(`${out} === "4"`, 5000), await t.js(out));
+  await step("  its code written in the other window: followed", "2 + 2 + 1", "5");
+  await step("  unfinished there: a hole here, the rest worked out", "2 + 2 +", "4 + ?");
+  await t.open(`#/p/${EC}`);
+  t.check("a quote of it (a call): its value", await t.until(`${out} === "4 + ?"`, 5000), await t.js(out));
+  await step("  its code written in the other window: the call follows", "10 * 10", "100");
+  await step("  this, in a call: the quote, where it sits (its pericope: caller)", "title(pericopeOf(this))", '"caller"');
+  await write("10 * 10");
+  await t.until(`${out} === "100"`, 5000);
+
+  // ⌘⇧X on the quote: its expression's code, written through to it (and the other window follows)
+  await t.js(`document.querySelector(".fw-quote").fwCall.showCode()`);
+  await t.key("x", 4 | 8);   // (closed: the quote left selected)
+  t.check("⌘⇧X on a quote of an expression: closes its code, the quote selected", await t.until(`!document.querySelector(".fw-expr-codebox") && !!document.querySelector(".fw-quote.ProseMirror-selectednode")`, 2000));
+  await t.key("x", 4 | 8);
+  t.check("  and opens it again", await t.until(`!!document.activeElement?.closest(".fw-quote .fw-expr-codebox")`, 2000));
+  await t.type(" + 1");
+  t.check("  written in it here: the call's result follows the key", await t.until(`${out}.endsWith("101")`, 2000), await t.js(out));
+  t.check("  written through: the expression in its own pericope, other window", await src.until(`document.querySelector(".fw-expr-codebox").fwCode.state.doc.toString() === "10 * 10 + 1"`, 5000)
+    && await src.until(`document.querySelector(".fw-expr-out")?.textContent === "101"`, 5000), await src.js(`document.querySelector(".fw-expr-out")?.textContent`));
+  await t.settle();
+  t.check("  in the store", (await t.kids(EP))[0]?.source === "10 * 10 + 1", JSON.stringify(await t.kids(EP)));
+  await t.key("x", 4 | 8);
+  t.check("  ⌘⇧X: closed, the quote selected, the result still there", await t.until(`!document.querySelector(".fw-expr-codebox") && !!document.querySelector(".fw-quote.ProseMirror-selectednode") && ${out}.endsWith("101")`, 2000), await t.js(out));
+  src.close();
+};
+scenarios.liveexpr.setup = (dir, data) => {
+  const like = (id, content, extra = {}) => ({ ...data.blocks.find((b) => b.id === B1), id, content, title: null, ...extra });
+  data.blocks.push(like(EP, [EE], { entry: true, title: "sum" }), like(EE, { expr: "2 + 2" }),
+    like(EC, [ECQ], { entry: true, title: "caller" }), like(ECQ, { quote: EP }));
+  writeFileSync(join(dir, "freewrites.json"), JSON.stringify(data));
 };
 
 scenarios.livetype = async (t) => {   // the header's type follows what's written, on the key (2026-11-23)
@@ -1851,7 +2323,7 @@ scenarios.review.setup = (dir, data) => {   // the guesses, current: each pair's
 const SWEEP = opt("--sweep", null);
 if (SWEEP) {
   const sweep = async (t) => {
-    const before = JSON.parse(readFileSync(join(t.dir, "freewrites.json"), "utf8"));
+    const before = await storedIn(t.dir);
     const ids = before.blocks.filter((b) => b.entry).map((b) => b.id);
     let opened = 0, bad = [];
     for (const id of ids) {
@@ -1865,7 +2337,8 @@ if (SWEEP) {
     await t.open("#/");
     await t.shot("sweep-home.png");
     t.check(`every pericope opened and drawn: ${opened} of ${ids.length}`, opened === ids.length, bad.slice(0, 8).join("; "));
-    const after = JSON.parse(readFileSync(join(t.dir, "freewrites.json"), "utf8"));
+    await t.settle();
+    const after = await storedIn(t.dir);
     const strip = (d) => Object.fromEntries(d.blocks.map(({ updated, visits, words, ...b }) => [b.id, JSON.stringify(b)]));
     const [a, b] = [strip(before), strip(after)];
     const changed = Object.keys({ ...a, ...b }).filter((k) => a[k] !== b[k]);
