@@ -9,7 +9,7 @@ import { NodeSelection, Plugin, Selection } from "prosemirror-state";
 import { enterCode } from "./inlinecode.js";
 import { levelKey } from "./blocks.js";
 import * as hazel from "./hazel.js";
-import { drawValue, quoteOf, insideOf, namesOf, hereOf } from "./views.js";
+import { drawValue, quoteOf, insideOf, namesOf, hereOf, toneOf } from "./views.js";
 import { onSnapshot } from "./snapshot.svelte.js";
 import { codeBox, setText, labelOf, refsIn } from "./codebox.js";
 import { pressed } from "./keys.js";
@@ -81,11 +81,13 @@ export class ExprView {
    * code shown, Hazel's errors under it. */
   draw() {
     const r = hazel.run(this.node.attrs.source || "", this.node.attrs.id, hereOf(this.parent));
+    this.dom.dataset.tone = toneOf(r);   // (its colour its value's: app.css)
     this.top = r?.kind === "block" && r.block.t === "from" ? r.block.target : null;   // (its value one From: ⌘O opens that)
     if (r?.kind === "block" && this.parent) this.showBlocks(r);
     else {
       this.dropInner();
       this.out = drawValue(this.dom, r, this.open, insideOf(this.parent, this.node.attrs.id), namesOf(this.parent, this.node.attrs.id));
+      if (this.item != null) this.items()[this.item]?.classList.add("fw-item-sel");   // (drawn again: the item you're on still lit)
     }
     this.dom.querySelector(":scope > .fw-expr-errors")?.remove();
     if (this.code && r?.errors?.length) this.dom.appendChild(errorsEl(r));
@@ -119,15 +121,41 @@ export class ExprView {
     this.shown = null;
   }
 
-  /** Into its value, at its start or end (from the arrows, as into a quote). */
-  enter(where) { return !!this.inner && this.parent.enterValue(this, where); }   // (no caret in a value; one block: unwrapped)
+  /** Into its value, at its start or end (from the arrows, as into a quote): a value of blocks, its first or last block;
+   * a list, its first or last item. */
+  enter(where) {
+    if (this.inner) return this.parent.enterValue(this, where);   // (no caret in a value; one block: unwrapped)
+    const n = this.items().length;
+    if (!n) return false;
+    this.selectItem(where === "end" ? n - 1 : 0);
+    return true;
+  }
+  /** A list value's items as drawn (the user, 2026-11-25: computed values you can tell apart are stepped through). */
+  items() { return [...(this.out?.querySelectorAll(":scope > .fw-item") || [])]; }
+  /** Item `n` selected (null: none, the expression itself selected whole again). The expression then drawn as a block
+   * you're inside is (the path: faint, its tab too), the item lit (the user, 2026-11-25: "the same style rules as nested
+   * blocks"); `tell`: the editor told, so the tabs follow (not while it's already updating: a selection moving on). */
+  selectItem(n, tell = true) {
+    if ((n ?? null) === (this.item ?? null)) return;
+    this.items().forEach((x, i) => x.classList.toggle("fw-item-sel", i === n));
+    this.item = n;
+    this.dom.classList.toggle("fw-in-item", n != null);
+    if (tell && !this.view.isDestroyed) this.view.dispatch(this.view.state.tr.setMeta("fw-item", n).setMeta("addToHistory", false));
+  }
+  /** What the item selected refers to (a reference in it), or null. */
+  itemRef() {
+    const chip = this.item == null ? null : this.items()[this.item]?.querySelector(".fw-ref");
+    return chip?.title.match(/^@([0-9]{8}T[0-9]{6}-[0-9a-f]{4})/)?.[1] ?? null;
+  }
 
-  /** What ⌘O can open from it (TYPE.md, "if you can reference it, you can open it"): its value's source if that's one
-   * From, then each @reference in its code, in order, each once. */
+  /** What ⌘O opens on it, selected whole: what its value is, never what its code reads (the user, 2026-11-25): its
+   * value's source if that's one From, or the one reference it works out to; else nothing (step into it: each item
+   * opens on its own). What its code names is in the ⌘/ menu, "Open what it refers to…". */
   refs() {
-    const out = this.top ? [this.top] : [];
-    for (const id of refsIn(this.node.attrs.source || "")) if (!out.includes(id)) out.push(id);
-    return out;
+    if (this.top) return [this.top];
+    const chips = this.out?.classList.contains("fw-expr-block") ? [] : [...(this.out?.querySelectorAll(":scope > .fw-ref") || [])];
+    const id = chips.length === 1 && !this.items().length ? chips[0].title.match(/^@([0-9]{8}T[0-9]{6}-[0-9a-f]{4})/)?.[1] : null;
+    return id ? [id] : [];
   }
 
   /** Out of its value: to the block before (-1), after (1), or it selected whole (0), as out of a quote. */
@@ -167,8 +195,10 @@ export class ExprView {
   }
 
   /** Its code box taken away, nothing else touched (the focus gone elsewhere on the page). */
-  away() {
+  away(force = false) {
     if (!this.code || this.closing) return;
+    const pos = this.getPos(), sel = this.view.state.selection;
+    if (!force && pos != null && sel instanceof NodeSelection && sel.from === pos) return;   // (still on it: not left)
     const c = this.code;
     this.code = null;
     c.destroy();
@@ -182,7 +212,7 @@ export class ExprView {
     this.closing = true;
     this.view.focus();
     this.closing = false;
-    this.away();
+    this.away(true);
     if (pos == null || this.view.isDestroyed) return;
     const at = dir > 0 ? pos + this.node.nodeSize : pos;
     this.view.dispatch(this.view.state.tr.setSelection(Selection.near(this.view.state.doc.resolve(at), dir)).scrollIntoView());
@@ -226,7 +256,7 @@ export class ExprView {
   stopEvent(e) { return !!((this.holder && this.holder.contains(e.target)) || (this.inner && this.inner.view.dom.contains(e.target))); }   // (the code box's keys and clicks are its own)
   ignoreMutation() { return true; }
   selectNode() { this.dom.classList.add("ProseMirror-selectednode"); }
-  deselectNode() { this.dom.classList.remove("ProseMirror-selectednode"); }
+  deselectNode() { this.dom.classList.remove("ProseMirror-selectednode"); this.selectItem(null, false); }
   destroy() { this.gone = true; this.stop?.(); this.code?.destroy(); this.dropInner(); }
 }
 
@@ -241,6 +271,32 @@ export function exprGuard() {
       return !(view && Date.now() - (view.fwExprClosed || 0) < 400 && sel instanceof NodeSelection && (sel.node.type.name === "expr" || !!sel.node.attrs.data?.expr));
     },
     view: (v) => { (globalThis.__fwViews ||= []).push(v); return { destroy: () => { globalThis.__fwViews = globalThis.__fwViews.filter((x) => x !== v); } }; },
+  });
+}
+
+/** A list value's items stepped through (an expression selected whole): → (or Enter) onto its first item, ←/→ between
+ * them, ← past the first back to it whole, ↑/↓ and Esc out of them; ⌘O opens the item's reference. */
+export function exprItems(editor) {
+  return new Plugin({
+    props: {
+      handleKeyDown(view, e) {
+        const sel = view.state.selection;
+        if (!(sel instanceof NodeSelection) || sel.node.type.name !== "expr" || e.metaKey && !pressed(e, "open")) return false;
+        const ev = view.nodeDOM(sel.from)?.fwExpr;
+        if (!ev || ev.inner || ev.code) return false;
+        const n = ev.items().length;
+        if (ev.item == null) {
+          if (n && !e.shiftKey && (e.key === "ArrowRight" || e.key === "Enter")) { ev.selectItem(0); return true; }
+          return false;
+        }
+        if (pressed(e, "open")) { const id = ev.itemRef(); if (id) editor.open({ target: id }); return true; }
+        if (e.key === "ArrowRight") { ev.selectItem(Math.min(n - 1, ev.item + 1)); return true; }
+        if (e.key === "ArrowLeft") { ev.selectItem(ev.item > 0 ? ev.item - 1 : null); return true; }
+        if (e.key === "Escape") { ev.selectItem(null); return true; }
+        if (e.key === "ArrowUp" || e.key === "ArrowDown") ev.selectItem(null);
+        return false;
+      },
+    },
   });
 }
 

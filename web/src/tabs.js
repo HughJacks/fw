@@ -123,7 +123,8 @@ export function tabsIn(doc, here) {
   const tops = boxes.map((b) => where.get(b));
   return boxes.map((b, level) => {
     const r = b.getBoundingClientRect(), focusHere = b === boxes[boxes.length - 1];
-    return { box: b, label: label(place(b), level), focus: focusHere, filled: focusHere && b === focus && here.chosen, quote: b.matches(".fw-quote:not(.fw-from), .fw-para"), expr: b.matches(".fw-expr, .fw-from"),
+    const inItem = b.classList.contains("fw-in-item");   // (on an item of its value: where you are, its tab not filled)
+    return { box: b, label: label(place(b), level), focus: focusHere, filled: focusHere && b === focus && here.chosen && !inItem, quote: b.matches(".fw-quote, .fw-para, .fw-expr[data-tone='window']"), expr: false,   // (a box coloured only as a window: app.css)
       left, top: tops[level], width: tabW, height: tabH, lineLeft: left + tabW, lineWidth: Math.max(0, r.left - d.left - left - tabW) };
   });
 }
@@ -141,7 +142,7 @@ export function linksIn(doc, here) {
   let first = boxes.at(-1), last = first;
   if (!first) return [];
   const sib = (e, dir) => { let x = dir < 0 ? e.previousElementSibling : e.nextElementSibling; while (x && !x.matches(BOX)) x = dir < 0 ? x.previousElementSibling : x.nextElementSibling; return x; };
-  const chosen = here.chosen && first === focus;
+  const chosen = here.chosen && first === focus && !first.classList.contains("fw-in-item");   // (on an item: where you are, not selected whole)
   if (chosen) { first = here.first; last = here.last; }   // (several selected whole: the run's ends)
   // (every line on one x, the page's text column, as the header's line: not stepped in with the depth, the user, 2026-11-19)
   const d = doc.getBoundingClientRect(), cs = getComputedStyle(first), root = getComputedStyle(document.documentElement);

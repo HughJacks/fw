@@ -193,8 +193,21 @@ function printedEl(printed, open, inside = new Set(), names = new Map()) {
 
 /** An inline expression's value, as it sits in a line (TYPE.md "Inline"): text, or anything cast to text (a string
  * its words, a list its things, a Ref its chip, `this` its pericope); blocks can't sit in a line: `!`, a note why. */
+/** What a value is, as its colour says it (the user, 2026-11-25: colour by the evaluated type, not how it was made):
+ * "data" (numbers, dates, true/false), "ref" (a Ref), "window" (blocks from somewhere: a From, a Loop), "hole" (not a
+ * value yet: empty, an error, a hole in it), else "text". */
+export function toneOf(r) {
+  if (!r || r.kind === "empty" || r.kind === "error" || r.errors?.length) return "hole";
+  if (r.kind === "function") return "text";
+  if (r.kind === "block") return ["from", "loop"].includes(r.block?.t) ? "window" : "text";
+  const t = (r.type || "").replace(/^\[(.*)\]$/, "$1").replace(/^Option\((.*)\)$/, "$1");
+  if (/^(Int|Float|Bool|Date)$/.test(t)) return "data";
+  if (t === "Ref") return "ref";
+  return "text";
+}
+
 export function inlineValueEl(r, open, names = new Map()) {
-  const span = (cls, text, title = "") => { const s = el("span", "fw-icode-out" + (cls ? " " + cls : ""), text); s.title = title; return s; };
+  const span = (cls, text, title = "") => { const s = el("span", `fw-icode-out fw-tone-${toneOf(r)}` + (cls ? " " + cls : ""), text); s.title = title; return s; };
   if (!r) return span("fw-icode-wait", "…");
   if (r.kind === "empty") return span("fw-icode-wait", "$ $", "an empty inline expression · ⌘⇧X to write it");
   if (r.kind === "error") return span("fw-icode-hole", "?", r.message);
@@ -214,6 +227,15 @@ export function drawValue(box, r, open, inside = new Set(), names = new Map()) {
   else if (r.kind === "error") out = el("div", "fw-expr-out fw-expr-holes", r.message);
   else if (r.kind === "function") out = el("div", "fw-expr-out fw-expr-fn", r.type);
   else if (r.kind === "block") { out = el("div", "fw-expr-out fw-expr-block"); out.appendChild(blockEl(r.block, open)); }
+  else if (r.items?.length) {   // (a list: each item its own piece, stepped through with the arrows: ExprView.selectItem)
+    out = el("div", "fw-expr-out");
+    r.items.forEach((item, n) => {
+      if (n) out.append(", ");
+      const span = el("span", "fw-item");
+      span.append(...printedEl(item, open, inside, names).childNodes);
+      out.append(span);
+    });
+  }
   else out = printedEl(r.printed, open, inside, names);
   if (r?.errors?.length) out.classList.add("fw-expr-holes");
   out.title = r?.type ? `${r.type}${r.errors?.length ? " · " + r.errors.map((e) => e.message).join("; ") : ""}` : "";

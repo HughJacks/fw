@@ -23,7 +23,11 @@
 
 :root {
   --bg: #111111; --fg: #dddad3; --dim: #8c8984; --faint: #3a3a3a; --rule: #2a2a2a;
-  --quote: #9a6a6a; --quote-hi: #d76f6f; --blue: #6f93db; --sel: #dddad3;
+  --quote: #9a6a6a; --quote-hi: #d76f6f; --blue: #7fa3dc; --sel: #dddad3;
+  /* colour by what a thing is, its evaluated type, never how it was made (the user, 2026-11-25): red a pointer or a
+     window (a Ref, a From: links, chips, quotes), green data (numbers, dates, true/false), blue a tag, amber not a value
+     yet (a hole, an error); text the writing's own colour. Computed by you: the ƒ, not a colour */
+  --hole: #e2b56b;
   /* an expression block's green (the user, 2026-11-24: "expression blocks, evaluated or not should be rendered in green,
      pick a very pleasant one"): a soft sage-mint, as bright as the quotes' red when lit */
   --expr: #6f9e82; --expr-hi: #7ccb9a; --expr-mid: rgba(124, 203, 154, .55); --path-expr: rgba(111, 158, 130, .4);
@@ -102,6 +106,7 @@ body.fw { background: var(--bg); color: var(--fg); font: var(--write)/1.6 var(--
 .fw-more-in { min-height: 0; overflow: hidden; }
 html.fw-still .fw-more { transition: none; }
 .fw-typerow { display: flex; column-gap: 2ch; white-space: nowrap; overflow: hidden; }
+.fw-typerow > .fw-dim { color: var(--expr); }   /* (its facts: dates and counts, data, green) */
 .fw-label { }
 .fw-field { display: flex; gap: 1ch; align-items: baseline; }
 /* every unfolded header the same height (the user, 2026-11-19): its rows fixed (type and facts; backlinks, and a kind's maybes;
@@ -239,7 +244,16 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
    2026-11-22) */
 .fw-image img, .fw-pic { display: block; width: 100%; height: auto; max-height: 65vh; object-fit: contain; }
 .fw-image.fw-chosen { border-color: var(--fg); }
-.fw-expr.fw-chosen { border-color: var(--expr-hi); }
+/* an expression block takes its value's colour (data-tone, exprview.js toneOf): its box, its ƒ tab, its gutter tab */
+.fw-expr { --tone-hi: var(--fg); --tone-mid: var(--box-hi); --tone-path: var(--path); --tone-num: #4a4845; }
+/* (a box is coloured only when the block itself is a window; a reference or data is inline, its own text coloured,
+   the box plain: a value draws the same wherever it is, the ƒ alone marks it computed, the user, 2026-11-25) */
+.fw-expr[data-tone="window"] { --tone-hi: var(--quote-hi); --tone-mid: var(--quote-mid); --tone-path: var(--path-quote); --tone-num: #6b4f4f; }
+.fw-expr[data-tone="hole"] { --tone-hi: var(--hole); --tone-mid: rgba(226, 181, 107, .55); --tone-path: rgba(226, 181, 107, .3); --tone-num: #6b5f4a; }
+.fw-expr[data-tone="data"] > .fw-expr-out:not(.fw-expr-block) { color: var(--expr-hi); }
+/* a value printed in an expression block: as it would be inline (mono; references as @p's, red with their ↗) */
+.fw-expr > .fw-expr-out:not(.fw-expr-block, .fw-expr-wait, .fw-expr-fn) { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .86em; }
+.fw-expr.fw-chosen { border-color: var(--tone-hi); }
 /* a value of blocks: held as a container holds its blocks (the user, 2026-11-24: nesting in a value "should work the
    same as any other blocks"): its blocks a step in, the container's gap between them */
 .fw-expr:has(> .fw-expr-out.fw-expr-block) { padding: .15rem calc(var(--u) - 1px); }
@@ -255,23 +269,19 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
    lit by fw's own marks (fw-chosen), as its box is, never ProseMirror's selectednode, which stays after the editor's left */
 .fw-expr { position: relative; }
 .fw-expr > .fw-fn { position: absolute; top: .15rem; line-height: 1.2rem; width: 1.2rem; height: 1.2rem; padding: 0; text-align: center;
-  right: calc(-1 * (var(--d, 0) * var(--u) + var(--fp) + 1px + 2rem)); color: var(--expr); opacity: .45; background: none; border: none;
-  font: italic .8rem/1.2rem Georgia, serif; cursor: pointer; transition: opacity .18s ease; }
-.fw-expr:is(.fw-here, .fw-chosen, .fw-expr-coding, :has(.fw-current)) > .fw-fn { opacity: 1; outline: 1px solid var(--expr-mid); }
+  right: calc(-1 * (var(--d, 0) * var(--u) + var(--fp) + 1px + 2rem)); color: var(--tone-hi); opacity: .45; background: none; border: none;
+  font: italic .95rem/1.2rem "Source Sans 3", serif; cursor: pointer; transition: opacity .18s ease; }   /* (the ƒ: the writing's font, as inline) */
+.fw-expr:is(.fw-here, .fw-chosen, .fw-expr-coding, :has(.fw-current)) > .fw-fn { opacity: 1; outline: 1px solid var(--tone-mid); }
 .fw-expr:is(.fw-here, .fw-chosen, .fw-expr-coding, :has(.fw-current)) > .fw-fn::before { content: ""; position: absolute; right: 100%; top: 50%; height: 1px;
-  background: var(--expr-mid); width: calc(var(--d, 0) * var(--u) + var(--fp) + 2rem - 1.2rem); }
-.fw-doc .fw-expr.fw-chosen > .fw-fn { background: var(--expr-hi); color: var(--bg); outline-color: var(--expr-hi); }
-.fw-doc .fw-expr.fw-chosen > .fw-fn::before { background: var(--expr-hi); }
-.fw-doc > .ProseMirror > .fw-expr::before { color: #4f6b5a; }   /* (its number in the gutter: green, at rest too) */
+  background: var(--tone-mid); width: calc(var(--d, 0) * var(--u) + var(--fp) + 2rem - 1.2rem); }
+.fw-doc .fw-expr.fw-chosen > .fw-fn { background: var(--tone-hi); color: var(--bg); outline-color: var(--tone-hi); }
+.fw-doc .fw-expr.fw-chosen > .fw-fn::before { background: var(--tone-hi); }
+.fw-doc > .ProseMirror > .fw-expr::before { color: var(--tone-num); }   /* (its number in the gutter: its value's colour, at rest too) */
 .fw-expr-out.fw-expr-block .fw-container > * { margin-bottom: var(--gap); }
 .fw-expr-out.fw-expr-block .fw-container > *:last-child { margin-bottom: 0; }
-.fw-expr:has(.fw-current) { outline: .5px solid var(--path-expr); outline-offset: -.5px; }   /* (in its value: the path, green) */
+.fw-expr:has(.fw-current) { outline: .5px solid var(--tone-path); outline-offset: -.5px; }   /* (in its value: the path, its colour) */
 /* an expression's From (TYPE.md: body(@x), blocks that came from x unchanged): a quote, written by hand, so green */
-.fw-doc .fw-quote.fw-from { --own-mid: var(--expr-mid); --own-bright: var(--expr-hi); }
-.fw-quote.fw-from.fw-chosen { --edge: var(--expr-hi); border-color: var(--edge); }
-.fw-quote.fw-from:has(.fw-current) { --edge: var(--path-expr); }
-.fw-quote.fw-from:has(> .fw-body > .ProseMirror > .fw-text.fw-here:only-child) { --edge: var(--expr-mid); }
-.fw-quote.fw-from > .fw-top, .fw-quote.fw-from > .fw-top > .fw-open { color: var(--expr); }
+/* (a window an expression made is a window: red, as every From; that it's computed is its expression's ƒ) */
 
 /* the top line (App.svelte): what the page says; small, in the header's monospace, centred in the page's width; no
    breadcrumb, no rule (the user, 2026-11-19). Its line kept when empty: a message coming never moves the page. */
@@ -466,7 +476,7 @@ div.fw-peek { color: #5a5855; white-space: pre-wrap; padding: .2rem .6rem; }
 :root { --glow: 1rem; }
 .fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-image, .fw-expr) { --own-mid: var(--box-hi); --own-bright: var(--fg); }   /* (each box's own colours, lit) */
 .fw-doc .fw-quote { --own-mid: var(--quote-mid); --own-bright: var(--quote-hi); }   /* (its red as bright as the grey) */
-.fw-doc .fw-expr { --own-mid: var(--expr-mid); --own-bright: var(--expr-hi); }   /* (green, lit as every box is) */
+.fw-doc .fw-expr { --own-mid: var(--tone-mid); --own-bright: var(--tone-hi); }   /* (its value's colour, lit as every box is) */
 .fw-doc .fw-para { --own-mid: rgba(154, 106, 106, .7); --own-bright: var(--quote); }
 .fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr):not(.fw-here, .fw-chosen) { --lit-up: transparent; --lit-down: transparent; }
 /* the one above: its bottom edge lit, its sides fading upward; the one below: its top edge, its sides fading downward */
@@ -564,7 +574,7 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-doc .fw-expr { cursor: default; }
 .fw-expr-out { white-space: pre-wrap; }
 .fw-expr-out.fw-expr-wait { color: var(--dim); font-style: italic; }
-.fw-expr-out.fw-expr-holes { color: var(--dim); }
+.fw-expr-out.fw-expr-holes { color: var(--hole); }
 .fw-expr.fw-expr-coding .fw-expr-out { color: var(--dim); font-size: .9em; padding-left: .5rem; }
 /* an inline expression (TYPE.md "Inline"): its value in the line, faintly marked as worked out; its code in place */
 /* (the user, 2026-11-25: "insert 2 green dollar signs in the text and we type between them, no green underline or gray
@@ -573,8 +583,13 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-icode-folded { display: none; }
 .fw-icode-src, .fw-icode-out { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .86em; }
 .fw-icode-dollar { color: var(--expr-hi); }
-.fw-icode-out { color: var(--expr-hi); cursor: text; }
-.fw-icode-sel { background: rgba(124, 203, 154, .16); box-shadow: 0 0 0 2px rgba(124, 203, 154, .16); }   /* (selected: the caret's middle stop over it) */
+.fw-icode-out { color: var(--fg); cursor: text; }
+.fw-icode-out.fw-tone-data { color: var(--expr-hi); }
+.fw-icode-out:is(.fw-tone-hole, .fw-icode-hole, .fw-icode-bad) { color: var(--hole); }
+.fw-icode-out.fw-bare::after { content: none; }   /* (a bare reference, @x: nothing computed, no ƒ) */
+/* (computed by you: an ƒ after it, the writing's own font, italic, on the line; the user, 2026-11-25) */
+.fw-icode-out::after { content: "ƒ"; font: italic 1.15em "Source Sans 3", serif; color: var(--dim); opacity: .7; margin-left: .12em; margin-right: .1em; vertical-align: baseline; line-height: 0; }
+.fw-icode-sel { opacity: .5; }   /* (selected, the caret's middle stop over it: just dimmed, the user, 2026-11-25) */
 .fw-icode-out::selection, .fw-icode-out *::selection, .fw-icode-tail::selection, .fw-icode-folded::selection { background: transparent; }
 /* (its closing $, kept so the caret after it has a place, taking no room: mono, its own width taken back) */
 .fw-icode-tail { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .86em; color: transparent; letter-spacing: -1ch; caret-color: var(--fg); }
@@ -582,10 +597,13 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-icode-wait { color: var(--dim); }
 .fw-tok-keyword { color: #c49bd6; } .fw-tok-number { color: #d7a46f; } .fw-tok-string { color: #a3c48a; }
 .fw-tok-type { color: var(--blue); } .fw-tok-comment { color: var(--dim); font-style: italic; } .fw-tok-operator { color: var(--dim); }
-.fw-tok-relative { color: #e2b56b; font-style: italic; }
+.fw-tok-relative { color: var(--quote-hi); font-style: italic; }   /* (this, here, self, above, below: Refs) */
 /* a reference, in an inline expression's code or its value: its title, green, a small ↗ (a click on the value opens it) */
-.fw-iref, .fw-icode-out .fw-ref { color: var(--expr-hi); background: none; padding: 0; font: inherit; cursor: pointer; }
-.fw-iref::after, .fw-icode-out .fw-ref::after { content: "↗"; font-size: .7em; vertical-align: .35em; margin-left: .05em; }
+.fw-iref, .fw-icode-out .fw-ref { color: var(--quote-hi); background: none; padding: 0; font: inherit; cursor: pointer; }
+/* (a reference's ↗: the link's own drawn arrow, the same size and place, never a borrowed glyph; not in the code box) */
+:is(.fw-iref, .fw-ref:not(.fw-ref-this)):not(.cm-content *)::after { content: ""; display: inline-block; width: .44em; height: .44em; margin-left: .12em;
+  vertical-align: .26em; background: currentColor; -webkit-mask: var(--arrow-link) center / contain no-repeat; mask: var(--arrow-link) center / contain no-repeat; opacity: .75; }
+.fw-icode-out .fw-ref:not(.fw-ref-this)::after { vertical-align: .2em; }   /* (in the mono value: its cap height a little lower) */
 .fw-expr-code { display: block; width: 100%; resize: none; box-sizing: border-box;
   background: rgba(255, 255, 255, .03); color: var(--fg); border: none; border-radius: 2px; outline: none;
   font: 14px/1.55 ui-monospace, "SF Mono", Menlo, monospace; padding: .35rem .5rem; margin-bottom: .35rem; tab-size: 2; }
@@ -604,9 +622,13 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-expr-errors > div::after { content: " ⦄"; }
 /* a reference drawn as its pericope's title, a chip (TYPE.md, references), in the code and in what it shows: grey,
    square, nothing more (the user, 2026-11-25: "drastically simplify reference chips, grey only, no rounded corners") */
-.fw-ref { color: var(--fg); background: rgba(255, 255, 255, .09); padding: 0 .25em;
+.fw-ref { color: var(--quote-hi); padding: 0;
   font-family: "Source Sans 3 Variable", system-ui, sans-serif; }
 .fw-ref.fw-ref-gone { color: var(--dim); }
+.cm-content .fw-ref { background: rgba(255, 255, 255, .06); padding: 0 .25em; }   /* (in the code: a chip, one piece the caret steps over) */
+.fw-expr-out .fw-ref, .fw-icode-out .fw-ref { font: inherit; }
+.fw-item-sel { outline: 1px solid var(--fg); outline-offset: 2px; }
+/* (on one of its items: the expression is where you are, fw-here, as a block of text with the caret in it: editor.js) */   /* (an item of a list stepped onto: ⌘O opens it) */
 /* this, above, below: where the expression sits, relative to it and worked out as it's viewed (the user, 2026-11-25:
    "relational to the user, give these unique styling"): amber, outlined, not filled like a reference's chip */
 /* the recursive case (the user, 2026-11-25): a thing met again inside itself, its title and a loop ↻; a window on
@@ -615,4 +637,4 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-loop .fw-text { color: var(--dim); font-style: italic; }
 /* a reference to the pericope it's in, `this`, and one to where it's seen from (↻): the same chip, its words italic */
 .fw-ref.fw-ref-this, .fw-ref.fw-ref-loop { font-style: italic; }
-.fw-relative { color: #e2b56b; font-style: italic; border: 1px dashed rgba(226, 181, 107, .55); border-radius: 3px; padding: 0 .2em; }
+.fw-relative { color: var(--quote-hi); font-style: italic; }   /* (in the code box: Refs, red, italic) */

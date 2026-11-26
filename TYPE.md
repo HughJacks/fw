@@ -97,6 +97,13 @@ Inline = + Plain(String) + Link(String, Ref)
 `@` in text is sugar for `$ @p $` (the user, 2026-11-25): an inline expression whose value is a Ref, drawn as the grey
 chip a Ref is; no Mention case of its own. A link keeps your words and stays separate.
 
+**The ƒ marks computation** (the user, 2026-11-25: "if we @ insert a reference it shouldnt have an F until we explode
+it to treat it as a formula … we need to make things consistent"): a bare reference (`$@p$`) computes nothing, so
+no ƒ; opened (⌘⇧X) and made more than a reference (`wordCount(@p)`), it computes, and carries its ƒ. One rule
+everywhere: ⌘O on a thing selected opens what its value is (a reference's pericope, a window's source), never what
+its code reads; ⌘⇧X shows the code, references drawn as their titles there; `@` in code (the code box, an inline
+expression's open code) opens fw's search and puts the reference in the code.
+
 **Editing an inline expression** (the user, 2026-11-25: "insert 2 green dollar signs in the text and we type between
 them … cursor out of the dollar signs like normal, and the result should just be in mono and highlighted green"): it's
 text. `$` in a line puts two dollar signs (green) with the caret between; what's typed between them is code (mono,

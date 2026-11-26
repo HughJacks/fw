@@ -70,13 +70,22 @@ let print = exp =>
 /* A value as fw shows one (the user, 2026-11-25: "a list should pretty print as a comma separated list of things"): a
    list, its items one after another, commas between, a string (a date) in it its words; anything else as Hazel
    prints it. */
+/* A list value's items, each as `shown` writes one (the page steps through them: the user, 2026-11-25, "we should be
+   able to cursor navigate semantically differentiable computed values like lists"); not a list, None. */
+let item_text = x =>
+  switch (Unboxing.unbox(Atom(String), strip(x))) {
+  | Matches(s) => s
+  | _ => print(x)
+  };
+let items = (v: Exp.t): option(list(string)) =>
+  switch (Exp.term_of(strip(pretty_dates(v)))) {
+  | ListLit(l) => Some(List.map(~f=item_text, l))
+  | _ => None
+  };
+
 let shown = (v: Exp.t): string => {
   let v = strip(pretty_dates(v));
-  let item = x =>
-    switch (Unboxing.unbox(Atom(String), strip(x))) {
-    | Matches(s) => s
-    | _ => print(x)
-    };
+  let item = item_text;
   switch (Exp.term_of(v)) {
   | ListLit([]) => "nothing"
   | ListLit(l) => String.concat(~sep=", ", List.map(~f=item, l))
@@ -538,7 +547,15 @@ let answer = (~self: string="", src: string): Yojson.Safe.t => {
     } else if (is_block_ty(ty)) {
       `Assoc([("kind", `String("block")), typ, ("block", tree(value)), errors]);
     } else {
-      `Assoc([("kind", `String("value")), typ, ("printed", `String(shown(value))), errors]);
+      `Assoc(
+        [("kind", `String("value")), typ, ("printed", `String(shown(value))), errors]
+        @ (
+          switch (items(value)) {
+          | Some(l) => [("items", `List(List.map(~f=x => `String(x), l)))]
+          | None => []
+          }
+        ),
+      );
     };
   };
 };

@@ -26,7 +26,7 @@ export const waiting = new Set();     // the editors with a save scheduled, not 
 
 import { api, TEST } from "./api.js";
 import { slashMenu } from "./menu.js";
-import { ExprView, toggleCode, exprGuard, valueTree } from "./exprview.js";
+import { ExprView, toggleCode, exprGuard, exprItems, valueTree } from "./exprview.js";
 import { inlineCode } from "./inlinecode.js";
 import { codeBox, setText } from "./codebox.js";
 import * as hazel from "./hazel.js";
@@ -438,8 +438,13 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
     });
     const here = new Plugin({   // where you are, drawn: only in the editor you're in (its state says: setCurrent, hush)
       key: hereKey,
-      state: { init: () => ({ current: current === this, quiet: this.quiet }),   // (drawn again from the store: as it was)
-                 apply: (tr, was) => { const m = tr.getMeta(hereKey); return m ? { ...was, ...m } : was; } },
+      state: { init: () => ({ current: current === this, quiet: this.quiet, item: null }),   // (drawn again from the store: as it was)
+                 apply: (tr, was) => {
+                   const m = tr.getMeta(hereKey), item = tr.getMeta("fw-item");   // (item: on one of an expression's items, ExprView.selectItem)
+                   const now = m ? { ...was, ...m } : was;
+                   if (item !== undefined) return { ...now, item };
+                   return tr.selectionSet && now.item != null ? { ...now, item: null } : now;
+                 } },
       props: {
         // (one focus, the user, 2026-11-18: either a caret, editing, or blocks selected whole, never both: selecting,
         // no caret shows)
@@ -454,6 +459,9 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
           if (!mine || quiet) return null;   // (quiet: arrived from a block selected whole, nothing yet where you are)
           const sel = state.selection, { $from } = sel;
           const chosen = (from, to) => Decoration.node(from, to, { class: "fw-chosen" });
+          // (on one of an expression's items: the expression is where you are, as a block of text with the caret in it is,
+          // the item lit; the user, 2026-11-25: "the same style rules as nested blocks")
+          if (sel instanceof NodeSelection && hereKey.getState(state).item != null) return DecorationSet.create(state.doc, [Decoration.node(sel.from, sel.to, { class: "fw-here" })]);
           if (sel instanceof NodeSelection) return DecorationSet.create(state.doc, [chosen(sel.from, sel.to)]);   // (selected whole)
           if (sel instanceof BlockSelection) return DecorationSet.create(state.doc, sel.blocks().map(({ node, pos }) => chosen(pos, pos + node.nodeSize)));
           for (let d = $from.depth; d > 0; d--) {
@@ -489,7 +497,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
       },
     });
     return EditorState.create({ doc: schema.nodeFromJSON(pmDoc(children)),
-      plugins: [...(this.browse ? [browsing(this)] : []), slash, inlineCode(this), exprGuard(), blocksPlugin(), clipboardPlugin(this), this.keys(), keymap(baseKeymap), history(), ids, here, guide, marking] });
+      plugins: [...(this.browse ? [browsing(this)] : []), slash, inlineCode(this), exprItems(this), exprGuard(), blocksPlugin(), clipboardPlugin(this), this.keys(), keymap(baseKeymap), history(), ids, here, guide, marking] });
   }
 
   keys() {
@@ -640,7 +648,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
   openRefs(ev) {
     const refs = ev?.refs() || [];
     if (refs.length === 1) this.open({ target: refs[0] });
-    else if (refs.length > 1) this.act(this, "menu:openrefs");
+    else if (ev?.items().length) { this.message = "→ into it: each one opens on its own"; this.status(); }
     return true;
   }
 

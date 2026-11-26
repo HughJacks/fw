@@ -15,6 +15,7 @@ import { onSnapshot } from "./snapshot.svelte.js";
 import { inlineValueEl, namesOf, hereOf } from "./views.js";
 import { labelOf } from "./codebox.js";
 import { units, newCodeKey } from "./draft.js";
+import { pressed } from "./keys.js";
 
 export const icodeKey = new PluginKey("icode");
 
@@ -96,6 +97,7 @@ function decorations(state, editor) {
       const value = () => {
         const el = inlineValueEl(hazel.run(r.source, r.block, hereOf(editor)), editor?.open, namesOf(editor, r.block));
         if (sel) el.classList.add("fw-icode-sel");
+        if (BARE.test(r.source)) el.classList.add("fw-bare");   // (a bare reference computes nothing: no ƒ, the user, 2026-11-25)
         el.addEventListener("mousedown", (e) => {   // (a click on it: selected, the middle stop; a reference in it opens)
           if (e.target.closest?.(".fw-ref")) return;
           e.preventDefault();
@@ -114,6 +116,7 @@ function decorations(state, editor) {
 }
 
 let version = 0;   // (the snapshot's: a value drawn again when anything it could read changes)
+const BARE = /^\s*@[0-9]{8}T[0-9]{6}-[0-9a-f]{4}\s*$/;   // (code that's just a reference: @x, a mention)
 
 /** Whether run `r` is selected, just it: the stop between before it and after it. */
 const isSelected = (state, r) => !state.selection.empty && state.selection.from === r.from && state.selection.to === r.to;
@@ -154,13 +157,22 @@ export function inlineCode(editor) {
       decorations: (state) => decorations(state, editor),
       handleKeyDown(view, e) {
         const s = view.state, { head, empty } = s.selection;
+        if (pressed(e, "open")) {   // (⌘O on one selected: what its value is, a reference's pericope; never what its code reads)
+          const r = codeRuns(s.doc).find((x) => x.source !== null && isSelected(s, x));
+          if (!r) return false;
+          const chip = view.dom.querySelector(".fw-icode-sel .fw-ref");
+          const id = chip?.title.match(/^@([0-9]{8}T[0-9]{6}-[0-9a-f]{4})/)?.[1];
+          if (id) editor.open({ target: id });
+          return true;
+        }
         if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return false;
         const runs = codeRuns(s.doc).filter((r) => r.source !== null);
         const set = (pos) => { view.dispatch(s.tr.setSelection(TextSelection.create(s.doc, pos)).scrollIntoView()); return true; };
         const chosen = runs.find((r) => isSelected(s, r));
-        if (chosen) {   // (selected: → after it, ← before it)
+        if (chosen) {   // (selected: → after it, ← before it; ↑/↓ a line from there, as from a caret, never still selected)
           if (e.key === "ArrowRight") return set(chosen.to);
           if (e.key === "ArrowLeft") return set(chosen.from);
+          if (e.key === "ArrowUp" || e.key === "ArrowDown") { set(e.key === "ArrowUp" ? chosen.from : chosen.to); return false; }
           return false;   // (⌫ takes it, typing replaces it, as with any selection)
         }
         if (!empty) return false;

@@ -66,8 +66,9 @@ export function searchBox(view, pos, { prompt, keep = () => true, foot, onPick }
 }
 
 /** @ in a line: fw's search; a pick puts `$@id$` in place of the @ (an inline expression, drawn as its chip), a new
- * pericope titled with what's typed made first; Esc leaves the @ as it is. */
-function mentionSearch(editor, pos) {
+ * pericope titled with what's typed made first; Esc leaves the @ as it is. In an inline expression's open code
+ * (`inCode`): the pick goes into the code, `@id`, as the code box's @ does. */
+function mentionSearch(editor, pos, { inCode = false } = {}) {
   const view = editor.view;
   searchBox(view, pos, {
     prompt: "@ › ",
@@ -81,7 +82,8 @@ function mentionSearch(editor, pos) {
         id = r.body.id;
       }
       const at = view.state.doc.textBetween(pos, Math.min(pos + 1, view.state.doc.content.size)) === "@" ? pos : null;
-      const code = `$@${id}$`, node = schema.text(code, [codeMark()]);
+      const marks = inCode && at !== null ? view.state.doc.resolve(at + 1).marks() : null;   // (in code: its own mark kept)
+      const code = inCode ? `@${id}` : `$@${id}$`, node = schema.text(code, marks || [codeMark()]);
       const start = at ?? view.state.selection.from;
       let tr = at !== null ? view.state.tr.replaceWith(at, at + 1, node) : view.state.tr.replaceSelectionWith(node, false);
       tr = tr.setSelection(TextSelection.create(tr.doc, Math.min(start + code.length, tr.doc.content.size)));
@@ -212,7 +214,11 @@ export function slashMenu(editor, enterNew) {
         if (text === "@" && !editor.readOnly) {   // (TYPE.md "Inline": @ is sugar for $@p$, a reference in the line, its chip)
           const $at = view.state.doc.resolve(from);
           if ($at.parent.type.name !== "text_block" || $at.parent.attrs.para) return false;
-          if (codeRuns(view.state.doc).some((r) => r.from < from && from < r.to)) return false;   // (in code: an @ reference, typed as is)
+          if (codeRuns(view.state.doc).some((r) => r.from < from && from < r.to)) {   // (in code: the search, its pick a reference in the code)
+            view.dispatch(view.state.tr.insertText("@", from, to));
+            mentionSearch(editor, from, { inCode: true });
+            return true;
+          }
           if (from === to && $at.parent.textBetween(Math.max(0, $at.parentOffset - 1), $at.parentOffset) === "\\") {   // (\@: an @, no search)
             view.dispatch(view.state.tr.insertText("@", from - 1, to));
             return true;

@@ -248,7 +248,9 @@ export function codeBox(parent, source, { changed, close, isClose, names = new M
   // window taking it keeps it open)
   if (away) parent.addEventListener("focusout", (e) => {
     const to = e.relatedTarget;
-    if (to && !parent.contains(to) && !to.closest?.(".cm-tooltip")) away();
+    if (!to || parent.contains(to) || to.closest?.(".cm-tooltip")) return;
+    // (looked at once things settle: focus handed straight back, the editor's own jitter after a click, isn't leaving)
+    requestAnimationFrame(() => { if (parent.isConnected && !parent.contains(document.activeElement)) away(); });
   });
   return view;
 }
