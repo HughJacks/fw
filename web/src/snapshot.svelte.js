@@ -4,7 +4,7 @@
 // never reads the store itself.
 import { untrack } from "svelte";
 import { api } from "./api.js";
-import { snapNode } from "./draft.js";
+import { snapNode, liveFacts } from "./draft.js";
 import { onStore } from "./live.js";
 
 /** This moment as the store writes dates: ISO 8601, to the second, with this place's offset. */
@@ -21,7 +21,7 @@ class Snapshot {
   /** The snapshot as the engine takes it: a JSON string (one per change, so the engine parses it once). */
   json = $derived.by(() => {
     const ps = this.store?.pericopes || [];
-    const live = this.live, rest = { now: this.minute, facts: this.store?.facts || {} };
+    const live = this.live, rest = { now: this.minute, facts: liveFacts(this.store?.facts || {}, live, this.minute) };
     if (!live) return JSON.stringify({ ...rest, pericopes: ps });
     const at = ps.findIndex((p) => p.id === live.id);
     const own = at >= 0 ? { ...ps[at], body: live.body } : { id: live.id, title: "", kinds: [], body: live.body };

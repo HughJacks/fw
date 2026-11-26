@@ -43,6 +43,7 @@ function topLine(q, open) {
   if (open && q.target) {
     const go = el("button", "fw-open", "↗");
     go.title = "Open it (^O)";
+    go.appendChild(el("span", "fw-open-name", q.title || labelOf(q.target) || ""));   // (hovered: its name, grown out to the right)
     go.addEventListener("mousedown", (e) => { e.preventDefault(); open(q); });
     top.appendChild(go);
   }
@@ -146,7 +147,7 @@ export function insideOf(ed, self) {
 }
 
 /** The pericope `this` is for an expression (or a call) `self` in editor `ed`: the core's (its facts), else the
- * pericope open on the page (a block not saved yet). */
+ * pericope open on the page (a block just written, the core's word on it still to come). */
 export function thisOf(ed, self) {
   const chain = ed ? [ed, ...ed.around] : [];
   return snapshot.store?.facts?.[self]?.pericope ?? chain.at(-1)?.id ?? null;
@@ -206,6 +207,18 @@ export function toneOf(r) {
   return "text";
 }
 
+/** A value's printed form as its place shows it (TYPE.md "Casting", the result first): a String (a Date) its words,
+ * never its quotes; anything else as printed. */
+function words(r) {
+  if (r.type !== "String" && r.type !== "Date") return r.printed;   // (a Date prints as fw writes one: words too)
+  try { return JSON.parse(r.printed); } catch { return r.printed.replace(/^"|"$/g, ""); }
+}
+/** A value's type, and the casts put in to get it (TYPE.md "Casting": visible), for its tooltip. */
+export function typeNote(r) {
+  const casts = (r?.casts || []).map((c) => `${c.from} → ${c.to} (${c.cast})`);
+  return [r?.type || "", ...(casts.length ? [`cast: ${casts.join(", ")}`] : [])].filter(Boolean).join(" · ");
+}
+
 export function inlineValueEl(r, open, names = new Map()) {
   const span = (cls, text, title = "") => { const s = el("span", `fw-icode-out fw-tone-${toneOf(r)}` + (cls ? " " + cls : ""), text); s.title = title; return s; };
   if (!r) return span("fw-icode-wait", "…");
@@ -213,9 +226,8 @@ export function inlineValueEl(r, open, names = new Map()) {
   if (r.kind === "error") return span("fw-icode-hole", "?", r.message);
   if (r.kind === "function") return span("fw-icode-wait", r.type);
   if (r.kind === "block") return span("fw-icode-bad", "!", "this works out to blocks, which can't sit in a line: write it as an expression block ($ in an empty block)");
-  let printed = r.printed;
-  if (r.type === "String") { try { printed = JSON.parse(printed); } catch { printed = printed.replace(/^"|"$/g, ""); } }
-  const out = span(r.errors?.length ? "fw-icode-hole" : "", "", r.type || "");
+  const printed = words(r);
+  const out = span(r.errors?.length ? "fw-icode-hole" : "", "", typeNote(r));
   out.append(...printedEl(printed, open, new Set(), names).childNodes);
   return out;
 }
@@ -236,9 +248,9 @@ export function drawValue(box, r, open, inside = new Set(), names = new Map()) {
       out.append(span);
     });
   }
-  else out = printedEl(r.printed, open, inside, names);
+  else out = printedEl(words(r), open, inside, names);
   if (r?.errors?.length) out.classList.add("fw-expr-holes");
-  out.title = r?.type ? `${r.type}${r.errors?.length ? " · " + r.errors.map((e) => e.message).join("; ") : ""}` : "";
+  out.title = r?.type ? `${typeNote(r)}${r.errors?.length ? " · " + r.errors.map((e) => e.message).join("; ") : ""}` : "";
   const was = box.querySelector(":scope > .fw-expr-out");
   if (was) was.replaceWith(out); else box.appendChild(out);
   return out;

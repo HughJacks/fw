@@ -12,6 +12,8 @@ import { history, historyKeymap, defaultKeymap } from "@codemirror/commands";
 import { tags as t } from "@lezer/highlight";
 import { api } from "./api.js";
 import { snapshot } from "./snapshot.svelte.js";
+import * as hazel from "./hazel.js";
+import { receiverBefore, projectionsFor, typeOf, projectable } from "./projections.js";
 
 // --- Hazel's syntax, as far as colouring needs ---------------------------------------------------------------------
 
@@ -119,7 +121,7 @@ const refChips = ViewPlugin.fromClass(class {
 
 // --- completion: @ → fw's search; names → fw's built-ins, Block's cases, the code's own lets -----------------------
 
-const BUILTINS = [
+export const BUILTINS = [
   ["body", "Ref -> Block", "a quote of it: what it shows, from it"],
   ["text", "String -> Block", "a block of text"],
   ["origin", "Block -> Option(Ref)", "where a quoted block came from"],
@@ -174,9 +176,29 @@ async function refCompletions(ctx) {
   };
 }
 
+/** After a dot, `x.f` (TYPE.md "Projection"): what can be projected from x, the functions whose first argument fits its
+ * type first (projections.js). */
+function dotCompletions(ctx) {
+  const m = ctx.matchBefore(/\.[A-Za-z0-9_']*$/);
+  if (!m) return null;
+  const x = receiverBefore(ctx.state.doc.sliceString(0, m.from), m.from);
+  if (!projectable(x)) return null;
+  const type = typeOf(hazel.run, x);
+  return {
+    from: m.from + 1,
+    filter: true,
+    options: projectionsFor(BUILTINS, type).map((p) => ({
+      label: p.label, detail: p.detail, info: p.info || undefined, type: "function",
+      boost: p.fits ? 10 : 0, section: p.fits ? `on ${type}` : "others",
+    })),
+    validFor: /^[A-Za-z0-9_']*$/,
+  };
+}
+
 function nameCompletions(ctx) {
   const m = ctx.matchBefore(/[A-Za-z_][A-Za-z0-9_']*/);
   if (!m || (m.from === m.to && !ctx.explicit)) return null;
+  if (ctx.state.doc.sliceString(m.from - 1, m.from) === ".") return null;   // (after a dot: dotCompletions)
   const own = [...ctx.state.doc.toString().matchAll(/\blet\s+([a-z_][A-Za-z0-9_']*)/g)].map((x) => x[1]);
   return {
     from: m.from,
@@ -222,7 +244,7 @@ export function codeBox(parent, source, { changed, close, isClose, names = new M
         drawSelection({ cursorBlinkRate: 1000 }),   // (CodeMirror's own caret: the browser's, in an editable inside the page's, sometimes isn't painted)
         hazelSyntax, syntaxHighlighting(colours),
         refChips,
-        autocompletion({ override: [refCompletions, nameCompletions], icons: false }),
+        autocompletion({ override: [refCompletions, dotCompletions, nameCompletions], icons: false }),
         Prec.highest(EditorView.domEventHandlers({ keydown: (e, v) => closing(e, v) })),
         // (↓ on its last line, ↑ on its first: out of it, to the block after or before; the completions' own first)
         Prec.high(keymap.of([
@@ -233,7 +255,7 @@ export function codeBox(parent, source, { changed, close, isClose, names = new M
         Prec.high(keymap.of([{ key: "Tab", run: (v) => acceptCompletion(v) || (v.dispatch(v.state.replaceSelection("  ")), true) }])),
         keymap.of([...completionKeymap, ...historyKeymap, ...defaultKeymap]),
         EditorView.inputHandler.of((v, from, to, text) => {   // (@ typed: the search opens at once)
-          if (text === "@") queueMicrotask(() => startCompletion(v));
+          if (text === "@" || text === ".") queueMicrotask(() => startCompletion(v));   // (@: the search; .: what can be projected)
           if (inline && text === "$") { close(); return true; }   // (an inline expression: its closing $ back to the line)
           return false;
         }),

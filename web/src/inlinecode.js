@@ -13,7 +13,10 @@ import { schema } from "./schema.js";
 import * as hazel from "./hazel.js";
 import { onSnapshot } from "./snapshot.svelte.js";
 import { inlineValueEl, namesOf, hereOf } from "./views.js";
-import { labelOf } from "./codebox.js";
+import { labelOf, BUILTINS } from "./codebox.js";
+import { receiverBefore, projectionsFor, typeOf, projectable } from "./projections.js";
+import { float } from "./float.svelte.js";
+import SlashList from "./SlashList.svelte";
 import { units, newCodeKey } from "./draft.js";
 import { pressed } from "./keys.js";
 
@@ -116,6 +119,7 @@ function decorations(state, editor) {
 }
 
 let version = 0;   // (the snapshot's: a value drawn again when anything it could read changes)
+let pick = null;   // (⌘O on an inline list: its references, floated: SlashList)
 const BARE = /^\s*@[0-9]{8}T[0-9]{6}-[0-9a-f]{4}\s*$/;   // (code that's just a reference: @x, a mention)
 
 /** Whether run `r` is selected, just it: the stop between before it and after it. */
@@ -140,7 +144,43 @@ export function enterCode(view) {
   return true;
 }
 
+/** After a dot in an open inline expression (`x.` and what's typed after it): where the name starts, what's typed, the
+ * receiver; else null. */
+function dotAt(state) {
+  const open = openRun(state);
+  if (!open) return null;
+  const before = state.doc.textBetween(open.from + 1, state.selection.head);
+  const m = before.match(/\.([A-Za-z_][A-Za-z0-9_']*)?$/);
+  if (!m) return null;
+  const x = receiverBefore(before, before.length - m[0].length);
+  if (!projectable(x)) return null;
+  return { from: state.selection.head - (m[1] || "").length, q: m[1] || "", x };
+}
+
 export function inlineCode(editor) {
+  // (what can be projected, after a dot in its open code: the / menu's list, at the dot; TYPE.md "Projection")
+  const dot = { box: null, items: [], sel: 0, from: null, shut: null };
+  const dotClose = () => { dot.box?.dismiss(false); dot.box = null; dot.items = []; };
+  const dotPick = (view, item) => {
+    const d = dotAt(view.state);
+    if (!d || !item) return;
+    view.dispatch(view.state.tr.insertText(item.label, d.from, view.state.selection.head));
+    dotClose();
+  };
+  const dotDraw = (view) => {
+    const d = dotAt(view.state);
+    if (!d || d.from === dot.shut) { dotClose(); return; }
+    dot.shut = null;
+    if (d.from !== dot.from) { dot.sel = 0; dot.from = d.from; }
+    const type = typeOf(hazel.run, d.x);
+    dot.items = projectionsFor(BUILTINS, type).filter((p) => p.label.startsWith(d.q))
+      .map((p) => ({ label: p.label, note: [p.detail, p.info].filter(Boolean).join(" · ") + (p.fits ? "" : "  (not on " + (type || "?") + ")") }));
+    if (!dot.items.length) { dotClose(); return; }
+    dot.sel = Math.min(dot.sel, dot.items.length - 1);
+    const run = (c) => dotPick(view, c);
+    if (!dot.box) dot.box = float(SlashList, view.coordsAtPos(d.from), { cmds: dot.items, sel: dot.sel, run });
+    else { dot.box.props.cmds = dot.items; dot.box.props.sel = dot.sel; }
+  };
   return new Plugin({
     key: icodeKey,
     state: {   // (the open run's key, or null; it closes as the caret leaves it)
@@ -156,13 +196,37 @@ export function inlineCode(editor) {
     props: {
       decorations: (state) => decorations(state, editor),
       handleKeyDown(view, e) {
+        if (dot.box && dot.items.length) {   // (the projections' list open: its keys)
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            dot.sel = (dot.sel + (e.key === "ArrowDown" ? 1 : -1) + dot.items.length) % dot.items.length;
+            dot.box.props.sel = dot.sel;
+            return true;
+          }
+          if (e.key === "Enter" || e.key === "Tab") { dotPick(view, dot.items[dot.sel]); return true; }
+          if (e.key === "Escape") { dot.shut = dot.from; dotClose(); return true; }
+        }
         const s = view.state, { head, empty } = s.selection;
+        if (pick?.open) {   // (its references listed: ↑/↓, Enter opens, anything else closes it)
+          const n = pick.props.cmds.length;
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") { pick.props.sel = (pick.props.sel + (e.key === "ArrowDown" ? 1 : n - 1)) % n; return true; }
+          if (e.key === "Enter") { pick.props.run(pick.props.cmds[pick.props.sel]); return true; }
+          pick.dismiss(false);
+          if (e.key === "Escape") return true;
+        }
         if (pressed(e, "open")) {   // (⌘O on one selected: what its value is, a reference's pericope; never what its code reads)
           const r = codeRuns(s.doc).find((x) => x.source !== null && isSelected(s, x));
           if (!r) return false;
-          const chip = view.dom.querySelector(".fw-icode-sel .fw-ref");
-          const id = chip?.title.match(/^@([0-9]{8}T[0-9]{6}-[0-9a-f]{4})/)?.[1];
-          if (id) editor.open({ target: id });
+          const value = view.dom.querySelector(".fw-icode-sel");
+          const refs = [...(value?.querySelectorAll(".fw-ref") || [])]
+            .map((c) => ({ id: c.title.match(/^@([0-9]{8}T[0-9]{6}-[0-9a-f]{4})/)?.[1], label: c.textContent }))
+            .filter((x) => x.id);
+          if (refs.length === 1) editor.open({ target: refs[0].id });
+          else if (refs.length > 1) {   // (several: a list of them, just their titles, the user, 2026-11-26: "make the ui very minimal")
+            pick = float(SlashList, value.getBoundingClientRect(), {
+              cmds: refs.map((x) => ({ ...x, note: "" })), sel: 0,
+              run: (c) => { pick.dismiss(false); editor.open({ target: c.id }); },
+            }, () => view.focus());
+          }
           return true;
         }
         if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return false;
@@ -237,7 +301,7 @@ export function inlineCode(editor) {
       });
       const stop = onSnapshot(redraw);
       hazel.load(redraw);
-      return { destroy: () => stop?.() };
+      return { update: (v) => dotDraw(v), destroy: () => { stop?.(); dotClose(); } };
     },
   });
 }

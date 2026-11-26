@@ -328,11 +328,72 @@ let set_snapshot = (json: string) => {
 
 /* --- running a source ------------------------------------------------------------------ */
 
+let ctx = Builtins.ctx_init(Some(Operators.default_mode));
+
 type ran = {
   value: Exp.t,
   ty: Typ.t,
   info: Statics.Map.t,
-  too_long: bool /* ran out of steps: it may never finish (a hole stands for its value) */
+  too_long: bool, /* ran out of steps: it may never finish (a hole stands for its value) */
+  casts: list((string, string, string)) /* each cast put in: (the cast, from, to), TYPE.md "Casting" */
+};
+
+/* --- casting (TYPE.md "Casting", the user, 2026-11-26: "a broad approach to autocasting for our context"): where
+   Hazel's checker finds a value of one type where another is wanted, and fw knows the way, a cast is put in: the term
+   wrapped in an ordinary call (asText, text, body, asBlock), the program checked again. Type-directed and visible
+   (each reported); a hole's type is unknown, so it's never cast. */
+let ty_name = (ty: Typ.t): string => named(Typ.pretty_print(ty));
+let cast_for = (syn: Typ.t, ana: Typ.t): option(string) => {
+  let s = ty_name(syn) and a = ty_name(ana);
+  let listy = String.is_prefix(s, ~prefix="[") && String.is_suffix(s, ~suffix="]");
+  let texty = List.mem(["Int", "Float", "Bool", "Date", "Ref"], s, ~equal=String.equal) || listy;
+  switch (a) {
+  | "String" when texty => Some("asText")
+  | "Block" when String.equal(s, "String") => Some("text")
+  | "Block" when String.equal(s, "Ref") => Some("body")
+  | "Block" when texty => Some("asBlock")
+  | _ => None
+  };
+};
+/* The mismatches a cast mends, by the term's id: (id, the cast, from, to). */
+let castable = (info: Statics.Map.t): list((Id.t, string, string, string)) =>
+  Id.Map.bindings(info)
+  |> List.filter_map(~f=((_, i)) =>
+       switch (i) {
+       | Info.InfoExp(e) =>
+         List.find_map(e.marks, ~f=
+           fun
+           | Mark.ExpectationMismatch({ana, syn}) =>
+             Option.map(cast_for(syn, ana), ~f=c => (Exp.rep_id(e.user_term), c, ty_name(syn), ty_name(ana)))
+           | _ => None
+         )
+       | _ => None
+       }
+     )
+  |> List.dedup_and_sort(~compare=((a, _, _, _), (b, _, _, _)) => Id.compare(a, b));
+/* `exp` with each mismatch fw can mend cast (a few rounds: a cast may make the next one checkable), checked again:
+   (the term, its statics, its elaboration, the casts put in). */
+let with_casts = (exp: Exp.t) => {
+  let rec go = (exp, n, done_) => {
+    let (info, elab) = Statics.mk(CoreSettings.on, ctx, exp);
+    switch (n > 0 ? castable(info) : []) {
+    | [] => (exp, info, elab, List.rev(done_))
+    | found =>
+      let at = Id.Map.of_list(List.map(found, ~f=((id, c, _, _)) => (id, c)));
+      let exp =
+        Exp.map_term(
+          ~f_exp=
+            (continue, e) =>
+              switch (Id.Map.find_opt(Exp.rep_id(e), at)) {
+              | Some(c) => IdTagged.FreshGrammar.Exp.(ap(Forward, var(c), continue(e)))
+              | None => continue(e)
+              },
+          exp,
+        );
+      go(exp, n - 1, List.rev_map(found, ~f=((_, c, f, t)) => (c, f, t)) @ done_);
+    };
+  };
+  go(exp, 3, []);
 };
 
 /* Steps one run may take (the user, 2026-11-25: "a relatively short step limit"): a program that would run on (a
@@ -340,7 +401,72 @@ type ran = {
    (body, wordCount) gets its own. */
 let step_limit = 100000;
 
-let ctx = Builtins.ctx_init(Some(Operators.default_mode));
+
+/* x.f, written for f(x) (TYPE.md "Projection": the user, 2026-11-25: "because this is simultaneously a live code
+   notebook and a personal database, they sort of ARE fields"; built 2026-11-26). Done on the parsed term, where Hazel's
+   own parser has already found x (its precedence: `@p.wordCount + 1` is (wordCount(@p)) + 1, `@p.title.length` a
+   chain) and where Hazel reads `.` as a labeled tuple's projection, Dot(x, Label(f)). Rewritten when f is a function
+   in scope: fw's or Hazel's built-ins (the context), or a name the code binds itself; anything else stays Hazel's own
+   projection (a labeled tuple's field). Lexical, never x's type, so a hole stays a hole: `?.wordCount` is
+   `wordCount(?)`. With arguments, Hazel's convention (a function of several takes one tuple): `x.f(a, b)` is
+   `f((x, a, b))`, `x.f()` is `f(x)`. */
+let projections = (exp: Exp.t): Exp.t => {
+  let bound = Stdlib.Hashtbl.create(16);
+  let _ =
+    Exp.map_term(
+      ~f_pat=
+        (continue, p) => {
+          switch (Pat.term_of(p)) {
+          | Var(x) => Stdlib.Hashtbl.replace(bound, x, ())
+          | _ => ()
+          };
+          continue(p);
+        },
+      exp,
+    );
+  let known = name =>
+    Stdlib.Hashtbl.mem(bound, name) || Option.is_some(Ctx.lookup_var(ctx, name));
+  let rec unparens = (e: Exp.t) =>
+    switch (Exp.term_of(e)) {
+    | Parens(x) => unparens(x)
+    | _ => e
+    };
+  let label = (l: Exp.t) =>
+    switch (Exp.term_of(l)) {
+    | Label(name) when known(name) => Some(name)
+    | _ => None
+    };
+  let module F = IdTagged.FreshGrammar.Exp;
+  /* (go: the rewrite of a whole term, itself included: a chain's inner dots, its arguments) */
+  let rec go = (e: Exp.t): Exp.t => Exp.map_term(~f_exp=step, e)
+  and step = (continue, e) =>
+        switch (Exp.term_of(e)) {
+        | Ap(dir, f, arg) =>
+          switch (Exp.term_of(f)) {
+          | Dot(x, l) =>
+            switch (label(l)) {
+            | Some(name) =>
+              let x = go(x);
+              let args =
+                switch (Exp.term_of(unparens(arg))) {
+                | Tuple([]) => []
+                | Tuple(l) => List.map(~f=go, l)
+                | _ => [go(arg)]
+                };
+              {...e, term: Ap(dir, F.var(name), List.is_empty(args) ? x : F.tuple([x, ...args]))};
+            | None => continue(e)
+            }
+          | _ => continue(e)
+          }
+        | Dot(x, l) =>
+          switch (label(l)) {
+          | Some(name) => {...e, term: Ap(Forward, F.var(name), go(x))}
+          | None => continue(e)
+          }
+        | _ => continue(e)
+        };
+  go(exp);
+};
 
 let run_source = (~self: string="", src: string): option(ran) =>
   switch (
@@ -348,8 +474,7 @@ let run_source = (~self: string="", src: string): option(ran) =>
   ) {
   | None => None
   | Some(z) =>
-    let exp = MakeTerm.from_zip_for_sem(z, ~root=Exp).term;
-    let (info, elab) = Statics.mk(CoreSettings.on, ctx, exp);
+    let (exp, info, elab, casts) = with_casts(MakeTerm.from_zip_for_sem(z, ~root=Exp).term |> projections);   /* (x.f first, then casts) */
     let ty =
       switch (Id.Map.find_opt(Exp.rep_id(exp), info)) {
       | Some(InfoExp(i)) => Info.exp_ty(i)
@@ -376,8 +501,8 @@ let run_source = (~self: string="", src: string): option(ran) =>
       };
     FwPrelude.reading := saved;
     switch (result) {
-    | LimitedCompleted((value, _)) => Some({value, ty, info, too_long: false})
-    | StepLimitExceeded => Some({value: Exp.fresh(EmptyHole), ty, info, too_long: true})
+    | LimitedCompleted((value, _)) => Some({value, ty, info, too_long: false, casts})
+    | StepLimitExceeded => Some({value: Exp.fresh(EmptyHole), ty, info, too_long: true, casts})
     };
   };
 
@@ -539,9 +664,17 @@ let answer = (~self: string="", src: string): Yojson.Safe.t => {
   | None => `Assoc([("kind", `String("error")), ("message", `String("can't parse"))])
   | Some({too_long: true, _}) =>
     `Assoc([("kind", `String("error")), ("message", `String("∞ ran too long: it may never finish"))])
-  | Some({value, ty, info, _}) =>
+  | Some({value, ty, info, casts, _}) =>
+    let casts_ =
+      `List(List.map(casts, ~f=((c, f, t)) => `Assoc([("cast", `String(c)), ("from", `String(f)), ("to", `String(t))])));
     let typ = ("type", `String(is_block_ty(ty) ? "Block" : ty_string(ty)));
     let errors = ("errors", errors_json(info));
+    let with_casts = j =>
+      switch (j) {
+      | `Assoc(l) when !List.is_empty(casts) => `Assoc(l @ [("casts", casts_)])
+      | j => j
+      };
+    with_casts @@
     if (is_arrow(ty)) {
       `Assoc([("kind", `String("function")), typ, errors]);
     } else if (is_block_ty(ty)) {
@@ -615,6 +748,24 @@ let () = {
         | _ => None
         }
     );
+  /* (a value as text, for asText (TYPE.md "Casting"): a reference its title, a date as fw writes one, a list its
+     things with commas between, a string its words, anything else as Hazel prints it) */
+  let rec text_of_value = (d: Exp.t): string => {
+    let d = strip(pretty_dates(d));
+    switch (FwPrelude.id_of_ref(d)) {
+    | Some(id) => FwPrelude.title_of(id)
+    | None =>
+      switch (Unboxing.unbox(Atom(String), d)) {
+      | Matches(s) => s
+      | _ =>
+        switch (Exp.term_of(d)) {
+        | ListLit(l) => String.concat(~sep=", ", List.map(~f=text_of_value, l))
+        | _ => print(d)
+        }
+      }
+    };
+  };
+  FwPrelude.value_text := text_of_value;
   FwPrelude.eval_source :=
     (
       (self, src) =>

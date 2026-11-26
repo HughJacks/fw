@@ -112,3 +112,15 @@ test("a masked quote's view: its code marked, its text exactly as given (the len
   assert.ok(kids[1].marks.some((m) => m.type === "icode"));
   assert.equal(lensOf(d, "\u0000"), "a $1$ b 3\\$");
 });
+
+import { liveFacts } from "../src/draft.js";
+test("a block just written has facts at once (made now, titled by its first line), the core's kept as they are", () => {
+  const core = { a: { title: "old", created: "2026-10-01T10:00:00-04:00" } };
+  const live = { id: "p", body: { id: "p", t: "blocks", children: [{ id: "a", t: "text", text: "x" }, { id: "n", t: "text", text: "\n new words\nmore" }] } };
+  const f = liveFacts(core, live, "2026-11-26T09:00:00-05:00");
+  assert.equal(f.a, core.a);
+  assert.equal(f.n.title, "new words");
+  assert.equal(f.n.created, "2026-11-26T09:00:00-05:00");
+  assert.equal(f.n.pericope, "p");
+  assert.equal(liveFacts(core, null, "x"), core);
+});

@@ -705,7 +705,55 @@ let from_parts = (d: DHExp.t): option((DHExp.t, DHExp.t)) =>
   | _ => None
   };
 
+/* --- casts (TYPE.md "Casting"): ordinary functions, so an inserted one is a call you could have written, and the
+   page can show it. The bridge puts one in wherever Hazel's checker finds a value of one type where another is
+   wanted and fw knows the way (fwbridge `cast_for`); a hole is never cast (its type is unknown: no mismatch), and a
+   cast given a hole gives a hole. */
+/* Set by the bridge: a value as text, as fw writes it (a date pretty, a reference its title, a list its things with
+   commas between, a string its words). */
+let value_text: ref(DHExp.t => string) = ref(_ => "");
+let is_hole = (d: DHExp.t): bool =>
+  switch (Exp.term_of(d)) {
+  | EmptyHole
+  | MultiHole(_) => true
+  | _ => false
+  };
+/* A reference's title, as the title built-in gives it ("?" for one that's gone). */
+let title_of = (id: string): string =>
+  switch (facts_of(id), meta_of(id)) {
+  | (Some(f), _) => f.ftitle
+  | (None, Some(p)) when String.equal(p.pid, id) => p.title
+  | _ => "?"
+  };
+/* A value as blocks: a reference its window (body), text a block of text, a list its things as blocks; anything
+   else its text in a block. */
+let rec as_block = (d: DHExp.t): DHExp.t =>
+  if (is_hole(d)) {
+    hole();
+  } else {
+    switch (id_of_ref(d)) {
+    | Some(id) => from_id(id)
+    | None =>
+      switch (Unboxing.unbox(Atom(String), d)) {
+      | Matches(s) => text(s)
+      | _ =>
+        switch (Exp.term_of(d)) {
+        | ListLit(l) => blocks(List.map(~f=as_block, l))
+        | _ => text(value_text^(d))
+        }
+      }
+    };
+  };
+
 let fns: list(fn) = [
+  {
+    name: "asText",
+    arg: Unknown(Internal),
+    ret: Atom(String),
+    imp: d => Some(is_hole(d) ? hole() : Fresh.Exp.string(value_text^(d))),
+    custom_statics: None,
+  },
+  {name: "asBlock", arg: Unknown(Internal), ret: Typ.term_of(block_var), imp: d => Some(as_block(d)), custom_statics: None},
   {
     name: "text",
     arg: Atom(String),

@@ -75,7 +75,13 @@ code, the page hears of every change one way (`web/src/live.js`: the core pushes
 /api/live), and each view refetches what it shows; not yet each view saying what it reads, and the core still
 rereads the whole store per request.
 
-## Projection: `x.f` as sugar (agreed 2026-11-25, not built)
+**There is no "saved"** (the user, 2026-11-26: "the idea of SAVED is not real, we are always saving every keystroke,
+just like hazel every editor state is meaningful"). What the page holds is what's written, now; the core's word on it
+follows a moment later, never a state you wait in. Nothing is drawn or described as unsaved; facts about a block
+just written are the page's own until the core's arrive (`liveFacts`); a core that doesn't answer is said as that
+("your writing is here, and goes through when it does"), not as something unsaved.
+
+## Projection: `x.f` as sugar (agreed 2026-11-25, built 2026-11-26)
 
 The user: "because this is simultaneously a live code notebook and a personal database, they sort of ARE fields, so i
 think we should lean on the syntactic sugar method". `x.f` is written for `f(x)`, for any function (fw's and your
@@ -84,6 +90,47 @@ own), rewritten before typing, never resolved by x's type: so a hole stays meani
 stored data when facts are computed (and depend on `here`); two ways to write the same thing; a clash if pericopes
 ever get labelled fields. Pays off once completion after the dot lists what can be projected (the code-writing
 experience).
+
+Built (2026-11-26): rewritten on the parsed term, in the bridge's `run_source` before typing (and before casting,
+which then sees `f(x)`), not as a text rewrite: Hazel's own parser has already found x there (its precedence: `@p.
+wordCount + 1` is `(wordCount(@p)) + 1`; `@p.title.length` a chain), and Hazel already reads `.` as a labeled tuple's
+projection, `Dot(x, Label(f))`. Lexical, not by type: rewritten when f is a function in scope (fw's or Hazel's
+built-ins, or a name the code binds); anything else stays Hazel's label projection (`(a=1, b=2).b` is 2). Arguments by
+Hazel's convention, a function of several taking one tuple: `x.f(a, b)` is `f((x, a, b))`, `x.f()` is `f(x)`. A
+number's dot is a number (`1.5`; `21.double` doesn't tokenize: `(21).double`). After a dot, completion lists the
+functions whose first argument fits x's type first (its static type, asked of the engine: a hole has one), then the
+rest: in the code box (CodeMirror's list, Tab takes it) and in an inline expression's open code (the / menu's list at
+the dot, ↑/↓, Enter or Tab, Esc); `web/src/projections.js`.
+
+## Casting (built 2026-11-26)
+
+The user: "a broad approach to autocasting for our context … these are first hazel problems then UI ones". Agreed
+earlier: the result first, then arguments.
+
+- **Arguments (and anywhere a type is wanted):** after Hazel's checker runs, wherever it finds a value of one type where
+  another is wanted (its `ExpectationMismatch`) and fw knows the way, the term is wrapped in an ordinary call and the
+  program checked again (a few rounds: one cast can make the next checkable). The casts are functions you could write
+  yourself, so nothing is hidden:
+
+  | from → to | cast | gives |
+  |---|---|---|
+  | Int, Float, Bool → String | `asText` | its digits, `true` |
+  | Date → String | `asText` | as fw writes dates: "Nov 25, 2026, 3:12 pm" |
+  | Ref → String | `asText` | its title |
+  | a list → String | `asText` | its things as text, commas between |
+  | String → Block | `text` | a block of text |
+  | Ref → Block | `body` | its window |
+  | Int, Float, Bool, Date, a list → Block | `asBlock` | a list its things as blocks, the rest its text in a block |
+
+  So `text(created(@x))`, `wordCount(@x) ++ " words"`, `"see " ++ @x`, `Blocks([@x, text("…")])` just work.
+- **The result** (what the place wants): an expression block shows blocks, or anything else as its text; an inline
+  expression only text (blocks there are `!`). A String or a Date shows as its words, never its quotes.
+- **Holes stay holes:** a hole's type is unknown, which is never a mismatch, so it's never cast (`wordCount(@x) ++ ?`
+  is `"12" ++ ?`); a cast given a hole gives a hole. A mismatch fw has no way across (`wordCount("x")`, a String where
+  a Ref is wanted) stays Hazel's error.
+- **Visible:** every run reports the casts it put in (`casts: [{cast, from, to}]`); the page says them in a value's
+  tooltip and, while the code is open, under it ("⤷ asText: Int → String").
+- Not cast (yet): branches of differing types (`if … then 3 else "x"`), an Option (`firstVisit`), tuples.
 
 ## Inline: mentions and inline expressions (agreed 2026-11-25; inline expressions built the same day)
 
@@ -138,6 +185,25 @@ pasting `$…$` makes code too and copying gives the `$…$` back. An expression
   handed to the page with each `$` as `\$`, so a value is never read as code again. The core's stored count (it
   can't run Hazel) counts each inline expression as one word, never its code.
 - Masks stay spans of someone else's text: a sealed `Span` (Loro cursors), `mask(body(@x), [spans])`.
+
+## Right-side tabs: the rule (2026-11-26)
+
+The user: "for stacked tabs … we need a clear rule"; "the borders should match … showing the name is enough of a hover
+state"; "it doesnt need to show here while inactive … there will be many cases where there isnt enough space".
+
+1. Every right-side tab is the same square: 1.2rem, its 1px line just outside it (the ƒ, a quote's and a paraphrase's
+   ↗, a dependency's ↗).
+2. One primary tab per block (its ƒ, or its ↗), joined to the block by its line, there at rest (faint).
+3. Its dependency tabs only while the block is active, stacked under the primary, not joined.
+4. Room: from under the primary down to where the next block's primary tab sits (at the page's end, all of them); what
+   doesn't fit is a last "+n" slot, a click listing the rest (titles only).
+5. Hovering only reveals the name, in a box on the tab's own line (one shape), cut at about 20 characters with "…".
+6. One tab lit at a time: the one ⌘O opens (the user: "it needs to be clear when we use command O what we are
+   targeting"). Two looks only, never a third (the user: "there should be only one" inactive state): at rest (faint,
+   no line) or lit (its line; filled when selected whole). A dependency is opened by a click, never ⌘O, so it's never
+   lit: it looks as any tab at rest, its arrow ↙ (this draws from that), where a reference's ↗ is this points to that.
+   A quote's ↗ while an expression inside it is selected: at rest, though its row is bright. Hovered, any tab: its line
+   and its name.
 
 ## Every fact typed (built 2026-11-25)
 
@@ -349,7 +415,7 @@ below : Ref        -- the peer block just after it
   and an edit to a neighbour reruns it on the key.
 - **Peers only:** the blocks before and after it in the same container or pericope.
 - **None there: a hole**, so `f(below)` is f applied to a hole and shows `?` where it can't finish. A wrong type is
-  Hazel's type error (automatic casting, agreed, isn't built yet).
+  Hazel's type error, unless fw can cast it ("Casting").
 - An expression read through `body` has its own above and below (where it sits), not the reader's.
 - `this : Ref` (built 2026-11-25; the user: "this should be the current pericope, we dont need a word for self
   yet"): the pericope the expression is in, where it sits now (a call's: the quote's pericope). Read from inside, the
@@ -392,7 +458,7 @@ below : Ref        -- the peer block just after it
 - The page keeps an empty block after a pericope's last block, so an expression at the end has an empty block below,
   not a hole.
 
-Agreed with it, not built yet: automatic casting (the result first, then arguments), and identity all the way down
+Agreed with it, not built yet: identity all the way down
 (`body` gives windows inside windows; a new block only when the words change).
 
 ## A quote of an expression is a call (built 2026-11-24)

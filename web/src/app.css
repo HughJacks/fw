@@ -235,6 +235,16 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 .fw-open::after { content: ""; position: absolute; inset: 0; margin: auto; width: .62rem; height: .62rem; background: currentColor;
   -webkit-mask: var(--arrow) center / contain no-repeat; mask: var(--arrow) center / contain no-repeat; }
 .fw-open:hover { color: var(--quote-hi); }
+/* every right-side reference tab, hovered, grows out to the right with the name of what it opens (the user, 2026-11-26:
+   "all right side reference tabs should have hover behavior"), as an expression's dependency tabs do */
+.fw-open > .fw-open-name { display: none; position: absolute; left: 100%; top: -1px; bottom: -1px; box-sizing: border-box; max-width: 22ch;
+  padding: 0 .45rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: calc(1.2rem); pointer-events: none;
+  font: 11.5px/1.2rem ui-monospace, "SF Mono", Menlo, monospace; color: var(--quote-hi); background: var(--bg);
+  border: 1px solid var(--quote-mid); border-left: none; }
+.fw-open:hover > .fw-open-name:not(:empty) { display: block; }
+/* (hovered: the tab as it's drawn lit, its line just outside it, the same as its name's; only the name is new) */
+.fw-open:hover:has(> .fw-open-name:not(:empty)) { opacity: 1 !important; outline: 1px solid var(--quote-mid); outline-offset: 0; color: var(--quote-hi); }
+.fw-top:has(> .fw-open:hover > .fw-open-name:not(:empty)) { opacity: 1 !important; }   /* (its row faint at rest: not while its tab is hovered) */
 .fw-locked .fw-body { color: var(--dim); }
 .fw-qtext { white-space: pre-wrap; }
 .fw-hidden { color: var(--quote); }
@@ -276,7 +286,25 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
   background: var(--tone-mid); width: calc(var(--d, 0) * var(--u) + var(--fp) + 2rem - 1.2rem); }
 .fw-doc .fw-expr.fw-chosen > .fw-fn { background: var(--tone-hi); color: var(--bg); outline-color: var(--tone-hi); }
 .fw-doc .fw-expr.fw-chosen > .fw-fn::before { background: var(--tone-hi); }
-.fw-doc > .ProseMirror > .fw-expr::before { color: var(--tone-num); }   /* (its number in the gutter: its value's colour, at rest too) */
+.fw-doc > .ProseMirror > .fw-expr::before { color: var(--tone-num); }
+/* its dependencies (exprview.js layoutDeps): a tab each under the ƒ, in its column, the ƒ's square exactly (1.2rem, its
+   line 1px outside), red (references); not joined to the block; only while the block is active (the user, 2026-11-26:
+   "it doesnt need to show here while inactive"); hovered, only its name grows out, cut at about 20 characters */
+.fw-deps { position: absolute; top: calc(.15rem + 1.2rem + 1px + .35rem); left: calc(100% + var(--d, 0) * var(--u) + var(--fp) + 1px + 2rem - 1.2rem - 1px);
+  display: flex; flex-direction: column; align-items: flex-start; gap: .35rem; z-index: 2; }
+.fw-expr:not(.fw-here, .fw-chosen, .fw-expr-coding, :has(.fw-current)) > .fw-deps { display: none; }
+.fw-dep { display: flex; align-items: center; height: 1.2rem; min-width: 1.2rem; padding: 0; box-sizing: content-box; cursor: pointer;
+  border: 1px solid var(--quote-mid); background: var(--bg); color: var(--quote-hi); font: 11.5px/1 ui-monospace, "SF Mono", Menlo, monospace; }
+.fw-dep > .fw-dep-mark { flex: none; width: 1.2rem; height: 100%; display: flex; align-items: center; justify-content: center; }
+.fw-dep-ref > .fw-dep-mark { background: currentColor; -webkit-mask: var(--arrow) center / .62rem no-repeat; mask: var(--arrow) center / .62rem no-repeat;
+  transform: rotate(180deg); }   /* (↙: a dependency, this draws from that; ↗ is a reference, this points to that) */
+/* (never lit, one tab lit at a time, the one ⌘O opens, and a dependency opens by a click: so it looks as any tab at rest,
+   faint, no line; hovered, as any tab hovered: its line, its name; the user, 2026-11-26) */
+.fw-dep { opacity: .45; border-color: transparent; transition: opacity .18s ease; }
+.fw-dep:hover { opacity: 1; border-color: var(--quote-mid); }
+.fw-dep-more > .fw-dep-mark { width: auto; min-width: 1.2rem; padding: 0 .2rem; box-sizing: border-box; }
+.fw-dep > .fw-dep-name { display: none; max-width: 22ch; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 0 .45rem 0 .1rem; }
+.fw-dep:hover > .fw-dep-name { display: block; }   /* (its number in the gutter: its value's colour, at rest too) */
 .fw-expr-out.fw-expr-block .fw-container > * { margin-bottom: var(--gap); }
 .fw-expr-out.fw-expr-block .fw-container > *:last-child { margin-bottom: 0; }
 .fw-expr:has(.fw-current) { outline: .5px solid var(--tone-path); outline-offset: -.5px; }   /* (in its value: the path, its colour) */
@@ -427,9 +455,12 @@ div.fw-peek { color: #5a5855; white-space: pre-wrap; padding: .2rem .6rem; }
 /* the ↗'s tab: only where ⌘O goes (the user, 2026-11-18): a quote selected whole; else the innermost quote you're writing
    in (⌘O opens its source there): outlined, a line to its border;
    filled when selected (tabs.js draws the gutter's) */
-.fw-quote:is(:has(> .fw-body > .fw-current):not(:has(> .fw-body > .fw-current .fw-quote.fw-chosen)), .fw-chosen) > .fw-top > .fw-open {
+/* (two looks only, the user, 2026-11-26: "there should be only one" inactive state: faint at rest, or lit when it's
+   what ⌘O opens (below); its row bright (you're in the quote) doesn't make it a third: faint as at rest) */
+:is(.fw-quote:has(.fw-current), .fw-quote.fw-chosen) > .fw-top > .fw-open { opacity: .45; }
+.fw-quote:is(:has(> .fw-body > .fw-current):not(:has(> .fw-body > .fw-current :is(.fw-quote.fw-chosen, .fw-expr.fw-chosen, .fw-expr.fw-in-item))), .fw-chosen) > .fw-top > .fw-open {
   color: var(--quote-mid); outline: 1px solid var(--quote-mid); opacity: 1; }   /* (in it: drawn, faded; bright when selected, below) */
-.fw-quote:is(:has(> .fw-body > .fw-current):not(:has(> .fw-body > .fw-current .fw-quote.fw-chosen)), .fw-chosen) > .fw-top > .fw-open::before {   /* (the line to its border) */
+.fw-quote:is(:has(> .fw-body > .fw-current):not(:has(> .fw-body > .fw-current :is(.fw-quote.fw-chosen, .fw-expr.fw-chosen, .fw-expr.fw-in-item))), .fw-chosen) > .fw-top > .fw-open::before {   /* (the line to its border) */
   content: ""; position: absolute; right: 100%; top: 50%; height: 1px;   /* (from the colour of the quote's border to the ↗'s:
      dim to bright, or bright to bright, which is solid; the user, 2026-11-19) */
   background: linear-gradient(to right, var(--edge, rgba(154, 106, 106, .55)), var(--quote-mid));
@@ -620,6 +651,9 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-expr-errors { color: var(--dim); font-size: .8em; padding: .2rem .5rem 0; white-space: pre-wrap; }
 .fw-expr-errors > div::before { content: "⦃ "; }
 .fw-expr-errors > div::after { content: " ⦄"; }
+.fw-expr-errors > .fw-expr-cast { opacity: .7; }   /* (a cast put in: said, not an error, TYPE.md "Casting") */
+.fw-expr-errors > .fw-expr-cast::before { content: "⤷ "; }
+.fw-expr-errors > .fw-expr-cast::after { content: none; }
 /* a reference drawn as its pericope's title, a chip (TYPE.md, references), in the code and in what it shows: grey,
    square, nothing more (the user, 2026-11-25: "drastically simplify reference chips, grey only, no rounded corners") */
 .fw-ref { color: var(--quote-hi); padding: 0;

@@ -8,5 +8,5 @@
   {#each cmds as c, n}
     <div class="fw-row{n === sel ? ' fw-sel' : ''}" onmousedown={(e) => { e.preventDefault(); run(c); }} role="button" tabindex="-1"><span>{c.label}</span></div>
   {/each}
-  {#if cmds[sel]}<div class="fw-dim fw-foot">{cmds[sel].note}</div>{/if}
+  {#if cmds[sel]?.note}<div class="fw-dim fw-foot">{cmds[sel].note}</div>{/if}
 </div>

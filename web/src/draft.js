@@ -213,3 +213,24 @@ export function deriveTitle(text) {
   }
   return null;
 }
+
+/** The core's facts, and a block just written in the open pericope given its own from here, the page being what's
+ * written now (every key is written at once: there's no "saved", the user, 2026-11-26; the core's word just comes a
+ * moment after): made now, its title from its first line, no visits, no backlinks; so `created(self)` is a date at once,
+ * never a hole. The core's facts take over as they arrive. */
+export function liveFacts(facts, live, now) {
+  if (!live) return facts;
+  let out = null;
+  const walk = (n) => {
+    if (!n) return;
+    if (n.id && !facts[n.id]) {
+      out ||= { ...facts };
+      const title = (n.text || n.source || "").split("\n").find((l) => l.trim())?.trim().slice(0, 60) || "";
+      out[n.id] = { title, written: null, created: now, updated: now, visits: 0, first: null, recent: [], kinds: {},
+        pericope: live.id, entry: n.id === live.id, backlinks: [] };
+    }
+    for (const k of n.children || []) walk(k);
+  };
+  walk(live.body);
+  return out || facts;
+}

@@ -13,11 +13,19 @@ import { drawValue, quoteOf, insideOf, namesOf, hereOf, toneOf } from "./views.j
 import { onSnapshot } from "./snapshot.svelte.js";
 import { codeBox, setText, labelOf, refsIn } from "./codebox.js";
 import { pressed } from "./keys.js";
+import { float } from "./float.svelte.js";
+import SlashList from "./SlashList.svelte";
 
 /** Hazel's errors, a line each (under a result, its code shown). */
 export function errorsEl(r) {
   const d = document.createElement("div");
   d.className = "fw-expr-errors";
+  for (const c of r?.casts || []) {   // (each cast put in, said while the code's open: TYPE.md "Casting", visible)
+    const line = document.createElement("div");
+    line.className = "fw-expr-cast";
+    line.textContent = `${c.cast}: ${c.from} → ${c.to}`;
+    d.appendChild(line);
+  }
   for (const e of r?.errors || []) {
     const line = document.createElement("div");
     line.textContent = `${e.term}: ${e.message}`;
@@ -70,11 +78,67 @@ export class ExprView {
     this.fn.title = "its code (⌘⇧X)";
     this.fn.addEventListener("mousedown", (e) => { e.preventDefault(); this.code ? this.close() : this.showCode(); });
     this.dom.append(this.fn);
+    // its dependencies, a tab each down the right side under the ƒ (the user, 2026-11-26): what its code names that you
+    // can open, each once; as many as its height has room for, the rest behind a "+n"; hovered, a tab grows out to the
+    // right with the name; a click opens it
+    this.depsEl = document.createElement("div");
+    this.depsEl.className = "fw-deps";
+    this.depsEl.contentEditable = "false";
+    this.dom.append(this.depsEl);
+    this.depsKey = null;
+    this.sizes = new ResizeObserver(() => this.layoutDeps());
+    this.sizes.observe(this.dom);
+    // (shown only while it's active: measured as it becomes so, the room then what's below it)
+    this.lit = new MutationObserver(() => { if (this.depsEl.offsetParent) this.layoutDeps(); });
+    this.lit.observe(this.dom, { attributes: true, attributeFilter: ["class"] });
     this.inner = null;   // (a Block value: a browsed editor, BlockEditor.valueEditor; entered and left as a quote's)
     this.shown = null;   // (the value it shows, as JSON: a new one redraws it)
     this.draw();
     this.stop = onSnapshot(() => this.draw());   // (drawn now, and again as anything it could read changes)
     hazel.load(() => this.draw());   // (the engine loaded after the page opens: drawn again once it's here)
+  }
+
+  /** What it depends on that you can open: the pericopes and blocks its code names, each once, that exist and aren't
+   * the page you're on. */
+  deps() {
+    const here = hereOf(this.parent);
+    return refsIn(this.node.attrs.source || "").filter((id) => id !== here && labelOf(id) !== null);
+  }
+  /** Its dependency tabs drawn, under its ƒ (TYPE.md's tab rule, the user, 2026-11-26): as many as fit from there down
+   * to where the next block's own tab sits (at the page's end, as many as there are), the last slot a "+n" for the rest
+   * (a click lists them, titles only). */
+  layoutDeps() {
+    const deps = this.deps();
+    const step = 25;   // (px: a tab, its line and the gap: 1.2rem + 2px + .35rem)
+    const stackTop = this.dom.getBoundingClientRect().top + (this.fn.offsetTop || 2) + (this.fn.offsetHeight || 19) + 7;
+    let next = this.dom.nextElementSibling;
+    while (next && !next.matches?.(".fw-text, .fw-container, .fw-quote, .fw-image, .fw-expr")) next = next.nextElementSibling;
+    const limit = next ? next.getBoundingClientRect().top + (this.fn.offsetTop || 2) - 6 : Infinity;
+    const room = Math.max(1, Math.floor((limit - stackTop + 6) / step));
+    const key = `${deps.join(",")}|${Number.isFinite(room) ? room : "all"}|${deps.map((id) => labelOf(id)).join(",")}`;
+    if (key === this.depsKey) return;
+    this.depsKey = key;
+    const shown = deps.length > room ? deps.slice(0, room - 1) : deps, rest = deps.slice(shown.length);
+    const tab = (cls, mark, name, onPick) => {
+      const b = document.createElement("button");
+      b.className = `fw-dep ${cls}`;
+      b.tabIndex = -1;
+      const m = document.createElement("span"); m.className = "fw-dep-mark"; if (mark) m.textContent = mark;
+      const n = document.createElement("span"); n.className = "fw-dep-name"; n.textContent = name;
+      b.append(m, n);
+      b.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); onPick(b); });
+      return b;
+    };
+    const kids = shown.map((id) => tab("fw-dep-ref", "", labelOf(id), () => this.open?.({ target: id })));
+    if (rest.length) kids.push(tab("fw-dep-more", `+${rest.length}`, rest.map((id) => labelOf(id)).join(", "), (b) => {
+      const box = float(SlashList, b.getBoundingClientRect(), {
+        cmds: rest.map((id) => ({ id, label: labelOf(id), note: "" })), sel: 0,
+        run: (c) => { box.dismiss(false); this.open?.({ target: c.id }); },
+      });
+      const off = (e) => { if (!e.target.closest?.(".fw-menu")) { box.dismiss(false); document.removeEventListener("mousedown", off, true); } };
+      document.addEventListener("mousedown", off, true);
+    }));
+    this.depsEl.replaceChildren(...kids);
   }
 
   /** What it shows: its value (a Block value as blocks you can move through, not change), or why it can't yet; its
@@ -89,8 +153,9 @@ export class ExprView {
       this.out = drawValue(this.dom, r, this.open, insideOf(this.parent, this.node.attrs.id), namesOf(this.parent, this.node.attrs.id));
       if (this.item != null) this.items()[this.item]?.classList.add("fw-item-sel");   // (drawn again: the item you're on still lit)
     }
+    this.layoutDeps();
     this.dom.querySelector(":scope > .fw-expr-errors")?.remove();
-    if (this.code && r?.errors?.length) this.dom.appendChild(errorsEl(r));
+    if (this.code && (r?.errors?.length || r?.casts?.length)) this.dom.appendChild(errorsEl(r));
     this.dom.classList.toggle("fw-expr-coding", !!this.code);
   }
 
@@ -257,7 +322,7 @@ export class ExprView {
   ignoreMutation() { return true; }
   selectNode() { this.dom.classList.add("ProseMirror-selectednode"); }
   deselectNode() { this.dom.classList.remove("ProseMirror-selectednode"); this.selectItem(null, false); }
-  destroy() { this.gone = true; this.stop?.(); this.code?.destroy(); this.dropInner(); }
+  destroy() { this.sizes?.disconnect(); this.lit?.disconnect(); this.gone = true; this.stop?.(); this.code?.destroy(); this.dropInner(); }
 }
 
 /** The browser's selection read back just after an expression's code box closed (a focused box removed leaves the
@@ -274,8 +339,8 @@ export function exprGuard() {
   });
 }
 
-/** A list value's items stepped through (an expression selected whole): → (or Enter) onto its first item, ←/→ between
- * them, ← past the first back to it whole, ↑/↓ and Esc out of them; ⌘O opens the item's reference. */
+/** A list value's items stepped through (an expression selected whole): → onto its first item, ← onto its last, ←/→
+ * between them, ← past the first back to it whole, ↑/↓ and Esc out of them; ⌘O opens the item's reference. */
 export function exprItems(editor) {
   return new Plugin({
     props: {
@@ -286,7 +351,10 @@ export function exprItems(editor) {
         if (!ev || ev.inner || ev.code) return false;
         const n = ev.items().length;
         if (ev.item == null) {
-          if (n && !e.shiftKey && (e.key === "ArrowRight" || e.key === "Enter")) { ev.selectItem(0); return true; }
+          // (→ onto its first item, ← onto its last; Enter is Enter, as on any block selected whole: a new block after
+          // it, the user, 2026-11-26)
+          if (n && !e.shiftKey && e.key === "ArrowRight") { ev.selectItem(0); return true; }
+          if (n && !e.shiftKey && e.key === "ArrowLeft") { ev.selectItem(n - 1); return true; }
           return false;
         }
         if (pressed(e, "open")) { const id = ev.itemRef(); if (id) editor.open({ target: id }); return true; }

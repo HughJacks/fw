@@ -28,7 +28,7 @@ import { api, TEST } from "./api.js";
 import { slashMenu } from "./menu.js";
 import { ExprView, toggleCode, exprGuard, exprItems, valueTree } from "./exprview.js";
 import { inlineCode } from "./inlinecode.js";
-import { codeBox, setText } from "./codebox.js";
+import { codeBox, setText, labelOf } from "./codebox.js";
 import * as hazel from "./hazel.js";
 import { onSnapshot } from "./snapshot.svelte.js";
 import { setLive } from "./snapshot.svelte.js";
@@ -417,6 +417,10 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
               g.contentEditable = "false";
               g.textContent = "↗";
               g.title = "Open it";
+              const name = document.createElement("span");   // (hovered: its name, grown out to the right, as every right-side tab)
+              name.className = "fw-open-name";
+              name.textContent = para.title || labelOf(para.id) || "";
+              g.appendChild(name);
               g.addEventListener("mousedown", (e) => { e.preventDefault(); this.open({ target: para.id, home: para.home }); });
               return g;
             };
@@ -800,7 +804,7 @@ export class BlockEditor extends EditorRunes {   // (what the page derives from,
       this.status();
       return r.body;
     }
-    this.message = r.body.error || "not saved";
+    this.message = r.body.error || "the core isn't answering: your writing is here, and goes through when it does";
     this.status();
     if (!this.gone) setTimeout(() => this.save(), RETRY);   // (the terminal retries a refused save)
     return false;
