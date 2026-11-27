@@ -26,10 +26,9 @@ export function receiverBefore(text, dot) {
   return text.slice(i, dot).trim();
 }
 
-/** A function's first argument's type from its signature ("Ref -> Int": Ref; "(Date, Date) -> Bool": Date; Hazel's
- * list functions, no signature given: any list); not a function: null. */
+/** A function's first argument's type from its signature ("Ref -> Int": Ref; "(Date, Date) -> Bool": Date; "[a] -> Int":
+ * any list); not a function: null. */
 export function firstArg(name, detail) {
-  if (["map", "filter", "length"].includes(name)) return "[a]";
   if (!/->/.test(detail || "")) return null;
   const m = detail.match(/^\(([^,()]+(?:\([^()]*\))?)\s*,/) || detail.match(/^([^-]+?)\s*->/);
   return m ? m[1].trim() : null;

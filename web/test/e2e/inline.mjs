@@ -184,6 +184,13 @@ scenarios.projection = async (t) => {   // x.f written for f(x) (TYPE.md "Projec
   await t.key("Tab");
   t.check("  Tab takes it", await t.until(`document.querySelector(".fw-expr-codebox").fwCode.state.doc.toString() === "this.wordCount"`, 2000),
     await t.js(`document.querySelector(".fw-expr-codebox").fwCode.state.doc.toString()`));
+  const before = (a, b) => `(() => { const l = ${labels}; return l.includes("${a}") && l.includes("${b}") && l.indexOf("${a}") < l.indexOf("${b}"); })()`;
+  for (const [x, a, b, what] of [['"ab"', "string_trim", "wordCount", "a String's: Hazel's string functions"], ["pericopes", "map", "wordCount", "a list's: Hazel's list functions"]]) {
+    await setCode(t, "");
+    await t.type(x);
+    await t.type(".");
+    t.check(`  ${what} first (${a} before ${b})`, await t.until(before(a, b), 2000), await t.js(`JSON.stringify(${labels}.slice(0, 12))`));
+  }
   await t.key("x", 4 | 8);
   await t.until(`!document.querySelector(".fw-expr-code")`, 2000);
   await t.settle();

@@ -19,14 +19,17 @@ test("a function's first argument, from its signature", () => {
   assert.equal(firstArg("wordCount", "Ref -> Int"), "Ref");
   assert.equal(firstArg("before", "(Date, Date) -> Bool"), "Date");
   assert.equal(firstArg("writtenTitle", "Ref -> Option(String)"), "Ref");
-  assert.equal(firstArg("length", ""), "[a]");
+  assert.equal(firstArg("length", "[a] -> Int"), "[a]");
+  assert.equal(firstArg("map", "([a], a -> b) -> [b]"), "[a]");
+  assert.equal(firstArg("string_sub", "(String, Int, Int) -> String"), "String");
   assert.equal(firstArg("now", "Date"), null);
 });
 
 test("what fits first, then the rest; constants never", () => {
-  const B = [["title", "Ref -> String", ""], ["year", "Date -> Int", ""], ["now", "Date", ""], ["length", "", ""]];
+  const B = [["title", "Ref -> String", ""], ["year", "Date -> Int", ""], ["now", "Date", ""], ["length", "[a] -> Int", ""]];
   assert.deepEqual(projectionsFor(B, "Date").map((p) => [p.label, p.fits]), [["year", true], ["title", false], ["length", false]]);
   assert.deepEqual(projectionsFor(B, "[Ref]").map((p) => p.label)[0], "length");
+  assert.deepEqual(projectionsFor([...B, ["string_trim", "String -> String", ""]], "String").filter((p) => p.fits).map((p) => p.label), ["string_trim"]);
   assert.equal(typeOf(() => ({ kind: "value", type: "Ref" }), "this"), "Ref");
   assert.equal(typeOf(() => null, "this"), null);
 });
