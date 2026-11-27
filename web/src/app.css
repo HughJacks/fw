@@ -619,6 +619,12 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-icode-dollar { color: var(--expr-hi); }
 .fw-icode-out { color: var(--fg); cursor: text; }
 .fw-icode-out.fw-tone-data { color: var(--expr-hi); }
+/* a tuple's parts (views.js partsInto): each its own type's colour, whatever the whole's; a tag blue */
+.fw-part.fw-tone-text { color: var(--fg); } .fw-part.fw-tone-data { color: var(--expr-hi); }
+.fw-part.fw-tone-hole { color: var(--hole); } .fw-part:is(.fw-tone-ref, .fw-tone-window) { color: var(--quote-hi); }
+:is(.fw-part, .fw-icode-out).fw-tone-tag, :is(.fw-part, .fw-icode-out).fw-tone-tag .fw-ref { color: var(--blue); }
+.fw-expr[data-tone="tag"] > .fw-expr-out .fw-ref { color: var(--blue); }
+.fw-paren { color: var(--dim); }
 .fw-icode-out:is(.fw-tone-hole, .fw-icode-hole, .fw-icode-bad) { color: var(--hole); }
 .fw-icode-out.fw-bare::after { content: none; }   /* (a bare reference, @x: nothing computed, no ƒ) */
 /* (computed by you: an ƒ after it, the writing's own font, italic, on the line) */

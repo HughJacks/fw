@@ -118,6 +118,33 @@ let named = (s: string): string =>
 
 let ty_string = (ty: Typ.t): string => named(Typ.pretty_print(ty));
 
+/* A tuple value's parts, each {printed, type} (its type as fw names it; the page colours each by it); not a tuple,
+   None. */
+let rec bare_typ = (t: Typ.t): Typ.t =>
+  switch (Typ.term_of(t)) {
+  | Parens(t)
+  | TupLabel(_, t) => bare_typ(t)
+  | _ => t
+  };
+let parts = (v: Exp.t, ty: Typ.t): option(list(Yojson.Safe.t)) =>
+  switch (Exp.term_of(strip(pretty_dates(v)))) {
+  | Tuple(l) =>
+    let tys =
+      switch (Typ.term_of(bare_typ(ty))) {
+      | Prod(tys) when List.length(tys) == List.length(l) => List.map(~f=t => Some(bare_typ(t)), tys)
+      | _ => List.map(~f=_ => None, l)
+      };
+    Some(
+      List.map2_exn(l, tys, ~f=(x, t) =>
+        `Assoc([
+          ("printed", `String(item_text(x))),
+          ("type", `String(Option.value_map(t, ~default="", ~f=ty_string))),
+        ])
+      ),
+    );
+  | _ => None
+  };
+
 /* --- @<id> -> ref("<id>"), outside string literals ------------------------------- */
 
 let is_id_char = c =>
@@ -161,6 +188,26 @@ let desugar = (src: string): string => {
 
 /* --- the snapshot -------------------------------------------------------------------- */
 
+/* Offsets as the page counts them, UTF-16 units, and as OCaml does, bytes of UTF-8: `utf16_length(s)` the units in
+   `s`; `byte_of_utf16(s, u)` the byte where unit `u` falls. */
+let utf8_len = (b: int): int => b < 0x80 ? 1 : b < 0xE0 ? 2 : b < 0xF0 ? 3 : 4;
+let utf16_length = (s: string): int => {
+  let n = String.length(s);
+  let rec go = (i, k) => i >= n ? k : {
+    let l = utf8_len(Stdlib.Char.code(s.[i]));
+    go(i + l, k + (l == 4 ? 2 : 1));
+  };
+  go(0, 0);
+};
+let byte_of_utf16 = (s: string, u: int): int => {
+  let n = String.length(s);
+  let rec go = (i, k) => i >= n || k >= u ? Stdlib.min(i, n) : {
+    let l = utf8_len(Stdlib.Char.code(s.[i]));
+    go(i + l, k + (l == 4 ? 2 : 1));
+  };
+  go(0, 0);
+};
+
 let str = (j, k) =>
   switch (Yojson.Safe.Util.member(k, j)) {
   | `String(s) => s
@@ -176,15 +223,16 @@ let rec node_of_json = (j: Yojson.Safe.t): FwPrelude.node => {
   let case: FwPrelude.case =
     switch (str(j, "t")) {
     | "text" =>
+      let text = str(j, "text");
       Text(
-        str(j, "text"),
+        text,
         switch (Yojson.Safe.Util.member("links", j)) {
         | `List(l) =>
           List.filter_map(
             ~f=
               x =>
                 switch (Yojson.Safe.Util.member("to", x), Yojson.Safe.Util.member("at", x)) {
-                | (`String(to_), `List([`Int(a), `Int(e)])) => Some((to_, a, e))
+                | (`String(to_), `List([`Int(a), `Int(e)])) => Some((to_, byte_of_utf16(text, a), byte_of_utf16(text, e)))
                 | _ => None
                 },
             l,
@@ -605,7 +653,7 @@ let rec tree = (d: Exp.t): Yojson.Safe.t => {
             ~f=((text, links, at), (t, to_)) => {
               /* (a value's words as the page stores text: a dollar sign \$, never read back as code) */
               let t = String.substr_replace_all(t, ~pattern="$", ~with_="\\$");
-              let e = at + String.length(t);
+              let e = at + utf16_length(t);
               let links =
                 switch (to_) {
                 | Some(id) => [`Assoc([("to", `String(id)), ("at", `List([`Int(at), `Int(e)]))]), ...links]
@@ -734,6 +782,12 @@ and answer_ = (~self: string="", src: string): Yojson.Safe.t => {
         @ (
           switch (items(value)) {
           | Some(l) => [("items", `List(List.map(~f=x => `String(x), l)))]
+          | None => []
+          }
+        )
+        @ (
+          switch (parts(value, ty)) {
+          | Some(l) => [("parts", `List(l))]
           | None => []
           }
         ),

@@ -205,8 +205,23 @@ export function toneOf(r) {
   if (r.kind === "block") return ["from", "loop"].includes(r.block?.t) ? "window" : "text";
   const t = (r.type || "").replace(/^\[(.*)\]$/, "$1").replace(/^Option\((.*)\)$/, "$1");
   if (/^(Int|Float|Bool|Date)$/.test(t)) return "data";
-  if (t === "Ref") return "ref";
+  if (t === "Ref") return isTag(r.printed?.match(/Ref\("([^"]+)"\)/)?.[1]) ? "tag" : "ref";
   return "text";
+}
+/** A tuple's part's colour, by its own type (the bridge's `parts`): a hole in it unfinished. */
+const partTone = (p) => (p.printed === "?" || (p.type || "").includes("?") ? "hole" : toneOf({ kind: "value", type: p.type, printed: p.printed }));
+/** A tuple's parts drawn into `out`, each its own piece (stepped through as a list's items) and colour; parentheses dim. */
+function partsInto(out, parts, open, inside, names, item = "fw-item") {
+  out.append(el("span", "fw-paren", "("));
+  parts.forEach((p, n) => {
+    if (n) out.append(", ");
+    const span = el("span", `${item} fw-part fw-tone-${partTone(p)}`);
+    span.title = p.type || "";
+    span.append(...printedEl(p.printed, open, inside, names).childNodes);
+    out.append(span);
+  });
+  out.append(el("span", "fw-paren", ")"));
+  return out;
 }
 
 /** A value's printed form as its place shows it (TYPE.md "Casting", the result first): a String (a Date) its words,
@@ -228,9 +243,9 @@ export function inlineValueEl(r, open, names = new Map()) {
   if (r.kind === "error") return span("fw-icode-hole", "?", r.message);
   if (r.kind === "function") return span("fw-icode-wait", r.type);
   if (r.kind === "block") return span("fw-icode-bad", "!", "this works out to blocks, which can't sit in a line: write it as an expression block ($ in an empty block)");
-  const printed = words(r);
   const out = span(r.errors?.length ? "fw-icode-hole" : "", "", typeNote(r));
-  out.append(...printedEl(printed, open, new Set(), names).childNodes);
+  if (r.parts?.length) return partsInto(out, r.parts, open, new Set(), names, "fw-ipart");
+  out.append(...printedEl(words(r), open, new Set(), names).childNodes);
   return out;
 }
 
@@ -250,6 +265,7 @@ export function drawValue(box, r, open, inside = new Set(), names = new Map()) {
       out.append(span);
     });
   }
+  else if (r.parts?.length) out = partsInto(el("div", "fw-expr-out fw-expr-parts"), r.parts, open, inside, names);
   else out = printedEl(words(r), open, inside, names);
   if (r?.errors?.length) out.classList.add("fw-expr-holes");
   out.title = r?.type ? `${typeNote(r)}${r.errors?.length ? " · " + r.errors.map((e) => e.message).join("; ") : ""}` : "";

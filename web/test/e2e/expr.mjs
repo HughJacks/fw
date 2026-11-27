@@ -1,4 +1,4 @@
-import { A, A1, B, R, T, addExpr, lastOut, setCode, sleep } from "./fixture.mjs";
+import { A, A1, B, K, R, T, addExpr, lastOut, setCode, sleep } from "./fixture.mjs";
 
 export const scenarios = {};
 
@@ -440,4 +440,29 @@ scenarios.exprblocks = async (t) => {   // fw's type is Hazel's: a value of type
   await t.key("x", 4 | 8);
   t.check("Hazel's own errors, under the code", await t.until(`document.querySelector(".fw-expr-errors")?.textContent.includes("Expecting type Int but got inconsistent type String")`, 4000),
     await t.js(`document.querySelector(".fw-expr-coding")?.outerHTML`));
+};
+
+scenarios.tuples = async (t) => {   // a mixed tuple: each part its own colour, by its own evaluated type
+  await t.open(`#/p/${R}`);
+  await addExpr(t, `(1, "a", @${T}, @${K}, ?)`);
+  const tones = (sel) => `[...(${sel}?.querySelectorAll(".fw-part") || [])].map((x) => [...x.classList].find((c) => c.startsWith("fw-tone-")).slice(8) + ":" + x.textContent).join(" ")`;
+  t.check("a tuple: its parts, each its type's tone (data, text, a Ref red, a tag blue, a hole amber)", await t.until(`${tones(lastOut)} === "data:1 text:a ref:fox tag:poem hole:?"`, 4000), await t.js(tones(lastOut)));
+  t.check("  coloured so: a number green, a tag blue, a hole amber", await t.js(`(() => { const p = [...${lastOut}.querySelectorAll(".fw-part")].map((x) => getComputedStyle(x).color);
+    return new Set(p).size >= 4; })()`), await t.js(`[...${lastOut}.querySelectorAll(".fw-part")].map((x) => getComputedStyle(x).color).join(" ")`));
+  t.check("  its parts stepped through as a list's items", await t.js(`${lastOut}.querySelectorAll(":scope > .fw-item").length === 5`));
+  await t.select("r words", { collapse: true });
+  await t.type(" ");
+  await t.type("$");
+  await t.type(`(2, @${T})`);
+  await t.type("$");
+  await t.settle();
+  const inl = `[...document.querySelectorAll(".fw-doc .fw-icode-out")].at(-1)`;
+  t.check("  inline too", await t.until(`${tones(inl)} === "data:2 ref:fox"`, 4000), await t.js(`${inl}?.outerHTML`));
+};
+
+scenarios.unicode = async (t) => {   // a value's links after text that isn't ASCII: on their own words (offsets as the page counts them)
+  await t.open(`#/p/${R}`);
+  await addExpr(t, `Text([Plain("é😀 wörd "), Link(("fox", @${T})), Plain(" ü")])`);
+  const link = `${lastOut}?.querySelector(".fw-link")?.textContent`;
+  t.check("its link on just its words", await t.until(`${link} === "fox"`, 4000), await t.js(`${lastOut}?.outerHTML`));
 };
