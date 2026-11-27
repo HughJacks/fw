@@ -60,23 +60,33 @@ const colours = HighlightStyle.define([
 
 // --- references drawn as titles ------------------------------------------------------------------------------------
 
-let labels = { from: null, map: new Map() };
-/** What a reference shows: its pericope's title, or the start of a block's text; "?" for one that isn't there. */
-export function labelOf(id) {
-  if (labels.from !== snapshot.store) {   // (an index over the core's snapshot, rebuilt when it changes)
-    const map = new Map();
-    const walk = (n, title) => {
+let labels = { from: null, map: new Map(), homes: new Map(), tags: new Set() };
+/** The index over the core's snapshot (rebuilt when it changes): each block's label and pericope, the tags. */
+function index() {
+  if (labels.from !== snapshot.store) {
+    const map = new Map(), homes = new Map(), tags = new Set();
+    const walk = (n, title, home) => {
       if (!n) return;
-      if (n.id && !map.has(n.id)) map.set(n.id, title ?? (n.t === "expr" ? `ƒ ${n.source || ""}` : n.text || "").replace(/\s+/g, " ").slice(0, 40));
-      for (const k of n.children || []) walk(k, null);
+      if (n.id && !map.has(n.id)) { map.set(n.id, title ?? (n.t === "expr" ? `ƒ ${n.source || ""}` : n.text || "").replace(/\s+/g, " ").slice(0, 40)); homes.set(n.id, home); }
+      for (const k of n.children || []) walk(k, null, home);
     };
     for (const p of snapshot.store?.pericopes || []) {
-      map.set(p.id, p.title || "");
-      walk(p.body, p.title || null);
+      map.set(p.id, p.title || ""); homes.set(p.id, p.id);
+      if (p.tag) tags.add(p.id);
+      for (const k of p.kinds || []) tags.add(k);
+      walk(p.body, p.title || null, p.id);
     }
-    labels = { from: snapshot.store, map };
+    labels = { from: snapshot.store, map, homes, tags };
   }
-  const l = labels.map.get(id);
+  return labels;
+}
+/** The pericope block `id` is in (a pericope its own), or null. */
+export const homeOf = (id) => index().homes.get(id) ?? null;
+/** Whether `id` is a tag. */
+export const isTag = (id) => index().tags.has(id);
+/** What a reference shows: its pericope's title, or the start of a block's text; "?" for one that isn't there. */
+export function labelOf(id) {
+  const l = index().map.get(id);
   return l === undefined ? null : l || "(untitled)";
 }
 

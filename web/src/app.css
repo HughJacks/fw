@@ -301,6 +301,10 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
    faint, no line; hovered, as any tab hovered: its line, its name) */
 .fw-dep { opacity: .45; border-color: transparent; transition: opacity .18s ease; }
 .fw-dep:hover { opacity: 1; border-color: var(--quote-mid); }
+/* (a block of text's, from its inline expressions: the same tabs, from its top, under its ↗ if it's a paraphrase) */
+.fw-text:has(> .fw-ideps) { position: relative; }
+.fw-text:not(.fw-para) > .fw-ideps { top: .15rem; }
+.fw-text:not(.fw-here, .fw-chosen) > .fw-ideps { display: none; }
 .fw-dep-more > .fw-dep-mark { width: auto; min-width: 1.2rem; padding: 0 .2rem; box-sizing: border-box; }
 .fw-dep > .fw-dep-name { display: none; max-width: 22ch; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 0 .45rem 0 .1rem; }
 .fw-dep:hover > .fw-dep-name { display: block; }   /* (its number in the gutter: its value's colour, at rest too) */

@@ -69,7 +69,8 @@ def snapshot_json(library: dict) -> dict:
                            "kinds": [k for k, yes in store.kinds_of(e["block"]).items() if yes],
                            "created": e["block"].get("created") or "", "updated": e["block"].get("updated") or "",
                            "visits": (e["block"].get("visits") or {}).get("total", 0),
-                           "backlinks": backs(i), "body": snap_node(blocks, i)}
+                           "backlinks": backs(i), "body": snap_node(blocks, i),
+                           **({"tag": True} if store.kind_of(e["block"]) is not None else {})}
                           for i, e in library.items() if e["entry"]]}
 
 

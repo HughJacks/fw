@@ -12,7 +12,7 @@ import { Decoration, DecorationSet } from "prosemirror-view";
 import { schema } from "./schema.js";
 import * as hazel from "../expr/hazel.js";
 import { onSnapshot } from "../state/snapshot.svelte.js";
-import { inlineValueEl, namesOf, hereOf } from "../expr/views.js";
+import { inlineValueEl, namesOf, hereOf, deps, depTabs } from "../expr/views.js";
 import { labelOf, BUILTINS } from "./codebox.js";
 import { receiverBefore, projectionsFor, typeOf, projectable } from "../expr/projections.js";
 import { float } from "../state/float.svelte.js";
@@ -31,7 +31,7 @@ export function codeRuns(doc) {
     node.forEach((child) => {
       const m = child.isText && child.marks.find((x) => x.type.name === "icode");
       if (m && run && run.key === m.attrs.key && run.to === at) { run.to += child.nodeSize; run.text += child.text; }
-      else if (m) { run = { from: at, to: at + child.nodeSize, key: m.attrs.key, text: child.text, block: node.attrs.id || "" }; out.push(run); }
+      else if (m) { run = { from: at, to: at + child.nodeSize, key: m.attrs.key, text: child.text, block: node.attrs.id || "", start: pos }; out.push(run); }
       else run = null;
       at += child.nodeSize;
     });
@@ -114,6 +114,22 @@ function decorations(state, editor) {
       // break after it, no empty line below)
       decos.push(Decoration.widget(r.from, value, { side: 1, ignoreSelection: true, key: `v:${r.key}:${r.source}:${r.block}:${hazel.status()}:${version}:${sel}` }));
     }
+  }
+  // (a block's dependencies, from what its inline expressions read: a tab each down its right side, as an expression
+  // block's under its ƒ)
+  const byBlock = new Map();
+  for (const r of codeRuns(state.doc)) if (r.source !== null) byBlock.set(r.start, [...(byBlock.get(r.start) || []), r]);
+  for (const [start, rs] of byBlock) {
+    const ids = deps(rs.map((r) => hazel.run(r.source, r.block, hereOf(editor))), hereOf(editor), rs.map((r) => r.source).join(" "));
+    if (!ids.length) continue;
+    const draw = () => {
+      const d = document.createElement("span");
+      d.className = "fw-deps fw-ideps";
+      d.contentEditable = "false";
+      d.append(...depTabs(ids, ids.length > 4 ? 4 : ids.length, editor?.open));
+      return d;
+    };
+    decos.push(Decoration.widget(start + 1, draw, { side: -3, ignoreSelection: true, key: `d:${ids.join(",")}:${ids.map(labelOf).join(",")}` }));
   }
   return DecorationSet.create(state.doc, decos);
 }

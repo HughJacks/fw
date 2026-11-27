@@ -206,8 +206,8 @@ scenarios.deptabs = async (t) => {   // an expression's dependencies, a tab each
   await t.open(`#/p/${R}`);
   const tabs = `[...([...document.querySelectorAll(".fw-doc .fw-expr")].at(-1)?.querySelectorAll(".fw-deps > .fw-dep") || [])]`;
   const names = `${tabs}.map((x) => (x.classList.contains("fw-dep-more") ? x.querySelector(".fw-dep-mark").textContent + ":" : "") + x.querySelector(".fw-dep-name").textContent)`;
-  await addExpr(t, `wordCount(@${A})`);
-  t.check("one dependency: one tab, its name in it (shown as it's hovered)", await t.until(`JSON.stringify(${names}) === '["alpha"]'`, 4000), await t.js(`JSON.stringify(${names})`));
+  await addExpr(t, `wordCount(@${T})`);
+  t.check("one dependency: one tab, its name in it (shown as it's hovered)", await t.until(`JSON.stringify(${names}) === '["fox"]'`, 4000), await t.js(`JSON.stringify(${names})`));
   const ex = `[...document.querySelectorAll(".fw-doc .fw-expr")].at(-1)`;
   t.check("  the block active: shown, the ƒ's square exactly (its line just outside, as the lit ƒ's)", await t.until(`(() => {
     const f = ${ex}.querySelector(".fw-fn").getBoundingClientRect(), d = ${ex}.querySelector(".fw-dep")?.getBoundingClientRect();
@@ -241,6 +241,26 @@ scenarios.deptabs = async (t) => {   // an expression's dependencies, a tab each
   other.close();
   await setCode(t, `Blocks([text("one"), text("two"), text("three"), text("four"), text(@${B}.title)])`);
   t.check("  a reference taken out: its tab goes", await t.until(`JSON.stringify(${names}) === '["gamma"]'`, 2000), await t.js(`JSON.stringify(${names})`));
+
+  // from what its run reads, not what its code names: a branch not taken, no tab; every pericope (*), none
+  await setCode(t, `Blocks([text("one"), text("two"), text("three"), text("four"), text(if true then @${T}.title else @${A}.title)])`);
+  t.check("from what it reads: a branch not taken gives no tab", await t.until(`JSON.stringify(${names}) === '["fox"]'`, 2000), await t.js(`JSON.stringify(${names})`));
+  await setCode(t, `Blocks([text("one"), text("two"), text("three"), text("four"), text(asText(wordCount(@${A})))])`);
+  t.check("  what it reads through a quote: alpha, and beta that alpha quotes", await t.until(`JSON.stringify(${names}) === '["alpha","gamma"]'`, 2000), await t.js(`JSON.stringify(${names})`));
+  await setCode(t, `length(pericopes)`);
+  t.check("  every pericope read (*): no tabs", await t.until(`JSON.stringify(${names}) === '[]'`, 2000), await t.js(`JSON.stringify(${names})`));
+  // a block of text's inline expressions give it tabs too, while the caret's in it
+  await t.open(`#/p/${N}`);
+  await t.select("after the quotes", { collapse: true });
+  await t.type(" ");
+  await t.type("$");
+  await t.type(`wordCount(@${T}) + wordCount(@${B})`);
+  await t.type("$");
+  await t.settle();
+  const inames = `[...(document.querySelector(".fw-doc .fw-text.fw-here > .fw-ideps")?.querySelectorAll(".fw-dep-name") || [])].map((x) => x.textContent)`;
+  t.check("  inline: the block's tabs, from what its expressions read, in the code's order", await t.until(`JSON.stringify(${inames}) === '["fox","gamma"]'`, 4000),
+    await t.js(`JSON.stringify(${inames}) + " " + document.querySelector(".fw-doc .fw-here")?.outerHTML.slice(0, 300)`));
+  t.check("  shown, under nothing: visible", await t.js(`document.querySelector(".fw-doc .fw-text.fw-here > .fw-ideps .fw-dep").getBoundingClientRect().width > 0`));
 
   // every right-side reference tab grows out with its name when hovered: a quote's ↗ too
   await t.open(`#/p/${A}`);

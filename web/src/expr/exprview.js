@@ -9,12 +9,10 @@ import { NodeSelection, Plugin, Selection } from "prosemirror-state";
 import { enterCode } from "../editor/inlinecode.js";
 import { levelKey } from "../editor/blocks.js";
 import * as hazel from "./hazel.js";
-import { drawValue, quoteOf, insideOf, namesOf, hereOf, toneOf } from "./views.js";
+import { drawValue, quoteOf, insideOf, namesOf, hereOf, toneOf, deps, depTabs } from "./views.js";
 import { onSnapshot } from "../state/snapshot.svelte.js";
-import { codeBox, setText, labelOf, refsIn } from "../editor/codebox.js";
+import { codeBox, setText, labelOf } from "../editor/codebox.js";
 import { pressed } from "../lib/keys.js";
-import { float } from "../state/float.svelte.js";
-import SlashList from "../ui/SlashList.svelte";
 
 /** Hazel's errors, a line each (under a result, its code shown). */
 export function errorsEl(r) {
@@ -98,11 +96,9 @@ export class ExprView {
     hazel.load(() => this.draw());   // (the engine loaded after the page opens: drawn again once it's here)
   }
 
-  /** What it depends on that you can open: the pericopes and blocks its code names, each once, that exist and aren't
-   * the page you're on. */
+  /** What it depends on that you can open: the pericopes its run read (deps). */
   deps() {
-    const here = hereOf(this.parent);
-    return refsIn(this.node.attrs.source || "").filter((id) => id !== here && labelOf(id) !== null);
+    return deps([hazel.run(this.node.attrs.source || "", this.node.attrs.id, hereOf(this.parent))], hereOf(this.parent), this.node.attrs.source);
   }
   /** Its dependency tabs drawn, under its ƒ (TYPE.md's tab rule): as many as fit from there down
    * to where the next block's own tab sits (at the page's end, as many as there are), the last slot a "+n" for the rest
@@ -118,27 +114,7 @@ export class ExprView {
     const key = `${deps.join(",")}|${Number.isFinite(room) ? room : "all"}|${deps.map((id) => labelOf(id)).join(",")}`;
     if (key === this.depsKey) return;
     this.depsKey = key;
-    const shown = deps.length > room ? deps.slice(0, room - 1) : deps, rest = deps.slice(shown.length);
-    const tab = (cls, mark, name, onPick) => {
-      const b = document.createElement("button");
-      b.className = `fw-dep ${cls}`;
-      b.tabIndex = -1;
-      const m = document.createElement("span"); m.className = "fw-dep-mark"; if (mark) m.textContent = mark;
-      const n = document.createElement("span"); n.className = "fw-dep-name"; n.textContent = name;
-      b.append(m, n);
-      b.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); onPick(b); });
-      return b;
-    };
-    const kids = shown.map((id) => tab("fw-dep-ref", "", labelOf(id), () => this.open?.({ target: id })));
-    if (rest.length) kids.push(tab("fw-dep-more", `+${rest.length}`, rest.map((id) => labelOf(id)).join(", "), (b) => {
-      const box = float(SlashList, b.getBoundingClientRect(), {
-        cmds: rest.map((id) => ({ id, label: labelOf(id), note: "" })), sel: 0,
-        run: (c) => { box.dismiss(false); this.open?.({ target: c.id }); },
-      });
-      const off = (e) => { if (!e.target.closest?.(".fw-menu")) { box.dismiss(false); document.removeEventListener("mousedown", off, true); } };
-      document.addEventListener("mousedown", off, true);
-    }));
-    this.depsEl.replaceChildren(...kids);
+    this.depsEl.replaceChildren(...depTabs(deps, room, this.open));
   }
 
   /** What it shows: its value (a Block value as blocks you can move through, not change), or why it can't yet; its

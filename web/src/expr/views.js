@@ -3,7 +3,9 @@
 import * as hazel from "./hazel.js";   // (the expr branch: an expression in a quote, worked out here)
 import { api } from "../lib/api.js";
 import { snapshot, onSnapshot } from "../state/snapshot.svelte.js";
-import { labelOf } from "../editor/codebox.js";
+import { labelOf, homeOf, isTag, refsIn } from "../editor/codebox.js";
+import { float } from "../state/float.svelte.js";
+import SlashList from "../ui/SlashList.svelte";
 
 const el = (tag, cls, text) => {
   const e = document.createElement(tag);
@@ -254,4 +256,36 @@ export function drawValue(box, r, open, inside = new Set(), names = new Map()) {
   const was = box.querySelector(":scope > .fw-expr-out");
   if (was) was.replaceWith(out); else box.appendChild(out);
   return out;
+}
+
+/** What runs `rs` depend on that you can open: the pericopes they read (`r.reads`; a block read, its pericope), each
+ * once, never `*` nor `here`; those `source` names first, in its order. */
+export function deps(rs, here, source = "") {
+  const named = refsIn(source || "").map(homeOf);
+  const out = [...new Set(rs.flatMap((r) => r?.reads || []).map(homeOf))].filter((id) => id && id !== here && labelOf(id) !== null);
+  const at = (id) => { const n = named.indexOf(id); return n < 0 ? Infinity : n; };
+  return out.sort((a, b) => at(a) - at(b) || labelOf(a).localeCompare(labelOf(b)));
+}
+
+/** Dependency tabs for `ids` (a click opens one): as many as `room`, the last slot a "+n" for the rest (a click lists
+ * them, titles only). */
+export function depTabs(ids, room, open) {
+  const shown = ids.length > room ? ids.slice(0, room - 1) : ids, rest = ids.slice(shown.length);
+  const tab = (cls, mark, name, onPick) => {
+    const b = el("button", `fw-dep ${cls}`);
+    b.tabIndex = -1;
+    b.append(el("span", "fw-dep-mark", mark || null), el("span", "fw-dep-name", name));
+    b.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); onPick(b); });
+    return b;
+  };
+  const kids = shown.map((id) => tab("fw-dep-ref", "", labelOf(id), () => open?.({ target: id })));
+  if (rest.length) kids.push(tab("fw-dep-more", `+${rest.length}`, rest.map((id) => labelOf(id)).join(", "), (b) => {
+    const box = float(SlashList, b.getBoundingClientRect(), {
+      cmds: rest.map((id) => ({ id, label: labelOf(id), note: "" })), sel: 0,
+      run: (c) => { box.dismiss(false); open?.({ target: c.id }); },
+    });
+    const off = (e) => { if (!e.target.closest?.(".fw-menu")) { box.dismiss(false); document.removeEventListener("mousedown", off, true); } };
+    document.addEventListener("mousedown", off, true);
+  }));
+  return kids;
 }
