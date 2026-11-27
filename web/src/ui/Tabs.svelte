@@ -4,9 +4,11 @@
      width), in an effect, after the page is laid out; and, while a block's room is easing out or back
      (a padding transition in the body, app.css), every frame, so the tabs follow the boxes as they move. Keyed by block
 : each block's tab is its own, placed by its block, shown while the block's on your path; going
-     elsewhere, one fades out where it is and another fades in where it is, nothing travels between blocks. -->
+     elsewhere, one fades out where it is and another fades in where it is, nothing travels between blocks. And the
+     right edge's tabs (tabs.js stackRight): stacked again whenever the left's are measured, and as anything on the page
+     is drawn or lit (a value, a ↙ shown, a block you're in). -->
 <script>
-  import { tabsIn, linksIn, focusBoxes } from "../lib/tabs.js";
+  import { tabsIn, linksIn, focusBoxes, stackRight } from "../lib/tabs.js";
   import Tab from "./Tab.svelte";
 
   let { doc, drawn, focus, pick, hidden = false } = $props();
@@ -15,6 +17,7 @@
     const at = hidden || !doc ? null : focusBoxes(focus);
     tabs = at ? tabsIn(doc, at) : [];
     links = at ? linksIn(doc, at) : [];
+    if (doc) stackRight(doc);
   };
   $effect(() => { drawn; focus; hidden; measure(); });
 
@@ -30,6 +33,16 @@
     const kids = new MutationObserver(() => { for (const b of frame.children) seen.observe(b); });
     kids.observe(frame, { childList: true });
     return () => { cancelAnimationFrame(queued); seen.disconnect(); kids.disconnect(); };
+  });
+
+  // anything drawn or lit, at any depth (a value, a ↙ shown, a block you're in): the right edge stacked again, once a
+  // frame
+  $effect(() => {
+    if (!doc) return;
+    let frame = 0;
+    const lit = new MutationObserver(() => { frame ||= requestAnimationFrame(() => { frame = 0; stackRight(doc); }); });
+    lit.observe(doc, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    return () => { cancelAnimationFrame(frame); lit.disconnect(); };
   });
 
   // a block's room easing (padding transitions running in the body): measured each frame until none is (asked of the

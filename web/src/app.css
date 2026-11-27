@@ -277,7 +277,7 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 /* its ƒ tab: in the right margin, as a paraphrase's ↗; faint at rest, drawn when you're on it, filled selected whole;
    lit by fw's own marks (fw-chosen), as its box is, never ProseMirror's selectednode, which stays after the editor's left */
 .fw-expr { position: relative; }
-.fw-expr > .fw-fn { position: absolute; top: .15rem; line-height: 1.2rem; width: 1.2rem; height: 1.2rem; padding: 0; text-align: center;
+:is(.fw-expr, .fw-quote) > .fw-fn { position: absolute; top: .15rem; line-height: 1.2rem; width: 1.2rem; height: 1.2rem; padding: 0; text-align: center;
   right: calc(-1 * (var(--d, 0) * var(--u) + var(--fp) + 1px + 2rem)); color: var(--tone-hi); opacity: .45; background: none; border: none;
   font: italic .95rem/1.2rem "Source Sans 3", serif; cursor: pointer; transition: opacity .18s ease; }   /* (the ƒ: the writing's font, as inline) */
 .fw-expr:is(.fw-here, .fw-chosen, .fw-expr-coding, :has(.fw-current)) > .fw-fn { opacity: 1; outline: 1px solid var(--tone-mid); }
@@ -285,10 +285,12 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
   background: var(--tone-mid); width: calc(var(--d, 0) * var(--u) + var(--fp) + 2rem - 1.2rem); }
 .fw-doc .fw-expr.fw-chosen > .fw-fn { background: var(--tone-hi); color: var(--bg); outline-color: var(--tone-hi); }
 .fw-doc .fw-expr.fw-chosen > .fw-fn::before { background: var(--tone-hi); }
+.fw-quote > .fw-fn { --tone-hi: var(--quote-hi); }   /* (a call's: a quote of an expression, computed) */
 .fw-doc > .ProseMirror > .fw-expr::before { color: var(--tone-num); }
-/* its dependencies (exprview.js layoutDeps): a tab each under the ƒ, in its column, the ƒ's square exactly (1.2rem, its
-   line 1px outside), red (references); not joined to the block; only while the block is active (
-   "it doesnt need to show here while inactive"); hovered, only its name grows out, cut at about 20 characters */
+/* its dependencies (exprview.js layoutDeps; where each goes, the right edge's one stack, tabs.js stackRight): a tab each
+   under the ƒ, in its column, the ƒ's square exactly (1.2rem, its line 1px outside), red (references); not joined to
+   the block; only while the block is active ("it doesnt need to show here while inactive"); hovered, only its name
+   grows out, cut at about 20 characters */
 .fw-deps { position: absolute; top: calc(.15rem + 1.2rem + 1px + .35rem); left: calc(100% + var(--d, 0) * var(--u) + var(--fp) + 1px + 2rem - 1.2rem - 1px);
   display: flex; flex-direction: column; align-items: flex-start; gap: .35rem; z-index: 2; }
 .fw-expr:not(.fw-here, .fw-chosen, .fw-expr-coding, :has(.fw-current)) > .fw-deps { display: none; }

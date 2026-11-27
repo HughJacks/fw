@@ -1,5 +1,11 @@
 import { A, A1, B, K, R, T, addExpr, lastOut, setCode, sleep } from "./fixture.mjs";
 
+/** Every tab on the page's right edge, as drawn: [kind, left, top, right, bottom]; and the pairs of them that meet. */
+const rightTabs = `[...document.querySelectorAll(".fw-doc :is(.fw-open, .fw-fn, .fw-dep)")].filter((x) => x.getBoundingClientRect().height && x.checkVisibility({ visibilityProperty: true }))
+  .map((x) => { const r = x.getBoundingClientRect(); return [x.className.split(" ").slice(0, 2).join("."), r.left, r.top, r.right, r.bottom]; })`;
+const meeting = `(() => { const ts = ${rightTabs}; return ts.flatMap((a, i) => ts.slice(i + 1).filter((b) => a[1] < b[3] && b[1] < a[3] && a[2] < b[4] && b[2] < a[4]).map((b) => a[0] + "/" + b[0])); })()`;
+const tabsSaid = `JSON.stringify([${meeting}, ${rightTabs}.map((x) => x.map((v) => (typeof v === "number" ? Math.round(v) : v)))])`;
+
 export const scenarios = {};
 
 scenarios.expr = async (t) => {   // the expr branch: an expression block, Hazel's engine, the code on ⌘⇧X
@@ -484,12 +490,53 @@ scenarios.tabstack = async (t) => {   // an expression block's right side: one s
   const ex = `[...document.querySelectorAll(".fw-doc .fw-expr")].at(-1)`;
   const tabs = `[...${ex}.querySelectorAll(".fw-fn, .fw-dep, .fw-open")].filter((x) => x.getBoundingClientRect().width && x.checkVisibility({ visibilityProperty: true }))
     .map((x) => { const r = x.getBoundingClientRect(); return [x.className.split(" ")[0], r.left, r.top, r.right, r.bottom]; })`;
-  const meet = `(() => { const ts = ${tabs}; return ts.flatMap((a, i) => ts.slice(i + 1).filter((b) => a[1] < b[3] && b[1] < a[3] && a[2] < b[4] && b[2] < a[4]).map((b) => a[0] + "/" + b[0])); })()`;
   for (const [what, src, n] of [["ƒ and one ↙", `wordCount(@${T})`, 2], ["ƒ and several ↙", `Blocks([text("one"), text("two"), text("three"), text(@${A}.title ++ @${B}.title ++ @${T}.title)])`, 4],
     ["ƒ, its value's ↗s and several ↙", `Blocks([body(@${A}), text("two"), body(@${B}), text(@${A}.title ++ @${B}.title ++ @${T}.title)])`, 6]]) {
     await addExpr(t, src);
     await t.key("x", 4 | 8);
     await t.settle();
-    t.check(`${what}: each tab its own slot, none overlapping`, await t.until(`${tabs}.length >= ${n} && !${meet}.length`, 3000), await t.js(`JSON.stringify([${meet}, ${tabs}.map((x) => x.map((v) => (typeof v === "number" ? Math.round(v) : v)))])`));
+    t.check(`${what}: each tab its own slot, none overlapping`, await t.until(`${tabs}.length >= ${n} && !${meeting}.length`, 3000), await t.js(tabsSaid));
   }
+};
+
+scenarios.tabsnested = async (t) => {   // the page's right edge, one stack at every depth: tabs inside quotes (a nested expression's ƒ, its value's ↗s, its ↙s; an inline expression's ↙s) never meeting any other, at rest or as each is selected
+  await t.open(`#/p/${B}`);
+  await t.select("beta's words", { collapse: true });
+  for (const c of [" ", "$", `wordCount(@${T}) + wordCount(@${A})`, "$"]) await t.type(c);   // (an inline expression reading other pericopes)
+  await addExpr(t, `Blocks([body(@${A}), text(@${A}.title ++ @${T}.title)])`);   // (an expression block: its ƒ, its value's ↗s, its ↙s)
+  await t.open(`#/p/${R}`);
+  await addExpr(t, `"You still need to write " ++ wordCount(@${T}) ++ " more words"`);
+  await t.key("e", 4);   // (⌘E: a quote of a pericope whose first block is an expression, as the user's)
+  await t.until(`document.querySelectorAll(".fw-doc .fw-quote .fw-expr").length >= 2`, 5000);
+  await t.select("r words", { collapse: true });
+  await t.settle();
+  const fns = `[...document.querySelectorAll(".fw-doc .fw-quote .fw-fn")]`;   // (a call too: a quote of an expression)
+  t.check("nested expressions: each its ƒ, shown at rest", await t.until(`${fns}.length >= 2 && ${fns}.every((x) => x.getBoundingClientRect().width && x.checkVisibility({ opacityProperty: true, visibilityProperty: true }))`, 3000),
+    await t.js(`${fns}.length`));
+  await t.shot("tabsnested-rest.png", { x: 0, y: 0, width: 1100, height: 900 });
+  const bad = [], seen = new Set();
+  const look = async (state) => {
+    await t.settle();
+    if (!await t.until(`!${meeting}.length`, 1500)) bad.push(`${state}: ${await t.js(tabsSaid)}`);
+    for (const k of await t.js(`${rightTabs}.map((x) => x[0])`)) seen.add(k);
+  };
+  await look("at rest");
+  await t.select("beta's words", { collapse: true });   // (in the quoted text: its inline expression's ↙s)
+  await look("in the quoted inline expression's block");
+  for (let i = 0; i < await t.js(`document.querySelectorAll(".fw-doc .fw-quote .fw-expr").length`); i++) {
+    await t.js(`[...document.querySelectorAll(".fw-doc .fw-quote .fw-expr")][${i}].fwExpr.showCode()`);
+    await t.until(`!!document.activeElement?.closest(".fw-expr-code")`, 2000);
+    await look(`nested expression ${i}, its code open`);
+    await t.key("Escape");
+    await t.until(`!document.querySelector(".fw-expr-code")`, 2000);
+    await look(`nested expression ${i}, selected whole`);
+    await t.shot(`tabsnested-${i}.png`, { x: 0, y: 0, width: 1100, height: 900 });
+  }
+  await t.select("r words", { collapse: true });
+  for (let i = 0; i < 12; i++) { await t.key("ArrowDown"); await look(`↓ ×${i + 1} from r words`); }
+  await t.select("r words", { collapse: true });
+  await t.key("Escape");
+  for (let i = 0; i < 12; i++) { await t.key("ArrowDown"); await look(`selected whole, ↓ ×${i + 1}`); }
+  t.check("  no two right-edge tabs meet, in any of those", !bad.length, bad.slice(0, 3).join("\n"));
+  t.check("  and each kind was there: ↗, ƒ, ↙", ["fw-open", "fw-fn", "fw-dep.fw-dep-ref"].every((k) => [...seen].some((s) => s.startsWith(k))), JSON.stringify([...seen]));
 };

@@ -24,6 +24,12 @@ export class QuoteView {
       this.host = this.dom.querySelector(".fw-body");
       this.host.replaceChildren();
       this.dom.fwCall = this;   // (⌘⇧X finds it from the quote selected)
+      const fn = document.createElement("button");   // (its ƒ, as an expression block's: it's code; a click shows it)
+      fn.className = "fw-fn";
+      fn.textContent = "ƒ";
+      fn.title = "its code (⌘⇧X)";
+      fn.addEventListener("mousedown", (e) => { e.preventDefault(); this.code ? this.close() : this.showCode(); });
+      this.dom.append(fn);
       this.source = data.expr.source;   // (its code: as the store has it, or as written here through it)
       this.stop = onSnapshot(() => this.call());
       hazel.load(() => this.call());

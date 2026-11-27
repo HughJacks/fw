@@ -164,3 +164,23 @@ export function linksIn(doc, here) {
   }
   return out;
 }
+
+/** The right edge of the page in `doc` (.fw-doc): every tab there (a quote's or a paraphrase's ↗, an expression's ƒ, a
+ * dependency's ↙ or "+n"), whatever block it's in and however deep, one stack. Each wants the y it's drawn at; taken in
+ * that order down the page (on one y, the page's order), each is pushed down to the slot after the one above, a ↙'s
+ * gap apart, never meeting it. */
+export function stackRight(doc) {
+  const all = [...doc.querySelectorAll(".fw-open, .fw-fn, .fw-dep")];
+  for (const x of all) x.style.translate = "";
+  const gap = 0.35 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+  const tabs = all.filter((x) => x.getBoundingClientRect().height && x.checkVisibility({ visibilityProperty: true })).map((x) => {
+    const r = x.getBoundingClientRect(), line = x.matches(".fw-dep") ? 0 : 1;   // (its line drawn 1px outside it; a ↙'s is its border)
+    return { x, top: r.top - line, bottom: r.bottom + line };
+  }).sort((a, b) => a.top - b.top);
+  let floor = -Infinity;
+  for (const t of tabs) {
+    const by = Math.max(0, floor - t.top);
+    if (by) t.x.style.translate = `0 ${by}px`;
+    floor = t.bottom + by + gap;
+  }
+}
