@@ -114,6 +114,16 @@ let empty_snapshot = (): snapshot => {
 
 let snapshot: ref(snapshot) = ref(empty_snapshot());
 
+/* What a run read (the page's cache: a value is worked out again only when something it read changed; 2026-11-26):
+   each block, pericope or fact looked up, by id; "*" for the set of pericopes (every one, tagged); "now". Cleared by
+   the bridge at each run's start; nested runs (an expression read through another) add to the outer one's. */
+let reads: ref(list(string)) = ref([]);
+let seen = (id: string) => reads := [id, ...reads^];
+let look = (tbl, id: string) => {
+  seen(id);
+  Stdlib.Hashtbl.find_opt(tbl, id);
+};
+
 let make_snapshot = (pericopes: list(pericope)): snapshot => {
   let s = {...empty_snapshot(), pericopes};
   let rec index = (pid: string, n: node) => {
@@ -496,7 +506,7 @@ let rec shown = (n: node): DHExp.t =>
    call: that expression evaluated where the quote sits (its above and below the quote's; the user, 2026-11-24: "it
    should just be a red block which caries the result of the evaluated thing"); anything else, body(@id). */
 and quoted = (qid: string, id: string): DHExp.t =>
-  switch (Stdlib.Hashtbl.find_opt(snapshot^.nodes, id)) {
+  switch (look(snapshot^.nodes, id)) {
   | Some({case: Expr(src), _})
   | Some({case: Blocks([{case: Expr(src), _}]), _}) =>
     from(
@@ -510,7 +520,7 @@ and quoted = (qid: string, id: string): DHExp.t =>
   }
 /* body(@id): From(@id, what it shows); a Ref to nothing, a hole ("this pericope was deleted" is for later). */
 and from_id = (id: string): DHExp.t =>
-  switch (Stdlib.Hashtbl.find_opt(snapshot^.nodes, id)) {
+  switch (look(snapshot^.nodes, id)) {
   | Some(n) => from(id, shown(n))
   | None => hole()
   };
@@ -520,18 +530,21 @@ let body_of = from_id;
 let members_of = (kid: string): list(string) =>
   List.filter_map(
     ~f=p => List.mem(p.kinds, kid, ~equal=String.equal) ? Some(p.pid) : None,
-    snapshot^.pericopes,
+    {
+      seen("*");
+      snapshot^.pericopes;
+    },
   );
 
 /* The pericope a Ref's facts are read from: its own, or (a block's) the pericope it's in. */
 let meta_of = (id: string): option(pericope) =>
-  switch (Stdlib.Hashtbl.find_opt(snapshot^.home, id)) {
-  | Some(pid) => Stdlib.Hashtbl.find_opt(snapshot^.meta, pid)
+  switch (look(snapshot^.home, id)) {
+  | Some(pid) => look(snapshot^.meta, pid)
   | None => None
   };
 
 /* A Ref's own facts (a block's, a pericope's): the snapshot's. */
-let facts_of = (id: string): option(facts) => Stdlib.Hashtbl.find_opt(snapshot^.facts, id);
+let facts_of = (id: string): option(facts) => look(snapshot^.facts, id);
 
 /* Set when a run met itself where a number was wanted (wordCount(this)): its holes are drawn ↻ (fwbridge). */
 let looped = ref(false);
@@ -625,7 +638,7 @@ let words_in = (n: node): int => {
         words_of_text(text_shown(~self=n.id, ~codes=!List.mem(reading^, n.id, ~equal=String.equal), t))
       | Blocks(kids) => List.fold(kids, ~init=0, ~f=(a, k) => a + go(k))
       | Quote(id) =>
-        switch (Stdlib.Hashtbl.find_opt(snapshot^.nodes, id)) {
+        switch (look(snapshot^.nodes, id)) {
         | Some(t) => go(t)
         | None => 0
         }
@@ -854,7 +867,7 @@ let fns: list(fn) = [
           looped := true; /* (its own words, while it's being made: ↻) */
           hole();
         } else {
-          switch (Stdlib.Hashtbl.find_opt(snapshot^.nodes, id)) {
+          switch (look(snapshot^.nodes, id)) {
           | Some(n) => Fresh.Exp.int(words_in(n))
           | None => hole()
           };
@@ -938,7 +951,7 @@ let consts: list(const) = [
 
 /* The peer block `dir` (-1 above, 1 below) of block `id`, as a Ref; none (or no id: not on a page), a hole. */
 let neighbour = (id: string, dir: int): DHExp.t =>
-  switch (Stdlib.Hashtbl.find_opt(snapshot^.peers, id)) {
+  switch (Stdlib.Hashtbl.find_opt(snapshot^.peers, id)) {   /* (bound for every run: read only if the source names it, the bridge) */
   | Some(ids) =>
     let rec find = (i, l) =>
       switch (l) {
@@ -977,7 +990,7 @@ let here_value = (self: string): DHExp.t => String.is_empty(viewer^) ? this_valu
 let self_value = (self: string): DHExp.t => String.is_empty(self) ? hole() : mk_ref(self);
 
 /* now: the snapshot's moment (the page's, as it's handed over), a Date. */
-let now_value = (): DHExp.t => String.is_empty(snapshot^.now) ? hole() : mk_date(snapshot^.now);
+let now_value = (): DHExp.t => String.is_empty(snapshot^.now) ? hole() : mk_date(snapshot^.now);   /* (now is read by being bound: run_source records it when the source names it) */
 
 let all_value = (): DHExp.t =>
-  refs(List.map(~f=p => p.pid, snapshot^.pericopes));
+  refs(List.map(~f=p => p.pid, snapshot^.pericopes));   /* (bound for every run: read only if the source names it, the bridge) */

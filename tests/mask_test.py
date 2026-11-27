@@ -1,14 +1,15 @@
+# masks: what a quote shows of its source (the lens: view and put, pure), kept per block on disk, moved along with
+# every edit; masking through a quote (`inner`); a span whose text was all deleted kept as an empty place
 import json, os, sys
 sys.path.insert(0, "."); import fwtest as F
 from fwtest import same as check, blk
-S = F.use_store("t/mask.json")
+S = F.use_store("mask")
 E, Q, P = S.ELLIPSIS, S.CLOSE, S.OPEN
 A, CA, CB, ME, QM, T = "20261001T100000-aaaa", "20261001T100000-c0a0", "20261001T100000-c0b0", "20261021T230000-0000", "20261021T230000-9999", "20261021T230000-c001"
 def fresh(mask=None, a_text=("the quick brown fox", "jumps over the lazy dog")):
     q = {"quote": A} if mask is None else {"quote": A, "mask": mask}
-    json.dump({"schemaVersion": 5, "entries": [A, ME], "blocks": [
-        blk(A, [CA, CB], "Alpha"), blk(CA, a_text[0]), blk(CB, a_text[1]),
-        blk(ME, [T, QM], "mine"), blk(T, "my own words"), blk(QM, q)]}, open("t/mask.json", "w"))
+    F.store(blk(A, [CA, CB], "Alpha", entry=True), blk(CA, a_text[0]), blk(CB, a_text[1]),
+            blk(ME, [T, QM], "mine", entry=True), blk(T, "my own words"), blk(QM, q), version=9)
     return S.block_draft(S.index(S.load_data()), A)
 def draft(): return S.block_draft(S.index(S.load_data()), A)
 def mask(): return S.quoted(S.index(S.load_data())[QM])[1]
@@ -96,7 +97,6 @@ check("wrap in hidden text adds a span", S.wrap([0, 2], 5, 7), [0, 2, 5, 7])
 check("hide a selection splits a span", S.minus([0, 10], 3, 5), [0, 3, 5, 10])
 check("drop an opener: joins the gap before", S.drop_anchor([0, 2, 5, 8], 2, L), [0, 8])
 check("drop the last closer: runs to the end", S.drop_anchor([0, 2, 5, 8], 3, L), [0, 2, 5, 10])
-check("restore's inverse brings back blocks made under it", "subtree" in dir(S), True)
 
 # a hidden stretch that spans a line break keeps it, after its …
 db = "{{block a}}\nA quote is a window.\n{{block b}}\nhidden line\nQuotes edit through.\n{{block c}}\nlast"
@@ -116,18 +116,15 @@ check("  2000 random masks round-trip", fails, [])
 
 # on disk a mask is per block, like links: what shows of each block, in its own text
 d = fresh([quick, brown_end, lazy, lazy + 4])
-S.cmd_migrate(None)
-raw = next(b for b in json.load(open("t/mask.json"))["blocks"] if b["id"] == QM)["content"]
+raw = next(b for b in json.load(open(S.DATA_PATH))["blocks"] if b["id"] == QM)["content"]
 check("on disk: per block, spans of each block's own text", raw["mask"], {CA: [[4, 15]], CB: [[15, 19]]})
 check("  read back as anchors into the whole draft, the same as before", mask(), [quick, brown_end, lazy, lazy + 4])
 d = fresh([quick, lazy + 4])   # one span across the boundary
-S.cmd_migrate(None)
-raw = next(b for b in json.load(open("t/mask.json"))["blocks"] if b["id"] == QM)["content"]
+raw = next(b for b in json.load(open(S.DATA_PATH))["blocks"] if b["id"] == QM)["content"]
 check("a span across two blocks is split between them", raw["mask"], {CA: [[4, 19]], CB: [[0, 19]]})
 check("  and joins up again in memory", mask(), [quick, lazy + 4])
 d = fresh([])
-S.cmd_migrate(None)
-raw = next(b for b in json.load(open("t/mask.json"))["blocks"] if b["id"] == QM)["content"]
+raw = next(b for b in json.load(open(S.DATA_PATH))["blocks"] if b["id"] == QM)["content"]
 check("showing nothing: no block listed", (raw["mask"], mask()), ({}, []))
 blocks = {b["id"]: b for b in S.masks_out(S.load_data()["blocks"])}
 check("a block a mask doesn't list shows nothing of it", S.flat_mask(S.regions(blocks, A, draft()), draft(), {CB: [[0, 5]]}), [d.index("jumps"), d.index("jumps") + 5])
@@ -139,4 +136,51 @@ for _ in range(2000):
     if mk is not None and S.flat_mask(regs, d, S.per_block(regs, once)) != once:
         fails.append(mk)
 check("  2000 random masks: to disk and back is stable", fails, [])
-F.report("MASK")
+
+# --- an emptied span: kept as an empty place on disk; text typed there shows; undo puts the masks back
+def on_disk(): return next(b["content"].get("mask") for b in json.load(open(S.DATA_PATH))["blocks"] if b["id"] == QM)
+d = fresh([quick, brown_end])
+_, _, _, moved = S.commit(A, d.replace("quick brown", ""), [])
+check("the shown text deleted from the source: the quote shows nothing", S.shown_text(S.index(S.load_data()), QM), "…")
+check("  its place kept on disk, an empty span where the text was", on_disk(), {CA: [[4, 4]]})
+p = draft().index("the ") + 4
+check("  read back from the document", S.raw_mask(S.index(S.load_data())[QM]), [p, p])
+S.set_quote_mask(QM, draft(), [p - 4, p - 1])
+check("  masking anew keeps it where it's still hidden", S.raw_mask(S.index(S.load_data())[QM]), [p - 4, p - 1, p, p])
+S.set_quote_mask(QM, draft(), [])
+S.commit(A, draft().replace("the  fox", "the slow  fox"), [])
+check("text typed there shows in the quote", S.shown_text(S.index(S.load_data()), QM), "…slow …")
+d = fresh([quick, brown_end])
+_, _, _, moved = S.commit(A, d.replace("quick brown", ""), [])
+S.commit(A, d, [])
+S.restore({"blocks": moved})
+check("undone (the text back, then the quotes the edit moved): the mask exactly as it was", mask(), [quick, brown_end])
+
+# --- masking through a quote: its inner masks, one per quote inside what it shows
+A1, QAB, A2, BB, B1, B2, QQ = ["20261002T100000-aa%02d" % n for n in range(7)]
+def nested(qab=None):
+    F.store(blk(A, [A1, QAB, A2], "Alpha", entry=True), blk(A1, "alpha opens"), blk(QAB, qab or {"quote": BB}), blk(A2, "alpha closes"),
+            blk(BB, [B1, B2], "Beta", entry=True), blk(B1, "beta one"), blk(B2, "beta two"),
+            blk(ME, [T, QQ], "mine", entry=True), blk(T, "x"), blk(QQ, {"quote": A}), version=9)
+def bdraft(): return S.block_draft(S.index(S.load_data()), BB)
+def qq(): return S.index(S.load_data())[QQ]["content"]
+nested()
+ad, bd = S.block_draft(S.index(S.load_data()), A), bdraft()
+two = [bd.index("beta two"), bd.index("beta two") + 8]
+_, record = S.set_quote_masks(QQ, (ad, [ad.index(S.quote_line(BB, QAB)[:8]), len(ad)]), {QAB: (bd, two)})
+check("masking through: my quote's own mask, and an inner one for Beta", (qq().get("inner"), qq().get("mask") is not None), ({QAB: two}, True))
+check("  the source untouched: Alpha's quote of Beta has no mask", S.index(S.load_data())[QAB]["content"], {"quote": BB})
+S.commit(BB, bdraft().replace("beta one", "beta one, longer"), [])
+two = [bdraft().index("beta two"), bdraft().index("beta two") + 8]
+check("  an edit of Beta moves the inner mask along: still 'beta two'", qq()["inner"][QAB], two)
+S.restore(record)
+check("  undone: no mask, no inner masks", ("mask" in qq(), "inner" in qq()), (False, False))
+S.set_quote_masks(QQ, (ad, [0, 5]), {QAB: (bd, [])})
+check("  an inner quote showing nothing: an empty inner mask", qq()["inner"][QAB], [])
+S.set_quote_mask(QQ, None, None, inner=True)
+check("  Remove mask clears it all, inner masks too", ("mask" in qq(), "inner" in qq()), (False, False))
+d = "{{block a}}\ntesting here\n" + S.quote_line(BB, QAB)
+check("a span can end after a quote the text ends with", (S.snap(d, len(d), False), S.normalize(d, [S.snap(d, 0, True), len(d)])), (len(d), None))
+d2 = S.quote_line(BB, QAB) + "\n{{block a}}\ntext"
+check("  and start before one it starts with", (S.snap(d2, 0, True), S.normalize(d2, [0, len(d2)])), (0, None))
+F.report()

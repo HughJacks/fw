@@ -1,7 +1,7 @@
 {
   "name": "fw-web",
   "private": true,
-  "description": "fw's web editor: the page (ProseMirror). The core is fw_web.py.",
+  "description": "fw's web editor: the page (ProseMirror). The core is the fw.web package.",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",

@@ -326,6 +326,36 @@ let set_snapshot = (json: string) => {
   FwPrelude.snapshot := {...s, now: str(j, "now")};
 };
 
+/* A patch to the snapshot held (the page's keystrokes: its open pericope, a few facts; never the whole store again):
+   `pericopes` replaced by id or added, `gone` taken out, `facts` replaced by id, `now` if given. The rest stays as it
+   was parsed: the cost of a key is the pericope it's in, not the store (2026-11-26: a whole re-read was ~53 ms). */
+let patch_snapshot = (json: string) => {
+  let j = Yojson.Safe.from_string(json);
+  let old = FwPrelude.snapshot^;
+  let fresh =
+    switch (Yojson.Safe.Util.member("pericopes", j)) {
+    | `List(l) => List.map(~f=pericope_of_json, l)
+    | _ => []
+    };
+  let gone = strings(Yojson.Safe.Util.member("gone", j));
+  let replaced = (p: FwPrelude.pericope) =>
+    List.exists(fresh, ~f=(q: FwPrelude.pericope) => String.equal(q.pid, p.pid))
+    || List.mem(gone, p.pid, ~equal=String.equal);
+  let kept = List.filter(old.pericopes, ~f=p => !replaced(p));
+  let s = FwPrelude.make_snapshot(kept @ fresh);
+  Stdlib.Hashtbl.iter((id, f) => Stdlib.Hashtbl.replace(s.facts, id, f), old.facts);
+  switch (Yojson.Safe.Util.member("facts", j)) {
+  | `Assoc(l) => List.iter(l, ~f=((id, f)) => Stdlib.Hashtbl.replace(s.facts, id, facts_of_json(f)))
+  | _ => ()
+  };
+  let now =
+    switch (Yojson.Safe.Util.member("now", j)) {
+    | `String(n) => n
+    | _ => old.now
+    };
+  FwPrelude.snapshot := {...s, now};
+};
+
 /* --- running a source ------------------------------------------------------------------ */
 
 let ctx = Builtins.ctx_init(Some(Operators.default_mode));
@@ -653,7 +683,26 @@ let errors_json = (info: Statics.Map.t): Yojson.Safe.t =>
        ),
   );
 
-let answer = (~self: string="", src: string): Yojson.Safe.t => {
+let rec answer = (~self: string="", src: string): Yojson.Safe.t => {
+  FwPrelude.reads := [];
+  if (String.is_substring(src, ~substring="now")) {
+    FwPrelude.seen("now");
+  };
+  if (String.is_substring(src, ~substring="pericopes")) {
+    FwPrelude.seen("*");
+  };
+  if (String.is_substring(src, ~substring="above") || String.is_substring(src, ~substring="below")) {
+    /* (its peers: what's around it in its pericope, any change there) */
+    Option.iter(Stdlib.Hashtbl.find_opt(FwPrelude.snapshot^.home, self), ~f=FwPrelude.seen);
+  };
+  let a = answer_(~self, src);
+  let reads = List.dedup_and_sort(FwPrelude.reads^, ~compare=String.compare);
+  switch (a) {
+  | `Assoc(l) => `Assoc(l @ [("reads", `List(List.map(~f=x => `String(x), reads)))])
+  | other => other
+  };
+}
+and answer_ = (~self: string="", src: string): Yojson.Safe.t => {
   FwPrelude.looped := false;
   hole_mark := "?";
   let r = run_source(~self, src);
@@ -801,6 +850,17 @@ let guard = (f: unit => Yojson.Safe.t): Js.t(Js.js_string) =>
         `Assoc([("kind", `String("error")), ("message", `String(Exn.to_string(e)))]),
       );
     },
+  );
+
+let () =
+  Js.export(
+    "hazelPatch",
+    Js.wrap_callback((s: Js.t(Js.js_string)) => {
+      try(patch_snapshot(Js.to_string(s))) {
+      | _ => ()
+      };
+      Js._true;
+    }),
   );
 
 let () = {

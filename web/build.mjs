@@ -5,7 +5,7 @@ import sveltePlugin from "esbuild-svelte";
 import { execFileSync } from "node:child_process";
 import { copyFileSync } from "node:fs";
 
-// (the page is Svelte 5 components with runes, 2026-11-18, every one compiled in runes mode, even one that uses no
+// (the page is Svelte 5 components with runes, every one compiled in runes mode, even one that uses no
 // rune (else Svelte reads it the old way); their CSS joins app.js's bundle as app.css's sibling)
 await build({ entryPoints: ["src/main.js"], bundle: true, format: "esm", minify: true, sourcemap: true,
   outfile: "dist/app.js", target: "es2022", logLevel: "warning", mainFields: ["svelte", "browser", "module", "main"],

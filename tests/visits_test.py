@@ -1,34 +1,24 @@
-# visits (schema v15): a block's last 10 visits, its total and its first, kept by the editor, never an edit.
-# The clock is a file ($FW_CLOCK) the test moves on, so nothing sleeps.
+# visits (schema v15): a block's last 10 visits, its total and its first, noted by the editor, never an edit; and
+# what they're read for: memory (FSRS-style), the garden's order (recent, then resurfacing)
 import copy, json, os, sys
 sys.path.insert(0, "."); import fwtest as F
-from fwtest import check, same, blk, QUIT as Q, UNDO as Z, UP, DOWN, ESC
-S = F.use_store("t/visits.json", clean=True)
-import fw_migrate as M
-CLOCK = os.path.abspath("t/clock")
+from fwtest import check, same, blk
+S = F.use_store("visits")
+from fw import migrate as M
 T0 = 1794000000.0                     # (Nov 2026)
 M0 = int(T0 // 60)
-ENV = {"FW_CLOCK": CLOCK}
-def at(t): open(CLOCK, "w").write(str(t))
 HOST, CH, QH, CH2 = "20261001T100000-b000", "20261001T100000-b001", "20261001T100000-b002", "20261001T100000-b003"
 SRC, CS = "20261001T100000-5a00", "20261001T100000-5a01"
 NEST, K, KC, KD, KE = ("20261001T100000-c000", "20261001T100000-c001", "20261001T100000-c002", "20261001T100000-c003",
                        "20261001T100000-c004")
 OLD = "2026-10-01T10:00:00-04:00"
-def fresh():
-    F.write_store([blk(SRC, [CS], "src"), blk(CS, "source words"),
-                   blk(HOST, [CH, QH, CH2], "host"), blk(CH, "host first"), blk(QH, {"quote": SRC}), blk(CH2, "host last"),
-                   blk(NEST, [K, KD], "nest"), blk(K, [KE, KC]), blk(KE, "also inside"), blk(KC, "deep inside"), blk(KD, "after")],
-                  [SRC, HOST, NEST])
-    S.cmd_migrate(None)
-    at(T0)
-def B(): return S.index(S.load_data())
-def V(i): return B()[i].get("visits")
+def fresh(version=17):
+    F.store(blk(SRC, [CS], "src", entry=True), blk(CS, "source words"),
+            blk(HOST, [CH, QH, CH2], "host", entry=True), blk(CH, "host first"), blk(QH, {"quote": SRC}), blk(CH2, "host last"),
+            blk(NEST, [K, KD], "nest", entry=True), blk(K, [KE, KC]), blk(KE, "also inside"), blk(KC, "deep inside"), blk(KD, "after"),
+            version=version)
+def V(i): return F.blocks()[i].get("visits")
 def recent(i): return (V(i) or {}).get("recent", [])
-def tick(t, n=2):
-    """Wait for `n` more idle ticks (each looks at the clock)."""
-    w = t.sync[1]; t.until(lambda: t.sync[1] >= w + n)
-def leave(t): t.key(Q); t.key(ESC); t.done()
 
 # --- the stored shape, pure
 v = S.add_visits(None, {M0: "o"})
@@ -39,7 +29,7 @@ v = S.add_visits(v, {M0 + 20 + n * 15: "c" for n in range(12)})
 check("capped at 10, oldest first; the total and the first go on counting",
       len(v["recent"]) == 10 and v["total"] == 13 and v["first"] == M0 and v["recent"][-1][0] == M0 + 20 + 11 * 15
       and v["recent"] == sorted(v["recent"]), v)
-same("fw_block.visits gives a block's visits, for ranking later", S.visits({"visits": v})[-1], [M0 + 185, "c"])
+same("block.visits gives a block's visits, for ranking later", S.visits({"visits": v})[-1], [M0 + 185, "c"])
 check("  none for a block never visited", S.visits({}) == [] and S.last_visit({}) is None)
 live, seen = S.attend({}, ["x"], "c", T0)
 live, seen2 = S.attend(live, ["x"], "c", T0 + 599)
@@ -49,7 +39,7 @@ check("  after 10 minutes without, a new one begins", seen3["x"][0] == int((T0 +
 a = {"total": 5, "first": M0, "recent": [[M0, "o"], [M0 + 30, "c"]]}
 b = {"total": 6, "first": M0, "recent": [[M0, "oc"], [M0 + 50, "w"]]}
 m = S.merge_visits(a, b, base={"total": 4, "first": M0, "recent": [[M0, "o"]]})
-same("merging two copies (a sync): a union, each side's new visits counted",
+same("merging two copies (fwsync): a union, each side's new visits counted",
      m, {"total": 7, "first": M0, "recent": [[M0, "oc"], [M0 + 30, "c"], [M0 + 50, "w"]]})
 
 # --- migration v14 → v15
@@ -60,7 +50,7 @@ v14 = {**d, "schemaVersion": 14}
 up = M.upgrade(copy.deepcopy(v14), now=S.now_local(), new_id=S.new_id)
 check("v14 → v15: marked to be saved, the blocks as they were (no visits yet)",
       up["schemaVersion"] == M.SCHEMA_VERSION and M.behind(v14) and up["blocks"] == d["blocks"] and not any("visits" in b for b in up["blocks"]))
-json.dump(v14, open(os.environ["FW_DATA"], "w")); S.cmd_migrate(None)
+json.dump(v14, open(os.environ["FW_DATA"], "w")); os.remove(S.LORO_PATH); S.forget(); S.cmd_migrate(None)
 d2 = json.load(open(os.environ["FW_DATA"]))
 check("  migrate saves it: current, same blocks", d2["schemaVersion"] == M.SCHEMA_VERSION and len(d2["blocks"]) == len(d["blocks"]))
 spec = S.load_schema()["properties"]["visits"]
@@ -68,129 +58,62 @@ check("the schema describes it, readOnly", spec["readOnly"] is True and set(spec
 bad = S.validate({"total": 1, "first": M0, "recent": [[M0, "x"]]}, spec)
 check("  and checks it (flags are o, c, w, q)", bad, bad)
 
-# --- opening counts at once; a brief pass doesn't
+# --- written: record_visits, carried up to the blocks holding it (not through quotes); never an edit
 fresh()
-f = F.fw("host", env=ENV)
-f.key(UP, UP, UP, UP, DOWN, DOWN)     # through the blocks, quickly (the clock doesn't move)
-check("before it's written: nothing in the store yet", V(HOST) is None)
-leave(f)
-same("open → an `o` visit on the pericope", V(HOST), {"total": 1, "first": M0, "recent": [[M0, "o"]]})
-check("  a pass through blocks (under 3 s) counts for none of them", not any(V(i) for i in (CH, CH2, CS, SRC, QH)),
-      [(i, V(i)) for i in (CH, CH2, CS, SRC)])
-check("  not an edit: `updated` and words as they were", B()[HOST]["updated"] == OLD and B()[HOST]["words"] == 6, (B()[HOST]["updated"], B()[HOST]["words"]))
-
-# --- the cursor staying a few seconds: `c`, carried up
-fresh()
-f = F.fw("host", env=ENV)              # at the end of "host last"
-at(T0 + 2); tick(f)
-check("2 s in a block: not yet", True)
-at(T0 + 4); tick(f)
-leave(f)
-same("3 s or more: a `c` visit on the block", recent(CH2), [[M0, "c"]])
-same("  and on the pericope that holds it, the same visit", recent(HOST), [[M0, "oc"]])
-check("  nothing for the block passed or the source not gone into", not V(CH) and not V(CS) and not V(SRC))
-check("  `updated` unchanged by visits", B()[CH2]["updated"] == OLD and B()[HOST]["updated"] == OLD)
+S.record_visits({KC: {M0: "c"}})
+same("a block's visit, written", recent(KC), [[M0, "c"]])
+check("  not an edit: updated as it was", F.blocks()[KC]["updated"] == F.T and F.blocks()[NEST]["updated"] == F.T)
 data = S.load_data()
-check("  nor the content hash an editor's base is", S.content_hash(S.index(data), HOST) == S.content_hash(S.index(copy.deepcopy(data)), HOST))
-
-# --- typing: `w`, at once
-fresh()
-f = F.fw("host", env=ENV)
-f.key("!"); f.settle()
-leave(f)
-same("typing in a block: `cw` at once (no dwell needed)", recent(CH2), [[M0, "cw"]])
-same("  the pericope: `ocw`", recent(HOST), [[M0, "ocw"]])
-
-# --- through a quote: `q` on the source, carried up its own tree, not to the quote
-fresh()
-f = F.fw("host", env=ENV)
-f.key(UP, UP)                                   # the quote selected, then inside it
-at(T0 + 5); tick(f)
-leave(f)
-same("dwelling inside a quote: `cq` on the source block", recent(CS), [[M0, "cq"]])
-same("  and its entry (carried up its own tree)", recent(SRC), [[M0, "cq"]])
-check("  not the quote block itself (seeing isn't visiting)", not V(QH))
-same("  the pericope opened: `o`", recent(HOST), [[M0, "o"]])
-
-# --- nested: carried up through the containers
-fresh()
-f = F.fw("nest", env=ENV)
-f.key(UP)                                       # from "after" up into "deep inside"
-at(T0 + 4); tick(f)
-leave(f)
-same("a block inside a container: `c`", recent(KC), [[M0, "c"]])
-same("  the container between gets the visit too", recent(K), [[M0, "c"]])
-same("  and the pericope", recent(NEST), [[M0, "oc"]])
-check("  its siblings don't", not V(KD) and not V(KE))
-
-# --- 10 minutes without: the visit ends (written then), a new one begins
-fresh()
-f = F.fw("host", env=ENV)
-at(T0 + 4); tick(f)
-at(T0 + 4 + 601); tick(f)
-check("a visit that ended is written at once", recent(CH2) == [[M0, "c"]] and recent(HOST) == [[M0, "oc"]], (recent(CH2), recent(HOST)))
-f.key("x"); f.settle()
-leave(f)
-M1 = int((T0 + 605) // 60)
-same("  the next activity starts a new visit", recent(CH2), [[M0, "c"], [M1, "cw"]])
-same("  on the pericope too", (V(HOST)["total"], recent(HOST)), (2, [[M0, "oc"], [M1, "ocw"]]))
-
-# --- no undo step
-fresh()
-f = F.fw("host", env=ENV)
-f.key("y"); f.settle()
-at(T0 + 10); tick(f); at(T0 + 700); tick(f)       # its visit ends and is written
-f.key(Z); f.settle()
-check("^Z undoes the typing, not a visit", "host lasty" not in S.own_text(B(), HOST) and recent(CH2) == [[M0, "cw"]], (S.own_text(B(), HOST), recent(CH2)))
-leave(f)
-h, record = S.set_quote_show(QH, ["title"])
+check("  nor the content hash an editor's base is", S.content_hash(S.index(data), NEST) == S.content_hash(S.index(copy.deepcopy(data)), NEST))
+S.record_visits({HOST: {M0 + 2: "o"}}); S.record_visits({HOST: {M0 + 3: "c"}})
+same("record_visits merges with what's stored, never overwrites", recent(HOST), [[M0 + 2, "o"], [M0 + 3, "c"]])
+_, record = S.set_quote_show(QH, ["title"])
 S.record_visits({QH: {M0: "c"}})
 S.restore(record)
-check("an undo putting a block back keeps its visits", recent(QH) == [[M0, "c"]] and S.quote_show(B()[QH]) == [], V(QH))
-
-# --- the header: when it was last visited (before this time)
-last = S.pretty_time(S.minute_iso(S.last_visit(B()[HOST])))
-f = F.fw("host", env=ENV, cols=170)
-check("the header shows the last visit (before this one), like updated", f"last visited {last}" in f.row(1), (last, f.row(1)))
-leave(f)
-fresh()
-f = F.fw("host", env=ENV, cols=170)
-check("  never visited: nothing said", "visited" not in f.text(), f.row(1))
-leave(f)
-
-# --- two sessions: neither loses the other's visits, and neither thinks a block changed
-fresh()
-g = F.fw("host", env=ENV)                       # session 2, open throughout, from minute M0
-at(T0 + 120)
-f = F.fw("host", env=ENV)                       # session 1 opens the same pericope two minutes on
-at(T0 + 125); tick(f)
-leave(f)                                        # and writes its visits
-tick(g, 3)
-check("an untouched editor isn't told the block changed", "another session" not in g.text(), g.text())
-same("  session 1's visits", recent(HOST), [[M0 + 2, "oc"]])
-g.key("z"); g.settle()                          # session 2 saves an edit over a store with them
-check("  a save there keeps them", recent(HOST) == [[M0 + 2, "oc"]], recent(HOST))
-leave(g)
-same("  both sessions' visits are there, each its own", recent(HOST), [[M0, "ocw"], [M0 + 2, "oc"]])
-same("  counted", V(HOST)["total"], 2)
-S.record_visits({HOST: {M0 + 2: "o"}}); S.record_visits({HOST: {M0 + 3: "c"}})
-same("record_visits merges with what's stored, never overwrites", recent(HOST), [[M0, "ocw"], [M0 + 2, "oc"], [M0 + 3, "c"]])
-
-# --- an empty new entry isn't kept alive by its visits
-fresh()
-n = len(S.load_data()["blocks"])
-f = F.fw(env=ENV)
-at(T0 + 10); tick(f)
-leave(f)
-same("an empty new pericope is still discarded", len(S.load_data()["blocks"]), n)
+check("an undo putting a block back keeps its visits", recent(QH) == [[M0, "c"]] and S.quote_show(F.blocks()[QH]) == [], V(QH))
+S.commit(HOST, S.block_draft(F.blocks(), HOST) + "!", [])
+same("a save over a store with visits keeps them", recent(HOST), [[M0 + 2, "o"], [M0 + 3, "c"]])
 
 # --- two machines (the store a Loro document): visits merge as a union
 base = blk(CH, "same"); base["visits"] = {"total": 1, "first": M0, "recent": [[M0, "o"]]}
-lap, mini = copy.deepcopy(base), copy.deepcopy(base)
-lap["visits"] = S.add_visits(lap["visits"], {M0 + 30: "c"}); mini["visits"] = S.add_visits(mini["visits"], {M0 + 60: "w"})
-same("merged: visits on both sides a union, both counted", F.loro_merge(base, lap, mini)["visits"],
+lap, other = copy.deepcopy(base), copy.deepcopy(base)
+lap["visits"] = S.add_visits(lap["visits"], {M0 + 30: "c"}); other["visits"] = S.add_visits(other["visits"], {M0 + 60: "w"})
+same("merged: visits on both sides a union, both counted", F.loro_merge(base, lap, other)["visits"],
      {"total": 3, "first": M0, "recent": [[M0, "o"], [M0 + 30, "c"], [M0 + 60, "w"]]})
-edited = {**copy.deepcopy(mini), "content": "edited on the mini", "updated": "2026-11-01T10:00:00-04:00"}
+edited = {**copy.deepcopy(other), "content": "edited on the other machine", "updated": "2026-11-01T10:00:00-04:00"}
 out = F.loro_merge(base, lap, edited)
-check("  an edit on one side kept, with both sides' visits", out["content"] == "edited on the mini" and len(out["visits"]["recent"]) == 3, out)
-F.report("VISITS")
+check("  an edit on one side kept, with both sides' visits", out["content"] == "edited on the other machine" and len(out["visits"]["recent"]) == 3, out)
+
+# --- memory and the garden (home's order before suggesting)
+NOW, DAY = 29_920_000, 1440
+fresh_ = {"created": "2026-11-15T10:00:00-05:00", "visits": {"total": 1, "first": NOW - 2 * DAY, "recent": [[NOW - 2 * DAY, "ow"]]}}
+s1, r1 = S.memory(fresh_, NOW)
+check("one visit 2 days ago: S is a day, R about .8", abs(s1 - 1) < 1e-9 and 0.8 < r1 < 0.85, (s1, r1))
+spaced = {"visits": {"total": 4, "first": NOW - 200 * DAY, "recent": [[NOW - 200 * DAY, "ow"], [NOW - 190 * DAY, "oc"], [NOW - 150 * DAY, "ow"], [NOW - 60 * DAY, "oc"]]}}
+crammed = {"visits": {"total": 4, "first": NOW - 200 * DAY, "recent": [[NOW - 200 * DAY, "ow"], [NOW - 200 * DAY + 30, "oc"], [NOW - 200 * DAY + 60, "ow"], [NOW - 60 * DAY, "oc"]]}}
+check("spaced visits build more stability than crammed ones", S.memory(spaced, NOW)[0] > S.memory(crammed, NOW)[0])
+w = {"visits": {"total": 2, "first": NOW - 30 * DAY, "recent": [[NOW - 30 * DAY, "ow"], [NOW - 20 * DAY, "ow"]]}}
+o = {"visits": {"total": 2, "first": NOW - 30 * DAY, "recent": [[NOW - 30 * DAY, "ow"], [NOW - 20 * DAY, "o"]]}}
+check("writing in it counts for more than a glance", S.memory(w, NOW)[0] > S.memory(o, NOW)[0])
+check("no visits: its writing stands for the first", S.memory({"created": "2026-11-01T10:00:00-05:00"}, NOW)[1] < 1)
+same("ago", [S.ago(NOW - n, NOW) for n in (0, 5, 120, 3 * DAY, 70 * DAY, 400 * DAY)], ["just now", "5m ago", "2h ago", "3d ago", "2mo ago", "1y ago"])
+same("last action: the last visit's strongest flag", (S.last_action(w)[0], S.last_action(o)[0]), ("written", "opened"))
+same("  none, never changed: made", S.last_action({"created": "2026-11-01T10:00:00-05:00", "updated": "2026-11-01T10:00:00-05:00"})[0], "made")
+def vis(*ago, flags="ow"): return {"total": len(ago), "first": NOW - ago[0], "recent": [[NOW - a, flags] for a in ago]}
+G = {i: {"id": i, "content": "x", "created": "2026-06-01T10:00:00-04:00", **({"visits": v} if v else {})} for i, v in (
+    ("recent", vis(DAY)), ("faded", vis(300 * DAY, 299 * DAY, 200 * DAY)), ("faded once", vis(100 * DAY, flags="o")),
+    ("steady", vis(400 * DAY, 390 * DAY, 370 * DAY, 330 * DAY, 250 * DAY, 30 * DAY)), ("plain", None))}
+order = S.garden(G, list(G), NOW)
+why = dict(order)
+same("the garden: recent first", order[0], ("recent", "recent"))
+check("  faded ones resurface, the more rehearsed first", why["faded"] == why["faded once"] == "resurfacing"
+      and [i for i, _ in order].index("faded") < [i for i, _ in order].index("faded once"), order)
+same("  well rehearsed, seen a month ago: still in mind", why["steady"], "")
+same("  everything once", sorted(why), sorted(G))
+G = {f"2026110{n}T100000-r000": {"content": "x", "visits": vis((n + 1) * 60)} for n in range(5)}
+G |= {f"2026060{n}T100000-f000": {"content": "x", "visits": vis((200 + n) * DAY)} for n in range(3)}
+same("the first cards: recent and resurfacing in turn, then the recent left", [w for _, w in S.garden(G, list(G), NOW)],
+     ["recent", "resurfacing"] * 3 + ["recent"] * 2)
+many = {f"2026110{n % 10}T1{n:05d}-r000": {"content": "x", "visits": vis(n + 1)} for n in range(14)}
+same("  only the first TOP mix: a busy week's recent come after", [w for _, w in S.garden(G | many, list(G | many), NOW)][:S.TOP].count("resurfacing"), 3)
+F.report()

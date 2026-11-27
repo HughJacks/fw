@@ -1,5 +1,5 @@
-/* (blocks are coloured by their borders only, never a background: the user, 2026-11-18) */
-/* fw web — typography for reading (the user, 2026-11-18: no longer monospace; readability in a traditional
+/* (blocks are coloured by their borders only, never a background) */
+/* fw web — typography for reading (no longer monospace; readability in a traditional
    typographic sense, not much hierarchy). One humanist sans (Source Sans 3, bundled: dist/), the writing at a
    book's measure; what's around it (dates, counts, keys, the bar) smaller and dimmer, never bolder. The
    terminal's boxes became rules: a block shows its edge only while you're in it; a quote is a red rule and a
@@ -24,17 +24,17 @@
 :root {
   --bg: #111111; --fg: #dddad3; --dim: #8c8984; --faint: #3a3a3a; --rule: #2a2a2a;
   --quote: #9a6a6a; --quote-hi: #d76f6f; --blue: #7fa3dc; --sel: #dddad3;
-  /* colour by what a thing is, its evaluated type, never how it was made (the user, 2026-11-25): red a pointer or a
+  /* colour by what a thing is, its evaluated type, never how it was made: red a pointer or a
      window (a Ref, a From: links, chips, quotes), green data (numbers, dates, true/false), blue a tag, amber not a value
      yet (a hole, an error); text the writing's own colour. Computed by you: the ƒ, not a colour */
   --hole: #e2b56b;
-  /* an expression block's green (the user, 2026-11-24: "expression blocks, evaluated or not should be rendered in green,
+  /* an expression block's green ("expression blocks, evaluated or not should be rendered in green,
      pick a very pleasant one"): a soft sage-mint, as bright as the quotes' red when lit */
   --expr: #6f9e82; --expr-hi: #7ccb9a; --expr-mid: rgba(124, 203, 154, .55); --path-expr: rgba(111, 158, 130, .4);
   --text: "Source Sans 3", system-ui, -apple-system, sans-serif;
   --measure: 40rem;   /* the writing's width: about 68 characters */
   --small: .8rem;     /* what's around the writing */
-  --write: 18px;      /* the writing's size (and the titles', the user, 2026-11-19) */
+  --write: 18px;      /* the writing's size (and the titles') */
 }
 body.fw { background: var(--bg); color: var(--fg); font: var(--write)/1.6 var(--text); font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
@@ -55,7 +55,7 @@ body.fw { background: var(--bg); color: var(--fg); font: var(--write)/1.6 var(--
 .fw-sel.fw-kind .fw-row-label { color: #1c3a78; }
 .fw-foot { padding-top: .4rem; font-size: var(--small); }
 .fw-search { position: relative; z-index: 5; margin-bottom: 1rem; }
-/* home's waiting pericope: at the top, as any page, growing down (the user, 2026-11-25: "just start new pericopes from
+/* home's waiting pericope: at the top, as any page, growing down ("just start new pericopes from
    the top, none of this grow from the middle stuff"); the search and the suggestions below, from near the bottom of
    the first screen */
 .fw-centre { min-height: calc(100vh - 14rem); display: flex; flex-direction: column; justify-content: flex-start; }
@@ -64,7 +64,7 @@ body.fw { background: var(--bg); color: var(--fg); font: var(--write)/1.6 var(--
 .fw-centre + .fw-suggested { margin-top: 1.5rem; }
 .fw-home-page { transition: opacity .15s; }
 .fw-home-page > .fw-new { margin-top: .6rem; }
-/* the foot's words (Suggested.svelte), kept very light (the user, 2026-11-20): "go to" on a faint rule, no box; what
+/* the foot's words (Suggested.svelte), kept very light: "go to" on a faint rule, no box; what
    the rows are, small and dim above them */
 .fw-go { padding: .2rem .4rem .35rem; border-bottom: 1px solid var(--rule); margin-bottom: .6rem; }
 .fw-hint { font-size: var(--small); color: #5a5855; letter-spacing: .04em; padding: .5rem .4rem .15rem; }
@@ -73,29 +73,29 @@ body.fw { background: var(--bg); color: var(--fg); font: var(--write)/1.6 var(--
 .fw-library { font-size: .9rem; }
 
 /* a pericope: the header, then the writing, in one column at the measure (the gutter's numbers to its left).
-   Every block is drawn in a thin box (the user, 2026-11-18), and all text starts at one column, past room for three
+   Every block is drawn in a thin box, and all text starts at one column, past room for three
    boxes, as the terminal's: a box at depth d (0 at the top) sits d steps (--u) in from the column's edge and pads its
    text out to the shared column, so nested text lines up and boxes nest outward. Deeper than three: its box at the
    column, the text still aligned. */
 :root { --u: .375rem; --pad: .5rem; --text-at: calc(3 * var(--u) + var(--pad)); --box: #2f2f2f; --box-hi: #5c5a56; }
-/* the pericope in one very faint frame (the user, 2026-11-18): the header a full rectangle at its top, a line, then
+/* the pericope in one very faint frame: the header a full rectangle at its top, a line, then
    all its blocks (--fp: the frame's padding) */
-:root { --frame: #262626; --fp: 0px; }   /* (no frame round the body: the top level is a chain of blocks, linked, the user, 2026-11-19) */   /* (the frame's border and padding a step, as every box's: the user, 2026-11-19) */
+:root { --frame: #262626; --fp: 0px; }   /* (no frame round the body: the top level is a chain of blocks, linked) */   /* (the frame's border and padding a step, as every box's) */
 /* a pericope's width: between the writing's measure (~49rem, before) and the page's whole width (80rem, max-w-7xl);
-   the user, 2026-11-19: "in between" */
+   "in between" */
 :root { --page: 64rem; }
 .fw-header, .fw-doc { max-width: var(--page); margin-inline: auto; }
 .fw-doc > .ProseMirror { margin-right: 2.5rem; }   /* (room on the right for the ↗, as on the left for the numbers) */
 .fw-header { position: relative; padding-left: 2.5rem; padding-right: 2.5rem; }
 .fw-doc { padding-bottom: 30vh; }
-/* the header's tab, H, where a block's number is (the user, 2026-11-22): a number at rest, a tab while you're in it */
+/* the header's tab, H, where a block's number is: a number at rest, a tab while you're in it */
 .fw-gutter { position: absolute; left: calc(2.5rem - 1px - 1.1rem - var(--tab)); top: .225rem; width: var(--tab); height: 1.45rem;   /* (a block tab's size, tabs.js tabW × tabH) */
   box-sizing: border-box; display: flex; align-items: center; justify-content: center; color: #4a4845; font-size: .7rem; }
 .fw-header:focus-within > .fw-gutter { border: 1px solid var(--box-hi); background: var(--bg); color: var(--fg);
   font: 11.5px/1 ui-monospace, "SF Mono", Menlo, monospace; text-box: trim-both cap alphabetic; }
 .fw-header:focus-within > .fw-gutter::after { content: ""; position: absolute; left: 100%; top: 50%; width: calc(1.1rem + 1px);
   border-top: 1px solid var(--box-hi); }
-/* the header: monospace and small but for the title, packed tight (the user, 2026-11-18: as little room as possible);
+/* the header: monospace and small but for the title, packed tight;
    folded to its title's line, what it is and its backlinks at the right; in it (focus anywhere in it), unfolded: its
    type and facts on one line, each field a line, the title last */
 .fw-hbox { color: var(--dim); font: 11.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; cursor: text;
@@ -109,7 +109,7 @@ html.fw-still .fw-more { transition: none; }
 .fw-typerow > .fw-dim { color: var(--expr); }   /* (its facts: dates and counts, data, green) */
 .fw-label { }
 .fw-field { display: flex; gap: 1ch; align-items: baseline; }
-/* every unfolded header the same height (the user, 2026-11-19): its rows fixed (type and facts; backlinks, and a kind's maybes;
+/* every unfolded header the same height: its rows fixed (type and facts; backlinks, and a kind's maybes;
    kinds; the title), a row with nothing on it kept, unseen; a row never wraps (a long one is cut at the edge) */
 .fw-fields > .fw-row-fields, .fw-fields > .fw-field { display: flex; column-gap: 3ch; white-space: nowrap; overflow: hidden; }
 .fw-none { color: var(--dim); }   /* (an empty field, saying so) */
@@ -118,7 +118,7 @@ html.fw-still .fw-more { transition: none; }
 .fw-titlerow .fw-title { flex: 1; min-width: 0; }
 .fw-folded { flex: none; padding-right: .6rem; white-space: nowrap; }
 .fw-header:focus-within .fw-folded { display: none; }
-.fw-title { font-family: var(--text); font-size: var(--write); line-height: 1.2; font-weight: inherit; color: var(--fg); }   /* (the body's font, size and weight: the user, 2026-11-19) */
+.fw-title { font-family: var(--text); font-size: var(--write); line-height: 1.2; font-weight: inherit; color: var(--fg); }   /* (the body's font, size and weight) */
 .fw-title::placeholder { color: #5f5d59; }
 .fw-title:disabled { color: var(--blue); }
 
@@ -144,7 +144,7 @@ html.fw-still .fw-more { transition: none; }
 .fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) { --d: 1; }
 .fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) { --d: 2; }
 .fw-doc :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr) { --d: 3; }
-/* (the right side mirrors the left, the user, 2026-11-18: a box steps out on both sides, so text runs between the same
+/* (the right side mirrors the left, a box steps out on both sides, so text runs between the same
    two edges at every depth) */
 .fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr { border: 1px solid var(--box);
   padding: .3rem calc((3 - var(--d, 0) + var(--lift)) * var(--u) + var(--pad) - 1px); }
@@ -152,13 +152,13 @@ html.fw-still .fw-more { transition: none; }
 .fw-container { padding: .15rem calc(var(--u) - 1px); }   /* (what it holds: boxes a step in) */
 .fw-container > * { margin-bottom: var(--gap); }
 .fw-container > *:last-child { margin-bottom: 0; }
-/* quiet at rest (the user, 2026-11-18: blocks break up the text too much): only the block you're in, or one selected
+/* quiet at rest: only the block you're in, or one selected
    whole, shows its box, its text full and a little room easing out around it; the rest packed together, their boxes
    unseen (a quote's a faint red edge), their text lighter and dimmer. While stepping in or out, every box shows. */
 :root { --rest: #a9a6a0; }
 .fw-text, .fw-qtext, .fw-container, .fw-image, .fw-expr { border-color: transparent; }
 .fw-doc .fw-text, .fw-doc .fw-qtext { color: var(--rest); }   /* (one weight throughout: activating a block never re-breaks its lines) */
-/* the room round the block you're in eases out, and the room round the one you left eases back (the user, 2026-11-19:
+/* the room round the block you're in eases out, and the room round the one you left eases back (
    animate the spread of the active block); the tabs follow it as it moves (Tabs.svelte measures each frame while it
    eases, each tab on a spring, Tab.svelte). At once in the tests and with reduced motion (html.fw-still, motion.js) */
 :root { --spread: .2s cubic-bezier(.2, .7, .2, 1); }
@@ -168,21 +168,21 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 .fw-container, .fw-quote, .fw-image, .fw-expr { transition: border-color .18s ease, var(--lit-fade); }
 .fw-doc .fw-here { border-color: var(--box-hi); color: var(--fg); padding-top: .35rem; padding-bottom: .35rem; }
 .fw-doc :is(.fw-text, .fw-qtext).fw-chosen { padding-top: .35rem; padding-bottom: .35rem; }   /* (selected whole is the focus too: the same room) */
-/* the path, the boxes round the one you're in (the user, 2026-11-19: "the path can be fainter and thinner"): a hairline
+/* the path, the boxes round the one you're in: a hairline
    inside the border (an outline: the box's size never changes going in or out of it), fainter than a box at rest.
-   Every line is drawn inside its box, from its outer edge in (the user, 2026-11-19: "inner draw mode, so padding is
+   Every line is drawn inside its box, from its outer edge in ("inner draw mode, so padding is
    consistent"): a border, the hairline here (offset by its own width), selected whole's second line (inset) */
 :root { --path: #2a2a2a; --path-quote: rgba(154, 106, 106, .38); --quote-mid: rgba(215, 111, 111, .55); }
 .fw-container:has(.fw-here) { outline: .5px solid var(--path); outline-offset: -.5px; }   /* (around the one you're in) */
 .fw-chosen :is(.fw-text, .fw-qtext),
   .fw-chosen:is(.fw-text, .fw-qtext) { color: var(--fg); }
-/* a quote holds blocks as a container does (the user, 2026-11-18: the same all the way through): what it shows a step
+/* a quote holds blocks as a container does: what it shows a step
    in, each a block of its own, drawn as every other block; room on the right for its ↗ */
 .fw-quote { border-color: transparent; position: relative; padding: .15rem calc(var(--u) - 1px); }
 .fw-quote.fw-chosen { --edge: var(--quote-hi); border-color: var(--edge); }
-/* the path (quotes you're writing through) faint; the focus drawn (the user, 2026-11-18: one bright thing): a quote
+/* the path (quotes you're writing through) faint; the focus drawn: a quote
    showing one block, its block in focus, is that block, so drawn as a block you're in is: its red at the grey's
-   --box-hi, not bright (bright and filled tabs are selected whole; the user, 2026-11-19: "faded and drawn") */
+   --box-hi, not bright (bright and filled tabs are selected whole; "faded and drawn") */
 .fw-quote:has(.fw-current) { --edge: var(--path-quote); border-color: transparent; outline: .5px solid var(--edge); outline-offset: -.5px; }
 .fw-quote:has(> .fw-body > .ProseMirror > .fw-text.fw-here:only-child) { --edge: var(--quote-mid); border-color: var(--edge); outline: none; }
 /* (--edge: the colour a quote's border is drawn in, for the line from it to its ↗) */
@@ -194,13 +194,13 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 .fw-top { display: flex; justify-content: space-between; align-items: baseline; color: var(--quote); font-size: .72rem;
   letter-spacing: .03em; line-height: 1.3; pointer-events: none; }
 .fw-top-label:empty { visibility: hidden; }
-/* a quote's top line as a mini header (the user, 2026-11-19): the main header nested, a box like any block's: its facts
+/* a quote's top line as a mini header: the main header nested, a box like any block's: its facts
    small and monospace, as the header's, its title in the body's font, size and weight, as the header's title */
 .fw-top-label { display: flex; flex-direction: column; text-transform: none; letter-spacing: normal; }
 .fw-mini-facts { font: 11.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; color: var(--dim); }
 .fw-mini-title { font-family: var(--text); font-size: var(--write); line-height: 1.2; color: var(--fg); }
 /* its box: a block's, the first of the quote's (at the quote's inside edge, a step in; its text on the one column),
-   the gap below it a block's. Quiet at rest, as every block (the user, 2026-11-20: "the header border and glow only
+   the gap below it a block's. Quiet at rest, as every block ("the header border and glow only
    shows up when selected or adjacent"): its border unseen at rest, and while you're elsewhere in the quote. Shown when
    the quote is selected whole (bright, the first block's top edge lit); or when it's next to the block that's active,
    the quote's first block (you're in it, or it's selected whole): then its bottom edge glows as a neighbour's does
@@ -224,7 +224,7 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
   --lit-up: var(--faint);
   border-image: linear-gradient(to bottom, var(--lit-up), transparent var(--glow), transparent calc(100% - var(--glow)), var(--lit-down, transparent)) 1; }
 .fw-quote:has(> .fw-top > .fw-top-label:empty) > .fw-top { height: 0; margin: 0; }
-/* its ↗ in the right margin, outside the page's frame, level with its top (the user, 2026-11-18: a gutter mirroring the
+/* its ↗ in the right margin, outside the page's frame, level with its top (a gutter mirroring the
    numbers on the left, never touching a box); out from its own edge by its depth's steps, the frame's padding and border */
 .fw-quote > .fw-top > .fw-open { position: absolute; top: .15rem; line-height: 1.2rem; width: 1.2rem; text-align: center;
   right: calc(-1 * (var(--d, 0) * var(--u) + var(--fp) + 1px + 2rem)); }   /* (clear of the frame's border) */
@@ -235,7 +235,7 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 .fw-open::after { content: ""; position: absolute; inset: 0; margin: auto; width: .62rem; height: .62rem; background: currentColor;
   -webkit-mask: var(--arrow) center / contain no-repeat; mask: var(--arrow) center / contain no-repeat; }
 .fw-open:hover { color: var(--quote-hi); }
-/* every right-side reference tab, hovered, grows out to the right with the name of what it opens (the user, 2026-11-26:
+/* every right-side reference tab, hovered, grows out to the right with the name of what it opens (
    "all right side reference tabs should have hover behavior"), as an expression's dependency tabs do */
 .fw-open > .fw-open-name { display: none; position: absolute; left: 100%; top: -1px; bottom: -1px; box-sizing: border-box; max-width: 22ch;
   padding: 0 .45rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: calc(1.2rem); pointer-events: none;
@@ -248,29 +248,28 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 .fw-locked .fw-body { color: var(--dim); }
 .fw-qtext { white-space: pre-wrap; }
 .fw-hidden { color: var(--quote); }
-/* a quote that doesn't show through (⋯ too deep, ↻ itself, empty): the writing's size, dim (the user, 2026-11-18) */
+/* a quote that doesn't show through (⋯ too deep, ↻ itself, empty): the writing's size, dim */
 .fw-note { color: var(--dim); }
-/* a picture: as wide as its block, never taller than about two-thirds of the window, a tall one centred (the user,
-   2026-11-22) */
+/* a picture: as wide as its block, never taller than about two-thirds of the window, a tall one centred */
 .fw-image img, .fw-pic { display: block; width: 100%; height: auto; max-height: 65vh; object-fit: contain; }
 .fw-image.fw-chosen { border-color: var(--fg); }
 /* an expression block takes its value's colour (data-tone, exprview.js toneOf): its box, its ƒ tab, its gutter tab */
 .fw-expr { --tone-hi: var(--fg); --tone-mid: var(--box-hi); --tone-path: var(--path); --tone-num: #4a4845; }
 /* (a box is coloured only when the block itself is a window; a reference or data is inline, its own text coloured,
-   the box plain: a value draws the same wherever it is, the ƒ alone marks it computed, the user, 2026-11-25) */
+   the box plain: a value draws the same wherever it is, the ƒ alone marks it computed) */
 .fw-expr[data-tone="window"] { --tone-hi: var(--quote-hi); --tone-mid: var(--quote-mid); --tone-path: var(--path-quote); --tone-num: #6b4f4f; }
 .fw-expr[data-tone="hole"] { --tone-hi: var(--hole); --tone-mid: rgba(226, 181, 107, .55); --tone-path: rgba(226, 181, 107, .3); --tone-num: #6b5f4a; }
 .fw-expr[data-tone="data"] > .fw-expr-out:not(.fw-expr-block) { color: var(--expr-hi); }
 /* a value printed in an expression block: as it would be inline (mono; references as @p's, red with their ↗) */
 .fw-expr > .fw-expr-out:not(.fw-expr-block, .fw-expr-wait, .fw-expr-fn) { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .86em; }
 .fw-expr.fw-chosen { border-color: var(--tone-hi); }
-/* a value of blocks: held as a container holds its blocks (the user, 2026-11-24: nesting in a value "should work the
+/* a value of blocks: held as a container holds its blocks (nesting in a value "should work the
    same as any other blocks"): its blocks a step in, the container's gap between them */
 .fw-expr:has(> .fw-expr-out.fw-expr-block) { padding: .15rem calc(var(--u) - 1px); }
 .fw-expr-out.fw-expr-block .ProseMirror { outline: none; white-space: pre-wrap; }
 .fw-expr-out.fw-expr-block .ProseMirror > * { margin-bottom: var(--gap); }
 .fw-expr-out.fw-expr-block .ProseMirror > *:last-child { margin-bottom: 0; }
-/* a value of one block, unwrapped (the user, 2026-11-24: "we should always unwrap wrappings with just one block"): that
+/* a value of one block, unwrapped: that
    block is its holder's box (an expression's, a call's, a window's), drawn as nothing of its own */
 .fw-doc .fw-value > :only-child { border-color: transparent !important; border-image: none !important; outline: none !important;
   padding-top: 0; padding-bottom: 0; margin: 0; }
@@ -288,7 +287,7 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 .fw-doc .fw-expr.fw-chosen > .fw-fn::before { background: var(--tone-hi); }
 .fw-doc > .ProseMirror > .fw-expr::before { color: var(--tone-num); }
 /* its dependencies (exprview.js layoutDeps): a tab each under the ƒ, in its column, the ƒ's square exactly (1.2rem, its
-   line 1px outside), red (references); not joined to the block; only while the block is active (the user, 2026-11-26:
+   line 1px outside), red (references); not joined to the block; only while the block is active (
    "it doesnt need to show here while inactive"); hovered, only its name grows out, cut at about 20 characters */
 .fw-deps { position: absolute; top: calc(.15rem + 1.2rem + 1px + .35rem); left: calc(100% + var(--d, 0) * var(--u) + var(--fp) + 1px + 2rem - 1.2rem - 1px);
   display: flex; flex-direction: column; align-items: flex-start; gap: .35rem; z-index: 2; }
@@ -299,7 +298,7 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 .fw-dep-ref > .fw-dep-mark { background: currentColor; -webkit-mask: var(--arrow) center / .62rem no-repeat; mask: var(--arrow) center / .62rem no-repeat;
   transform: rotate(180deg); }   /* (↙: a dependency, this draws from that; ↗ is a reference, this points to that) */
 /* (never lit, one tab lit at a time, the one ⌘O opens, and a dependency opens by a click: so it looks as any tab at rest,
-   faint, no line; hovered, as any tab hovered: its line, its name; the user, 2026-11-26) */
+   faint, no line; hovered, as any tab hovered: its line, its name) */
 .fw-dep { opacity: .45; border-color: transparent; transition: opacity .18s ease; }
 .fw-dep:hover { opacity: 1; border-color: var(--quote-mid); }
 .fw-dep-more > .fw-dep-mark { width: auto; min-width: 1.2rem; padding: 0 .2rem; box-sizing: border-box; }
@@ -312,9 +311,9 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 /* (a window an expression made is a window: red, as every From; that it's computed is its expression's ƒ) */
 
 /* the top line (App.svelte): what the page says; small, in the header's monospace, centred in the page's width; no
-   breadcrumb, no rule (the user, 2026-11-19). Its line kept when empty: a message coming never moves the page. */
+   breadcrumb, no rule. Its line kept when empty: a message coming never moves the page. */
 /* (no band across the top: the page scrolls to the window's very edge; only a message, while there is one, has the
-   page's colour behind it, the user, 2026-11-20) */
+   page's colour behind it) */
 .fw-topbar { position: sticky; top: 0; z-index: 20; display: flex; justify-content: center; pointer-events: none;
   font: 11.5px/1.4 ui-monospace, "SF Mono", Menlo, monospace; color: var(--dim); }
 .fw-status.fw-said { background: var(--bg); pointer-events: auto; }
@@ -328,7 +327,7 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 /* hyperlinks: red, underlined, a ↗ after */
 .fw-link { color: var(--quote-hi); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; cursor: pointer; }
 /* the ↗, drawn (the font has none: a borrowed glyph can't be aligned): its ink box geometric, the shaft and head set a
-   little down and left of centre, as an arrow's weight sits up and right (the user, 2026-11-20: optically aligned) */
+   little down and left of centre, as an arrow's weight sits up and right */
 :root {
   --arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.6 12.4 11.9 4.1M5.9 4.1h6v6'/%3E%3C/svg%3E");
   --arrow-link: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 13.5 13.5 2.5M6 2.5h7.5V10'/%3E%3C/svg%3E");
@@ -349,7 +348,7 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 .fw-chip-guess { color: var(--blue); opacity: .6; }
 .fw-chip-plus { color: var(--dim); }
 
-/* masking mode: the quote's whole source, every block in it drawn as a block you're in (the user, 2026-11-18: all in
+/* masking mode: the quote's whole source, every block in it drawn as a block you're in (all in
    the active state): its full thin box at the text's column, a step in from the quote, as the blocks a quote shows;
    what shows bright, what's hidden dim; a quote or picture inside, a box of its own (a quote's red). The brackets
    take no room: they hang just outside the text, so marking never moves or re-breaks a line. */
@@ -374,7 +373,7 @@ html.fw-still :is(.fw-text, .fw-qtext) { transition: border-color .18s ease, col
 .fw-hole { color: var(--quote); padding: 0 .2ch; user-select: none; }
 .fw-rawline { color: var(--dim); padding: .1rem .6rem; border-left: 1px dashed var(--quote); margin-bottom: .4rem; }
 
-/* paraphrases: drawn as quotes are (the user, 2026-11-20: "a kind of transclusion"; its source isn't named), the same
+/* paraphrases: drawn as quotes are, the same
    borders, ↗ and tabs; not written yet (or Show its source), the source dim inside */
 .fw-para { position: relative; }
 .fw-para > .fw-open { position: absolute; top: .15rem; line-height: 1.2rem; width: 1.2rem; text-align: center; opacity: .45;
@@ -417,7 +416,7 @@ div.fw-peek { color: #5a5855; white-space: pre-wrap; padding: .2rem .6rem; }
    the frame are opaque in the page's own colour, so a header slid behind the frame is hidden. */
 .fw-hbox, .fw-doc > .ProseMirror { background: var(--bg); }
 
-/* references quiet at rest too (the user, 2026-11-18): a quote, a link, a paraphrase, a hidden stretch show in full only
+/* references quiet at rest too: a quote, a link, a paraphrase, a hidden stretch show in full only
    where you are (the block you're in, a quote you're in or have selected, blocks selected whole) and while moving */
 :root { --ref-rest: rgba(154, 106, 106, .5); }
 .fw-quote > .fw-top { opacity: .45; transition: opacity .18s ease; }
@@ -431,7 +430,7 @@ div.fw-peek { color: #5a5855; white-space: pre-wrap; padding: .2rem .6rem; }
 :is(.fw-quote:has(.fw-current), .fw-quote.fw-chosen, .fw-chosen) :is(.fw-hole, .fw-hidden) { color: var(--quote); }
 
 /* a quote showing one block: that block is what it quotes, and the quote's box is its box (no second box inside, in
-   it or with it selected whole); a quote showing several blocks draws each as any block (the user, 2026-11-18) */
+   it or with it selected whole); a quote showing several blocks draws each as any block */
 .fw-quote > .fw-body > .ProseMirror > .fw-text:only-child, .fw-quote > .fw-body > :is(.fw-qtext, .fw-image):only-child { border-color: transparent !important;
   border-image: none !important; }   /* (boxes are drawn by their border-image, the glow's gradient, below: that too) */
 
@@ -441,35 +440,35 @@ div.fw-peek { color: #5a5855; white-space: pre-wrap; padding: .2rem .6rem; }
 @keyframes fw-pulse { 0%, 100% { opacity: .35; } 50% { opacity: .8; } }
 @media (prefers-reduced-motion: reduce) { .fw-pending { animation: none; opacity: .6; } }
 
-/* in a block, its border shows; selected whole, it's bolder (the user, 2026-11-18): a second line drawn just inside the
+/* in a block, its border shows; selected whole, it's bolder: a second line drawn just inside the
    border, so nothing moves */
-.fw-chosen { box-shadow: none; }   /* (selected whole: its 1px border only, as light as the line to its tab; the filled tab says it's selected, the user, 2026-11-19) */
+.fw-chosen { box-shadow: none; }   /* (selected whole: its 1px border only, as light as the line to its tab; the filled tab says it's selected) */
 .fw-quote.fw-chosen { outline: none; }
 .fw-quote > .fw-body > .ProseMirror > .fw-text:only-child.fw-chosen { box-shadow: none; }
 
 /* the step's rigs (motion.js): boxes drawn over the page while it moves, then taken off */
 /* (the borders over everything, the lifted quote too: its solid ground would cut them where they cross it) */
-/* while a step moves, the gutters' numbers and ↗ are hidden (the user, 2026-11-18), the copy's too */
+/* while a step moves, the gutters' numbers and ↗ are hidden, the copy's too */
 .fw-doc > .ProseMirror > *::before, .fw-open { transition: opacity .3s ease; }   /* (fading back in once it's done) */
 
-/* the ↗'s tab: only where ⌘O goes (the user, 2026-11-18): a quote selected whole; else the innermost quote you're writing
+/* the ↗'s tab: only where ⌘O goes: a quote selected whole; else the innermost quote you're writing
    in (⌘O opens its source there): outlined, a line to its border;
    filled when selected (tabs.js draws the gutter's) */
-/* (two looks only, the user, 2026-11-26: "there should be only one" inactive state: faint at rest, or lit when it's
+/* (two looks only, "there should be only one" inactive state: faint at rest, or lit when it's
    what ⌘O opens (below); its row bright (you're in the quote) doesn't make it a third: faint as at rest) */
 :is(.fw-quote:has(.fw-current), .fw-quote.fw-chosen) > .fw-top > .fw-open { opacity: .45; }
 .fw-quote:is(:has(> .fw-body > .fw-current):not(:has(> .fw-body > .fw-current :is(.fw-quote.fw-chosen, .fw-expr.fw-chosen, .fw-expr.fw-in-item))), .fw-chosen) > .fw-top > .fw-open {
   color: var(--quote-mid); outline: 1px solid var(--quote-mid); opacity: 1; }   /* (in it: drawn, faded; bright when selected, below) */
 .fw-quote:is(:has(> .fw-body > .fw-current):not(:has(> .fw-body > .fw-current :is(.fw-quote.fw-chosen, .fw-expr.fw-chosen, .fw-expr.fw-in-item))), .fw-chosen) > .fw-top > .fw-open::before {   /* (the line to its border) */
   content: ""; position: absolute; right: 100%; top: 50%; height: 1px;   /* (from the colour of the quote's border to the ↗'s:
-     dim to bright, or bright to bright, which is solid; the user, 2026-11-19) */
+     dim to bright, or bright to bright, which is solid) */
   background: linear-gradient(to right, var(--edge, rgba(154, 106, 106, .55)), var(--quote-mid));
   width: calc(var(--d, 0) * var(--u) + var(--fp) + 2rem - 1.2rem); }
 .fw-doc .fw-quote.fw-chosen > .fw-top > .fw-open.fw-open { background: var(--quote-hi) !important; color: var(--bg) !important; outline-color: var(--quote-hi); }
 .fw-doc .fw-quote.fw-chosen > .fw-top > .fw-open.fw-open::before { background: var(--quote-hi); }   /* (selected whole: drawn bright, inset, whatever its border: bright to bright) */
 
 
-/* one focus (the user, 2026-11-18): blocks selected whole, no caret (typing wouldn't go where a caret shows) */
+/* one focus: blocks selected whole, no caret (typing wouldn't go where a caret shows) */
 .fw-selecting, .fw-selecting * { caret-color: transparent; }
 
 
@@ -499,7 +498,7 @@ div.fw-peek { color: #5a5855; white-space: pre-wrap; padding: .2rem .6rem; }
 .fw-doc > .ProseMirror > :is(.fw-here, :has(.fw-here), :has(.fw-current), .fw-chosen, :has(.fw-chosen))::before { visibility: hidden; }
 
 /* a glow round the deepest block that's active (the one you're in, or selected whole; a quote showing one block, its
-   block in focus, is that block) spilling onto its neighbours at the same level (the user, 2026-11-19): the edge of each
+   block in focus, is that block) spilling onto its neighbours at the same level: the edge of each
    that faces it lit in the neighbour's own colour, as bright as the active one is ("the adjacent boxes should glow with
    their own color, just at the same vibrance and weight"): medium beside the block you're in (a quote showing one block,
    you in it, too: in, not selected), bright beside one selected whole; its sides fading out over --glow. Drawn as each neighbour's own border
@@ -516,9 +515,9 @@ div.fw-peek { color: #5a5855; white-space: pre-wrap; padding: .2rem .6rem; }
 .fw-doc :is(.fw-here, .fw-quote:has(> .fw-body > .ProseMirror > .fw-text.fw-here:only-child)) + :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr):not(.fw-here, .fw-chosen) { --lit-up: var(--own-mid); }
 .fw-doc .fw-chosen + :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr):not(.fw-here, .fw-chosen) { --lit-up: var(--own-bright); }
 /* the page's first block, always: its top edge lit as the header's line is, so that line always reaches a block (the
-   user, 2026-11-19); unless it's the one you're in, whose own border shows */
+   user); unless it's the one you're in, whose own border shows */
 .fw-doc > .ProseMirror > :is(.fw-text, .fw-qtext, .fw-container, .fw-quote, .fw-image, .fw-expr):not(.fw-here, .fw-chosen):first-child:not(.fw-quote:has(> .fw-body > .ProseMirror > .fw-text.fw-here:only-child)) { --lit-up: var(--faint); }
-/* every box drawn by its gradient (the user, 2026-11-22: the active box and its neighbours' glow fading together, as
+/* every box drawn by its gradient (the active box and its neighbours' glow fading together, as
    one): its top edge --lit-up, its sides --lit-mid fading to and from them over --glow, its bottom edge --lit-down. At
    rest all four transparent; the active box (you in it, or selected whole) all its own colour; a neighbour its facing
    edge. They're registered colours (@property below), so each eases over .18s as the border colour does; drawn on every
@@ -534,7 +533,7 @@ div.fw-peek { color: #5a5855; white-space: pre-wrap; padding: .2rem .6rem; }
 @property --lit-mid { syntax: "<color>"; inherits: false; initial-value: transparent; }
 @property --lit-down { syntax: "<color>"; inherits: false; initial-value: transparent; }
 
-/* a step between pericopes (motion.js, step.svelte.js; the user, 2026-11-19): the tabs, numbers and ↗s fade (--step-hide);
+/* a step between pericopes (motion.js, step.svelte.js): the tabs, numbers and ↗s fade (--step-hide);
    everything in the frame but the quote opened fades (--step-veil, on the frame), its ancestors' edges with it; the quote
    over all of it; the page coming in unseen until it shows; the ghost's text moved to line up (--shift) */
 html.fw-stepping :is(.fw-tabs, .fw-open) { opacity: calc(1 - var(--step-hide, 0)) !important; transition: none; }
@@ -545,7 +544,7 @@ html.fw-stepping .fw-doc > .ProseMirror > *::before { opacity: calc(1 - var(--st
   border-image: none !important; transition: border-color .15s, outline-color .15s; }
 .fw-target { z-index: 5; background: var(--bg); }
 /* widening (step.svelte.js): every box inside goes out with the quote's edges; those holding text, and its top line,
-   take what moved as padding, so no text moves (the user, 2026-11-19) */
+   take what moved as padding, so no text moves */
 .fw-target :is(.fw-text, .fw-qtext, .fw-image) {
   padding-left: calc((3 - var(--d, 0) + var(--lift)) * var(--u) + var(--pad) - 1px + var(--grow-l, 0px));
   padding-right: calc((3 - var(--d, 0) + var(--lift)) * var(--u) + var(--pad) - 1px + var(--grow-r, 0px)); }
@@ -554,7 +553,7 @@ html.fw-swapping .fw-doc:not(.fw-ghost) * { transition: none !important; }   /* 
 .fw-ghost .fw-open { display: none; }
 html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-ghost .fw-target > * { translate: 0 var(--shift, 0px); }
-/* a step keeps where you are as it is: the cursor, a block in focus or selected (the user, 2026-11-19). A block arriving
+/* a step keeps where you are as it is: the cursor, a block in focus or selected. A block arriving
    is there whole as soon as it shows (only the ghost over it fades); a whole page arriving or leaving (.fw-all on the
    page's .fw-doc: the quote showed a whole pericope), every block of it is (none veiled); the first block's glow from
    the header's line off while the header is (.fw-headless) */
@@ -564,13 +563,13 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-headless > .ProseMirror > :first-child { --lit-up: color-mix(in srgb, var(--faint) calc((1 - var(--step-veil, 0)) * 100%), transparent) !important; }   /* (fading with the header) */
 .fw-ghost.fw-all > .ProseMirror > * { translate: 0 var(--shift, 0px); }
 
-/* a page ends at its foot (the user, 2026-11-20: no scrolling on past the suggestions); a step into a quote that needs
+/* a page ends at its foot; a step into a quote that needs
    room below to keep the text you're at where it was on the screen gets just that, for as long as it's in view
    (motion.js room: --room, shrinking as you scroll back up) */
 #main.fw-room-below { padding-bottom: calc(1.5rem + var(--room, 0px)); }
 
 /* the foot of every page (Suggested.svelte: the search and the suggestions), as wide as the pericope's blocks (the
-   user, 2026-11-20: one width, the pages the same); the page's column fills the screen at least, so a short
+   user: one width, the pages the same); the page's column fills the screen at least, so a short
    pericope's sit at its bottom, and the spread round the block you're in doesn't move them; a long one's follow it */
 .fw-page.fw-on-pericope { display: flex; flex-direction: column; min-height: calc(100vh - 30px - 2.5rem + var(--backs-room, 0px)); }   /* (+ the backlinks above, open: Backlinks.svelte) */   /* (the window, less the top line and the page's padding: no scrolling when it fits) */
 .fw-page[hidden] { display: none; }   /* (the keys page in its place) */
@@ -608,7 +607,7 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-expr-out.fw-expr-holes { color: var(--hole); }
 .fw-expr.fw-expr-coding .fw-expr-out { color: var(--dim); font-size: .9em; padding-left: .5rem; }
 /* an inline expression (TYPE.md "Inline"): its value in the line, faintly marked as worked out; its code in place */
-/* (the user, 2026-11-25: "insert 2 green dollar signs in the text and we type between them, no green underline or gray
+/* ("insert 2 green dollar signs in the text and we type between them, no green underline or gray
    background, just mono, code highlighted font … the result should just be in mono and highlighted green, references
    should use this style too and have a little inline arrow") */
 .fw-icode-folded { display: none; }
@@ -618,9 +617,9 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-icode-out.fw-tone-data { color: var(--expr-hi); }
 .fw-icode-out:is(.fw-tone-hole, .fw-icode-hole, .fw-icode-bad) { color: var(--hole); }
 .fw-icode-out.fw-bare::after { content: none; }   /* (a bare reference, @x: nothing computed, no ƒ) */
-/* (computed by you: an ƒ after it, the writing's own font, italic, on the line; the user, 2026-11-25) */
+/* (computed by you: an ƒ after it, the writing's own font, italic, on the line) */
 .fw-icode-out::after { content: "ƒ"; font: italic 1.15em "Source Sans 3", serif; color: var(--dim); opacity: .7; margin-left: .12em; margin-right: .1em; vertical-align: baseline; line-height: 0; }
-.fw-icode-sel { opacity: .5; }   /* (selected, the caret's middle stop over it: just dimmed, the user, 2026-11-25) */
+.fw-icode-sel { opacity: .5; }   /* (selected, the caret's middle stop over it: just dimmed) */
 .fw-icode-out::selection, .fw-icode-out *::selection, .fw-icode-tail::selection, .fw-icode-folded::selection { background: transparent; }
 /* (its closing $, kept so the caret after it has a place, taking no room: mono, its own width taken back) */
 .fw-icode-tail { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .86em; color: transparent; letter-spacing: -1ch; caret-color: var(--fg); }
@@ -655,7 +654,7 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-expr-errors > .fw-expr-cast::before { content: "⤷ "; }
 .fw-expr-errors > .fw-expr-cast::after { content: none; }
 /* a reference drawn as its pericope's title, a chip (TYPE.md, references), in the code and in what it shows: grey,
-   square, nothing more (the user, 2026-11-25: "drastically simplify reference chips, grey only, no rounded corners") */
+   square, nothing more */
 .fw-ref { color: var(--quote-hi); padding: 0;
   font-family: "Source Sans 3 Variable", system-ui, sans-serif; }
 .fw-ref.fw-ref-gone { color: var(--dim); }
@@ -663,9 +662,9 @@ html.fw-swapping .fw-doc:not(.fw-ghost) > .ProseMirror { opacity: 0; }
 .fw-expr-out .fw-ref, .fw-icode-out .fw-ref { font: inherit; }
 .fw-item-sel { outline: 1px solid var(--fg); outline-offset: 2px; }
 /* (on one of its items: the expression is where you are, fw-here, as a block of text with the caret in it: editor.js) */   /* (an item of a list stepped onto: ⌘O opens it) */
-/* this, above, below: where the expression sits, relative to it and worked out as it's viewed (the user, 2026-11-25:
+/* this, above, below: where the expression sits, relative to it and worked out as it's viewed (
    "relational to the user, give these unique styling"): amber, outlined, not filled like a reference's chip */
-/* the recursive case (the user, 2026-11-25): a thing met again inside itself, its title and a loop ↻; a window on
+/* the recursive case: a thing met again inside itself, its title and a loop ↻; a window on
    it all the same (↗ opens it), dashed so it doesn't read as one more level of it */
 .fw-loop { border-style: dashed !important; }
 .fw-loop .fw-text { color: var(--dim); font-style: italic; }

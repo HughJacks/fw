@@ -1,26 +1,26 @@
-// main.js — fw's web editor, the page: one page (the user, 2026-11-19), App.svelte, drawn from where you are
+// main.js — fw's web editor, the page: one page, App.svelte, drawn from where you are
 // (state.svelte.js `here`, `where` here), which the address sets (the routing: #/ home, #/p/<id>[@<block>] a pericope, #/keys, #/kinds).
 // One pericope on it, header and body, for every pericope; moving only changes what it shows. The page never
 // touches the store: it asks the core (fw_web.py) for JSON and saves drafts back. Typing never waits on it: every
 // key changes the document here, and saves go out in the background after every change (one at a time, each with all that changed by then).
-import { waiting, spotOf, restoreSpot } from "./editor.js";
-import { readClip } from "./clipboard.js";
-import * as visits from "./visits.js";
-import { loadKeys, pressed } from "./keys.js";
-import { api, TEST, inflight } from "./api.js";
-import { travel, moving } from "./motion.js";
-import * as motion from "./motion.js";
+import { waiting, spotOf, restoreSpot } from "./editor/editor.js";
+import { readClip } from "./editor/clipboard.js";
+import * as visits from "./lib/visits.js";
+import { loadKeys, pressed } from "./lib/keys.js";
+import { api, TEST, inflight } from "./lib/api.js";
+import { travel, moving } from "./lib/motion.js";
+import * as motion from "./lib/motion.js";
 import { NodeSelection, TextSelection, Selection } from "prosemirror-state";
 import { mount, tick } from "svelte";
-import App from "./App.svelte";
-import { say, ui, here as where } from "./state.svelte.js";
-import { review, reviewKey } from "./review.svelte.js";
+import App from "./ui/App.svelte";
+import { say, ui, here as where } from "./state/state.svelte.js";
+import { review, reviewKey } from "./state/review.svelte.js";
 
 // the page (Svelte 5, runes: App.svelte): what the page says at the top, the one pericope, home's parts below it
 const app = mount(App, { target: document.querySelector("#app"), props: { go: (hash, how) => go(hash, how) } });
 
 
-// --- what the page says (at the top, App.svelte; the old bottom bar's key hints are gone, 2026-11-18) ----------
+// --- what the page says (at the top, App.svelte; the old bottom bar's key hints are gone) ----------
 function bar(text) {
   say(text.trim());
 }
@@ -43,7 +43,7 @@ function placed() {   // (a place not seen yet: one further along than where we 
   here = history.state.n;
   return fresh;
 }
-// ⌘[ and ⌘] (any step back or forward along the trail) land exactly where you were (the user, 2026-11-19, later: "command
+// ⌘[ and ⌘] (any step back or forward along the trail) land exactly where you were ("command
 // bracket [ and ] should navigate you to exactly the place and cursor status you came from"): each place keeps, as you
 // leave it, where you were in it (editor.js spotOf: the caret, text selected, blocks selected whole, nothing drawn) and
 // how far down it was scrolled, both put back once it's drawn again (a step's motion then moves from there). The scroll
@@ -165,7 +165,7 @@ window.fw = {
   },
 };
 
-// --- always the latest (the user, 2026-11-18): the core rebuilds the page and restarts itself when the code changes;
+// --- always the latest: the core rebuilds the page and restarts itself when the code changes;
 // the page notices (GET /api/version) and reloads itself, once nothing's waiting to save and nothing's open over
 // the text (a menu, masking), back at the block it was in. Not in the tests (?test).
 let running = null;
@@ -195,9 +195,9 @@ document.addEventListener("keydown", (e) => {
   else if (pressed(e, "kinds")) { e.preventDefault(); go("#/tags"); }
 });
 
-// --- send it away (the user, 2026-11-19: "a key to all pericopes to send it away off the top of the screen and go to
-// the garden, its different from back and more like 'done' for now"): saved, the pericope (only it: the user,
-// 2026-11-21, "fly away only the pericope and fade in a new one, suggested should stay where it is") slid up off the
+// --- send it away ("a key to all pericopes to send it away off the top of the screen and go to
+// the garden, its different from back and more like 'done' for now"): saved, the pericope (only it:
+// "fly away only the pericope and fade in a new one, suggested should stay where it is") slid up off the
 // top (motion.js away), then home, a fresh waiting pericope fading in where it was, the suggestions below staying on
 // the page (gliding to where home puts them, if that's elsewhere) and following it. Home is a new place on the trail,
 // so ⌘[ still reaches what was sent away. On a blank pericope (empty, untitled), nothing.

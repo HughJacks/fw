@@ -1,22 +1,15 @@
 # your writing and what fw keeps beside it
-freewrites.json
-freewrites.loro
+freewrites.*
 .freewrites.*
-kind-*.json
-.venv/
-freewrites.json.bak
-*.json.bak
-.freewrites.lock
 .fw-*
+*.json.bak
 images/
-# python and tests
-__pycache__/
-tests/.venv/
-.DS_Store
-PUBLISHING-NOTES.md
 web-keys.json
-# the web editor's page: its packages, and the page built from web/src (npm run build, or fw web)
-web/node_modules/
-web/dist/
+kind-*.json
+picture-titles.json
+# environments and builds
 .venv
-tests/.venv
+__pycache__/
+web/node_modules
+web/dist/
+.DS_Store

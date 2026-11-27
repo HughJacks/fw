@@ -1,51 +1,20 @@
-import os, sys, json, time, signal, subprocess
+# live: many writers at once (the lock), two writers from the same read (merged by Loro, from the version each saw),
+# the document kept in memory and read again only when another process wrote it, the .json copy written later
+import copy, os, subprocess, sys
 sys.path.insert(0, "."); import fwtest as F
-from fwtest import check, Term
-DEV = F.DEV
-S = F.use_store("t/store.json")
+from fwtest import check
+S = F.use_store("live")
+from fw import loro as L
 SELF, A = "20261021T230000-0000", "20261001T100000-aaaa"
-def entry(i, title, text): return {"id": i, "title": title, "content": [{"type": "text", "text": text}] if text else [], "words": 0, "created": "2026-10-01T10:00:00-04:00"}
-def fresh(*entries): json.dump({"schemaVersion": 3, "freewrites": list(entries)}, open("t/store.json", "w"))
-def meta(path, i): json.dump({"id": i, "fields": [{"key": "title", "value": "", "editable": True}]}, open(path, "w"))
+def entry(i, title, text): return F.blk(i, [i[:-4] + "c" + i[-3:]] if text else [], title, entry=True), *([F.blk(i[:-4] + "c" + i[-3:], text)] if text else [])
+def fresh(*entries): F.store(*[b for e in entries for b in e])
 def stored(i): return S.own_text(S.index(S.load_data()), i)
-ED = [os.environ.get("FW_PYTHON", "python3"), f"{DEV}/fw_edit.py"]
-
-# 1. autosave goes straight into the store (killed without any chance to save on exit)
-fresh(entry(SELF, "mine", ""))
-open("t/d1.txt", "w").write(""); meta("t/d1.json", SELF)
-t = Term(ED + ["t/d1.txt", "--meta", "t/d1.json"]); t.key("written live"); t0 = F.time.time()
-t.until(lambda: stored(SELF) == "written live", 8); took = F.time.time() - t0
-check("the store has the text as soon as the keys stop: no waiting to save (there was a 1 s wait)", stored(SELF) == "written live" and took < 0.8, (repr(stored(SELF)), round(took, 2)))
-os.kill(t.pid, signal.SIGKILL); os.waitpid(t.pid, 0)
-
-# 2. a quote shows its block's current text when the store changes underneath
-fresh(entry(SELF, "mine", ""), entry(A, "Alpha", "old alpha text"))
-open("t/d2.txt", "w").write("{{quote " + A + "}}"); meta("t/d2.json", SELF)
-t = Term(ED + ["t/d2.txt", "--meta", "t/d2.json"])
-check("quote shows the text at open", "old alpha text" in t.text())
-S.commit(A, "new alpha text, saved elsewhere", [])
-new = lambda: "new alpha text, saved elsewhere" in t.text() and "old alpha" not in t.text()
-t.until(new, 8)
-check("quote updated within ~1.5s of another save", "new alpha text, saved elsewhere" in t.text() and "old alpha" not in t.text())
-t.close()
-
-# 3. two real editors: typing in one shows up live in the other's quote
-fresh(entry(SELF, "mine", ""), entry(A, "Alpha", "start"))
-open("t/w.txt", "w").write("start"); meta("t/w.json", A)
-open("t/r.txt", "w").write("{{quote " + A + "}}"); meta("t/r.json", SELF)
-writer = Term(ED + ["t/w.txt", "+1", "--meta", "t/w.json"]); reader = Term(ED + ["t/r.txt", "--meta", "t/r.json"])
-writer.key("\x1b[F and more, typed in the other editor")
-deadline, seen = time.time() + 4, None
-while time.time() < deadline and seen is None:
-    writer.pump(0.1); reader.pump(0.1)
-    if "typed in the other editor" in reader.text(): seen = round(4 - (deadline - time.time()), 1)
-check("the reader's quote followed the writer", seen is not None, f"after {seen}s (1s autosave + up to 1s poll)")
-writer.close(); reader.close()
+def elsewhere(code): subprocess.run([sys.executable, "-c", "from fw import store as S\n" + code], check=True)
 
 # 4. many sessions saving at once lose nothing (the lock)
 ids = [f"20261021T23{n:02d}00-{n:04x}" for n in range(16)]
 fresh(*[entry(i, f"e{n}", "") for n, i in enumerate(ids)])
-procs = [subprocess.Popen([sys.executable, "-c", f"import sys; sys.path.insert(0, {DEV!r}); import fw_store as S; S.commit({i!r}, 'text {n}', [])"]) for n, i in enumerate(ids)]
+procs = [subprocess.Popen([sys.executable, "-c", f"from fw import store as S; S.commit({i!r}, 'text {n}', [])"]) for n, i in enumerate(ids)]
 [p.wait() for p in procs]
 check("16 simultaneous commits all landed", all(stored(i) == f"text {n}" for n, i in enumerate(ids)),
       f"{sum(stored(i) == f'text {n}' for n, i in enumerate(ids))}/16")
@@ -66,16 +35,15 @@ try:
     S.commit(A, draft + " (old way)", [], base=base); refused = False
 except S.StoreError:
     refused = True
-check("  without a version: refused as before (the terminal editor, a script)", refused and stored(A) == "start: the middle :end")
+check("  without a version: refused as before", refused and stored(A) == "start: the middle :end")
 
 # 6. the document kept in memory: read again only when another process wrote it; a save writes just what changed;
 #    the .json copy may come a moment later (the web core), never taken in as edits meanwhile
-import copy, fw_loro as L
 fresh(entry(SELF, "mine", ""), entry(A, "Alpha", "kept"))
 S.commit(A, "kept in memory", [])
 d1 = S.document()
 check("the document kept in memory between reads", d1 is not None and S.document() is d1)
-subprocess.run([sys.executable, "-c", f"import sys; sys.path.insert(0, {DEV!r}); import fw_store as S; S.commit({A!r}, 'written by another process', [])"], check=True)
+elsewhere(f"S.commit({A!r}, 'written by another process', [])")
 check("  another process's write noticed: read again", S.document() is not d1 and stored(A) == "written by another process", repr(stored(A)))
 S.commit(SELF, "mine too", [])
 check("  a write here after it keeps theirs", stored(A) == "written by another process" and stored(SELF) == "mine too")
@@ -100,7 +68,7 @@ before = open(S.DATA_PATH).read()
 S.commit(SELF, "the .json later", [])
 check("the .json copy later: not written yet, not taken in as edits, the store has it", open(S.DATA_PATH).read() == before
       and not S.json_changed() and stored(SELF) == "the .json later")
-check("  the store's text as of now (an undo outside the editor reads it) has it", "the .json later" in S.store_text())
+check("  the store's text as of now (note.py's undo reads it) has it", "the .json later" in S.store_text())
 S.flush_json()
 check("  flushed: the .json says it", "the .json later" in open(S.DATA_PATH).read() and not S.json_changed())
 S.commit(SELF, "waiting again", [])
@@ -110,4 +78,4 @@ S.flush_json()
 check("  never over a .json someone else wrote meanwhile (theirs, taken in next)", open(S.DATA_PATH).read() == theirs and S.json_changed())
 S.json_later(None)
 check("  taken in: their edit", stored(A) == "their .json edit", repr(stored(A)))
-F.report("LIVE")
+F.report()

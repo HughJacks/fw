@@ -1,7 +1,7 @@
 // projections.test.mjs — x.f: the receiver before a dot, a function's first argument, what's projectable first.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { receiverBefore, firstArg, projectionsFor, typeOf, projectable } from "../src/projections.js";
+import { receiverBefore, firstArg, projectionsFor, typeOf, projectable } from "../src/expr/projections.js";
 
 test("the receiver before a dot: a postfix chain", () => {
   const at = (t) => receiverBefore(t, t.length);

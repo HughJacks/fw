@@ -1,7 +1,7 @@
 // the page's pure part: run with `npm test` (node --test)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { newId, pmDoc, draftOf, freshIds, inline, pmLens, lensOf, deriveTitle } from "../src/draft.js";
+import { newId, pmDoc, draftOf, freshIds, inline, pmLens, lensOf, deriveTitle } from "../src/editor/draft.js";
 
 const A = "20261001T100000-a000", B = "20261001T100000-b000", C = "20261001T100000-c000", Q = "20261001T100000-dddd";
 
@@ -59,7 +59,7 @@ test("the derived title, as fw_block.derive_title", () => {
 });
 
 test("snapNode: the editor's document as the expression engine reads it", async () => {
-  const { snapNode } = await import("../src/draft.js");
+  const { snapNode } = await import("../src/editor/draft.js");
   const doc = { type: "doc", content: [
     { type: "text_block", attrs: { id: "t1" }, content: [{ type: "text", text: "one" }, { type: "hard_break" },
       { type: "text", text: "two", marks: [{ type: "link", attrs: { to: "L" } }] }] },
@@ -76,7 +76,7 @@ test("snapNode: the editor's document as the expression engine reads it", async 
 });
 
 // --- inline expressions (TYPE.md "Inline"): $…$ in the stored text, one piece; \$ a dollar sign ---------------------
-import { units, textOf as storedText, snapNode } from "../src/draft.js";
+import { units, textOf as storedText, snapNode } from "../src/editor/draft.js";
 
 test("inline expressions: $…$ closed on its line is code; \\$ and a lone $ are dollar signs", () => {
   const kinds = (t) => units(t).map((u) => (u.k === "code" ? `[${u.source}]` : u.k === "break" ? "/" : u.c)).join("");
@@ -113,7 +113,7 @@ test("a masked quote's view: its code marked, its text exactly as given (the len
   assert.equal(lensOf(d, "\u0000"), "a $1$ b 3\\$");
 });
 
-import { liveFacts } from "../src/draft.js";
+import { liveFacts } from "../src/editor/draft.js";
 test("a block just written has facts at once (made now, titled by its first line), the core's kept as they are", () => {
   const core = { a: { title: "old", created: "2026-10-01T10:00:00-04:00" } };
   const live = { id: "p", body: { id: "p", t: "blocks", children: [{ id: "a", t: "text", text: "x" }, { id: "n", t: "text", text: "\n new words\nmore" }] } };

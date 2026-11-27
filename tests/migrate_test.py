@@ -1,9 +1,9 @@
-# fw_migrate.upgrade: a store of any version brought up to the current one, in memory (pure)
-import copy, sys
+# migrate.upgrade: a store of any version brought up to the current one, in memory (pure); `python -m fw.store`
+import copy, json, os, subprocess, sys
 sys.path.insert(0, "."); import fwtest as F
-from fwtest import check, same
-S = F.use_store("t/migrate.json", clean=True)
-import fw_migrate as M
+from fwtest import check, same, blk
+S = F.use_store("migrate")
+from fw import migrate as M
 
 A, B = "20260901T100000-aaaa", "20260902T100000-bbbb"
 v1 = {"schemaVersion": 1, "freewrites": [
@@ -29,4 +29,20 @@ try:
 except M.BadStore as e:
     bad = str(e)
 check("a store it can't read: BadStore, saying why", bad and "freewrites" in bad, bad)
-F.report("MIGRATE")
+
+# the command line: migrate (cleans old leftovers), list
+def cli(*args): return subprocess.run([sys.executable, "-m", "fw.store", *args], capture_output=True, text=True)
+A, T, QE = "20261001T100000-aaaa", "20261002T100000-bbbb", "20261003T100000-cccc"
+def entry(i, title, blocks): return {"id": i, "title": title, "content": blocks, "words": 1, "created": "2026-10-01T10:00:00-04:00"}
+json.dump({"schemaVersion": 3, "freewrites": [
+    entry(A, "alpha", [{"type": "text", "text": "alpha"}]),
+    entry(T, "texty", [{"type": "text", "text": "some text\n\n"}]),
+    entry(QE, "ends in quote", [{"type": "text", "text": "intro"}, {"type": "quote", "ref": A}])]}, open(S.DATA_PATH, "w"))
+r = cli("migrate")
+b = F.blocks()
+check("python -m fw.store migrate: a v3 store brought up to date, a document made", r.returncode == 0 and S.LORO_PATH.exists(), r.stderr)
+same("  stored trailing blank lines cleaned", S.own_text(b, T), "some text")
+same("  every text block a child, the quote a Quote block", ["quote" if S.quoted(b[k]) else "child" for k in b[QE]["content"]], ["child", "quote"])
+r = cli("list")
+check("python -m fw.store list: a line per pericope", r.returncode == 0 and all(t in r.stdout for t in ("alpha", "texty", "ends in quote")), r.stdout + r.stderr)
+F.report()

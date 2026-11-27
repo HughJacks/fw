@@ -1,19 +1,17 @@
-# the web editor's core (fw_web.py, 2026-11-17): the page sees the store only as JSON, and saves drafts in
-# fw's draft format through the same commit the terminal uses. On a throwaway store, the server in a thread.
+# the web editor's core (fw.web): the page sees the store only as JSON, and saves drafts in fw's draft format
+# through the store's commit. On a throwaway store, the server in a thread.
 import json, os, sys, urllib.request, urllib.error
 sys.path.insert(0, "."); import fwtest as F
 from fwtest import check, same, blk
-S = F.use_store("t/web.json", clean=True)
-sys.path.insert(0, F.DEV)
-import fw_web as W
+S = F.use_store("web")
+from fw import web as W
 
 A, A1, A2, QA, B, B1, C, C1, C2 = ("20261001T100000-a000", "20261001T100000-a001", "20261001T100000-a002",
                                    "20261001T100000-a003", "20261002T100000-b000", "20261002T100000-b001",
                                    "20261003T100000-c000", "20261003T100000-c001", "20261003T100000-c002")
-F.write_store([blk(A, [A1, QA, A2], "alpha"), blk(A1, "first line\nsecond line"), blk(QA, {"quote": B}), blk(A2, "after"),
-               blk(B, [B1], "beta"), blk(B1, "beta's words"),
-               blk(C, [C1], "gamma"), blk(C1, [C2]), blk(C2, "nested")], [A, B, C], version=9)
-S.cmd_migrate(None)
+F.store(blk(A, [A1, QA, A2], "alpha", entry=True), blk(A1, "first line\nsecond line"), blk(QA, {"quote": B}), blk(A2, "after"),
+        blk(B, [B1], "beta", entry=True), blk(B1, "beta's words"),
+        blk(C, [C1], "gamma", entry=True), blk(C1, [C2]), blk(C2, "nested"))
 httpd = W.serve(0)
 URL = f"http://127.0.0.1:{httpd.server_address[1]}"
 def call(method, path, body=None):
@@ -99,7 +97,7 @@ NEW = "20261117T090000-0001"
 draft = f"{{{{block {A1}}}}}\nfirst line, changed\n{{{{quote {B} {QA}}}}}\n{{{{block {NEW}}}}}\na new block\n{{{{block {A2}}}}}\nafter"
 code, r = call("PUT", f"/api/pericope/{A}", {"draft": draft, "base": p["base"]})
 b = S.index(S.load_data())
-same("a save: the draft into the store, by the terminal's commit", (code, S.children(b[A]), b[A1]["content"], b[NEW]["content"]),
+same("a save: the draft into the store, by its commit", (code, S.children(b[A]), b[A1]["content"], b[NEW]["content"]),
      (200, [A1, QA, NEW, A2], "first line, changed", "a new block"))
 code, r2 = call("PUT", f"/api/pericope/{A}", {"draft": draft, "base": p["base"]})
 same("  a save over a change made elsewhere is refused", (code, "another session" in r2.get("error", "")), (409, True))
@@ -111,7 +109,7 @@ same("  the title alone (no draft: the text unchanged): saved too", S.index(S.lo
 code, made = call("POST", "/api/pericope", {"title": None})
 check("a new pericope", code == 200 and made["id"] in S.index(S.load_data()), made)
 code, r = call("PUT", f"/api/pericope/{made['id']}", {"draft": "", "base": None, "final": True})
-check("  left empty and untitled: discarded, as the terminal does", code == 200 and r["gone"], r)
+check("  left empty and untitled: discarded", code == 200 and r["gone"], r)
 # home's waiting pericope (2026-11-19): made on its first key, then saved into at once with the base it came with
 code, made = call("POST", "/api/pericope", {"title": None})
 same("  made: its base comes with its id", (code, made["base"]), (200, call("GET", f"/api/pericope/{made['id']}")[1]["base"]))
@@ -120,7 +118,7 @@ code, r = call("PUT", f"/api/pericope/{made['id']}", {"draft": f"{{{{block {NEWB
 same("  a save on that base: taken", (code, S.index(S.load_data())[NEWB]["content"]), (200, "first words"))
 
 code, s = call("GET", "/api/search?q=nested")
-same("the search: the terminal's rows (blocks under where they live: the container, titled by its text, and its block)",
+same("the search: its rows (blocks under where they live: the container, titled by its text, and its block)",
      [(x["key"], x["label"].strip(), x["open"]) for x in s["rows"]][1:], [(C, "gamma", C), (C1, "· nested", C), (C2, "· nested", C)])
 # the / menu's: a new quote's drawing, a block popped out, a quote masked to a block, a picture
 code, q = call("GET", f"/api/quote?target={B}")
@@ -132,11 +130,7 @@ check("pop out: the block a pericope of its own, quoted where it was", code == 2
 code, m = call("POST", "/api/maskto", {"quote": QA, "block": B1})
 same("mask to: the quote shows just that block (all beta holds: so no mask is kept)", (code, m.get("masked"), [x.get("text") for x in m.get("body", [])]),
      (200, False, ["beta's words"]))
-import struct, zlib
-def png():
-    chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 0, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(b"\x00\x80\x80" * 2)) + chunk(b"IEND", b""))
+png = lambda: F.png(None, 2, 2)
 req = urllib.request.Request(URL + "/api/picture", method="POST", data=png(), headers={"Content-Type": "image/png", "X-Name": "dot.png"})
 with urllib.request.urlopen(req) as r:
     pic = json.loads(r.read())["id"]
@@ -225,4 +219,4 @@ same("  refusal is pure: the reasons", [W.refusal("GET", "/", "127.0.0.1:1", Non
      [None, "not this machine's page (Host)", "not this machine's page (Origin)", "expected Content-Type: application/json"])
 httpd.shutdown()
 
-F.report("WEB")
+F.report()

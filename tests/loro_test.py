@@ -1,11 +1,11 @@
-# the store as a Loro document (fw_loro): two machines' copies merge. Spans (a link's `at`, a quote's masks) are kept
+# the store as a Loro document (fw.loro): two machines' copies merge. Spans (a link's `at`, a quote's masks) are kept
 # as cursors on their first and last character, so an edit merged from the other machine moves them with their text.
-# Pure: fw_loro on documents in memory; the store's merge (fw_store.merge_file) on two throwaway stores.
-import copy, json, os, shutil, sys
+# Pure: fw.loro on documents in memory; the store's merge (store.merge_file, `python -m fw.store merge`) on two
+# throwaway stores, as a sync between two machines does, with a store in use on one of them.
+import copy, json, os, shutil, subprocess, sys
 sys.path.insert(0, "."); import fwtest as F
 from fwtest import check, same
-sys.path.insert(0, F.DEV)
-import fw_loro as L
+from fw import loro as L
 
 T = "2026-10-01T10:00:00-04:00"
 X, Y, E, Q, P = "20261001T100000-aaaa", "20261001T100000-bbbb", "20261001T100000-e000", "20261001T100000-cccc", "20261001T100000-f000"
@@ -104,43 +104,60 @@ raw = a.get_deep_value()["blocks"]
 check("  the next write gives them cursors", len(raw[X]["links"][0]["at"]) == 4 and len(raw[Q]["value"]["mask"][Y][0]) == 4, raw[X])
 same("  meaning the same", L.to_data(a), data())
 
-# through the store: fw_store.py merge on two throwaway stores
+# through the store: python -m fw.store merge on two throwaway stores
 here = os.path.abspath("t/two"); shutil.rmtree(here, ignore_errors=True)
-for side in ("laptop", "mini"):
+for side in ("laptop", "other"):
     os.makedirs(f"{here}/{side}")
 json.dump(data(), open(f"{here}/laptop/freewrites.json", "w"))
-import subprocess
 def store(side, *args, code=None):
     env = {**os.environ, "FW_DATA": f"{here}/{side}/freewrites.json"}
-    return subprocess.run([sys.executable, "-c", code] if code else [sys.executable, f"{F.DEV}/fw_store.py", *args],
-                          env=env, capture_output=True, text=True, cwd=F.DEV)
+    return subprocess.run([sys.executable, "-c", code] if code else [sys.executable, "-m", "fw.store", *args], env=env, capture_output=True, text=True)
 r = store("laptop", "migrate"); check("migrate makes the document", os.path.exists(f"{here}/laptop/freewrites.loro"), r.stderr)
-shutil.copy(f"{here}/laptop/freewrites.loro", f"{here}/mini/freewrites.loro")
-SAVE = "import json, fw_store as S\nd = json.load(open('{f}'))\nd['blocks'] = S.masks_in(d['blocks'])\nS.save_data(d)"
-for side, d in (("laptop", edit(data(), X, 0, "laptop: ")), ("mini", edit(data(), X, 4, "mini "))):
+shutil.copy(f"{here}/laptop/freewrites.loro", f"{here}/other/freewrites.loro")
+SAVE = "import json\nfrom fw import store as S\nd = json.load(open('{f}'))\nd['blocks'] = S.masks_in(d['blocks'])\nS.save_data(d)"
+for side, d in (("laptop", edit(data(), X, 0, "laptop: ")), ("other", edit(data(), X, 4, "other "))):
     f = f"{here}/{side}/want.json"; json.dump(d, open(f, "w"))
     r = store(side, code=SAVE.format(f=f)); check(f"  saved on the {side}", r.returncode == 0, r.stderr)
-r1 = store("laptop", "merge", f"{here}/mini/freewrites.loro")
-r2 = store("mini", "merge", f"{here}/laptop/freewrites.loro")
-lap, mini = (json.load(open(f"{here}/{s}/freewrites.json")) for s in ("laptop", "mini"))
-check("fw_store.py merge both ways: the same store", lap == mini and r1.returncode == r2.returncode == 0, (r1.stderr, r2.stderr))
-same("  the link on its text, both edits in", (link_text(lap, X), by(lap)[X]["content"]), ("LINK", "laptop: see mini the LINK here"))
+r1 = store("laptop", "merge", f"{here}/other/freewrites.loro")
+r2 = store("other", "merge", f"{here}/laptop/freewrites.loro")
+lap, other = (json.load(open(f"{here}/{s}/freewrites.json")) for s in ("laptop", "other"))
+check("merge both ways: the same store", lap == other and r1.returncode == r2.returncode == 0, (r1.stderr, r2.stderr))
+same("  the link on its text, both edits in", (link_text(lap, X), by(lap)[X]["content"]), ("LINK", "laptop: see other the LINK here"))
 
-# a picture held in a block, taken out by both machines on their own (fw_store.pictures_apart): merged, one quote
+# a picture held in a block, taken out by both machines on their own (store.pictures_apart): merged, one quote
 PIC, H = "20261001T100000-dddd", "20261001T100000-d000"
 held = {"schemaVersion": 17, "blocks": [blk(H, [X, PIC], entry=True), blk(X, "words"), blk(PIC, {"image": "0123456789abcdef.png"})]}
-for side in ("laptop", "mini"):
+for side in ("laptop", "other"):
     shutil.rmtree(f"{here}/{side}", ignore_errors=True); os.makedirs(f"{here}/{side}")
 d = L.load(None, 1); L.write(d, held); open(f"{here}/laptop/freewrites.loro", "wb").write(L.snapshot(d))
-shutil.copy(f"{here}/laptop/freewrites.loro", f"{here}/mini/freewrites.loro")   # (one shared history, the picture still held)
-for side in ("laptop", "mini"):
+shutil.copy(f"{here}/laptop/freewrites.loro", f"{here}/other/freewrites.loro")   # (one shared history, the picture still held)
+for side in ("laptop", "other"):
     r = store(side, "migrate"); check(f"  the {side} takes it out on its own", r.returncode == 0, r.stderr)
-r1 = store("laptop", "merge", f"{here}/mini/freewrites.loro")
-r2 = store("mini", "merge", f"{here}/laptop/freewrites.loro")
-lap, mini = (json.load(open(f"{here}/{s}/freewrites.json")) for s in ("laptop", "mini"))
+r1 = store("laptop", "merge", f"{here}/other/freewrites.loro")
+r2 = store("other", "merge", f"{here}/laptop/freewrites.loro")
+lap, other = (json.load(open(f"{here}/{s}/freewrites.json")) for s in ("laptop", "other"))
 quotes = [b["id"] for b in lap["blocks"] if b["content"] == {"quote": PIC}]
-check("a picture taken out on both machines, merged: the same store", lap == mini and r1.returncode == r2.returncode == 0, (r1.stderr, r2.stderr))
+check("a picture taken out on both machines, merged: the same store", lap == other and r1.returncode == r2.returncode == 0, (r1.stderr, r2.stderr))
 same("  one quote of it, once in its holder, the picture a pericope", (len(quotes), by(lap)[H]["content"], by(lap)[PIC].get("entry")),
      (1, [X, quotes[0] if quotes else None], True))
 
-F.report("LORO")
+
+# a sync while a store is in use here: the other machine's document merged in under it; what's written here after builds on it
+S = F.use_store("here")
+E1, E2 = "20261101T100000-a000", "20261101T100000-a001"
+F.store(F.blk(E1, [E2], "Alpha", entry=True), F.blk(E2, "alpha text"))
+other = os.path.abspath("t/other"); shutil.rmtree(other, ignore_errors=True); os.makedirs(other)
+shutil.copy(S.LORO_PATH, f"{other}/freewrites.loro")   # (one shared history, the other machine its own peer)
+def on_mini(code):
+    r = subprocess.run([sys.executable, "-c", "from fw import store as S\n" + code], env={**os.environ, "FW_DATA": f"{other}/freewrites.json"},
+                       capture_output=True, text=True)
+    check("  (written on the other machine)", r.returncode == 0, r.stderr)
+on_mini("S.cmd_migrate(None)")
+data, seen = S.load_versioned()
+draft = S.block_draft(S.index(data), E1)
+on_mini(f"S.transact(S.editing(lambda d, b: b[{E2!r}].update(content='alpha from the other machine')))")
+S.merge_file(f"{other}/freewrites.loro")
+same("merged in: the other machine's edit here", S.own_text(F.blocks(), E1), "alpha from the other machine")
+S.commit(E1, draft.replace("alpha text", "alpha text and the laptop"), [], at=seen)
+same("  a save here from before the merge (its version): merged with it, not over it", S.own_text(F.blocks(), E1), "alpha from the other machine and the laptop")
+F.report()

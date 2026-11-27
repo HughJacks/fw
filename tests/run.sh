@@ -1,47 +1,38 @@
 #!/bin/zsh
-# run.sh — run fw's test suites against throwaway copies of the code.
+# run.sh — run fw's test suites against throwaway copies of the code and throwaway stores.
 #
 #   tests/run.sh                 every suite, one per CPU core at once
-#   tests/run.sh mask_test.py    just these ("web": the web editor's page: built, node tests, browser suite)
+#   tests/run.sh mask_test.py    just these ("web": the page: built, its node tests, the browser suite, the sweep)
 #   FW_TEST_JOBS=1 tests/run.sh  one at a time
 #   NO_COLOR=1 tests/run.sh      no colour (there's none when piped, either)
 #
-# Each suite gets its own temp folder with fw, fw_*.py and the schema copied
-# in (as `dev/`) and its stores under `t/`, so suites can run side by side and
-# the installed code, and your real freewrites.json are
-# never touched. The suites drive fw in a pseudo-terminal through fwtest.py,
-# which waits on what fw reports ($FW_SYNC) instead of sleeping; the screen
-# is read with pyte (in tests/.venv; if it's missing: python3 -m venv
-# tests/.venv && tests/.venv/bin/pip install pyte==0.8.2 loro==1.17.1). A suite prints one
-# line per check ("ok" or "FAIL") and ends with "<NAME> OK" or
-# "<NAME> FAILURES". This prints a line per suite, the failed checks under
-# it, and a summary; it exits 1 if anything failed.
+# Each suite runs in a temp folder of its own: the fw package, bin/ and web/index.html copied into dev/ (on
+# PYTHONPATH), its stores under t/ ($FW_DATA points there from the start), so suites run side by side and no real
+# store is ever touched. Python is the repo's .venv (it has loro). A suite prints a line per check ("ok" or
+# "FAIL") and ends with "<NAME> OK" or "<NAME> FAILURES"; this prints a line per suite, the failed checks under
+# it, and a summary, and exits 1 if anything failed.
 
 zmodload zsh/datetime zsh/parameter
 here="${0:A:h}"
 app="${here:h}"
-py="$here/.venv/bin/python"
-[[ -x "$py" ]] || { print -u2 "no $py: python3 -m venv $here/.venv && $here/.venv/bin/pip install pyte==0.8.2 loro==1.17.1"; exit 1; }
-export FW_WEB_PORT=8097   # (a test that starts the web editor never touches the port of the one you write in)
-export FW_PYTHON="$py"  # what the suites run fw and the editor with: the store needs loro (pip install loro==1.17.1 here too)
-jobs_at_once="${FW_TEST_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+py="$app/.venv/bin/python"
+[[ -x "$py" ]] || { print -u2 "no $py: python3 -m venv $app/.venv && $app/.venv/bin/pip install loro==1.17.1"; exit 1; }
+export FW_PYTHON="$py" FW_WEB_PORT=8097 FW_WEB_WATCH=0 FW_MEANING_URL="${FW_MEANING_URL-off}"
+jobs_at_once="${FW_TEST_JOBS:-$(sysctl -n hw.ncpu)}"
 
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
 
-run_one() {  # suite -> $root/<suite>.out, and its time in .time
+run_one() {  # suite -> $root/<suite>.out, its time in .time
   local work="$root/${1%.py}" t0=$EPOCHREALTIME
-  mkdir -p "$work/dev/schema" "$work/t"
-  cp "$app"/fw "$app"/fw_*.py "$app"/KEYS.md "$work/dev/"
-  cp "$app"/schema/block.schema.json "$work/dev/schema/"
-  mkdir -p "$work/dev/web" && cp "$app/web/index.html" "$work/dev/web/"   # (the web editor's page: web_test)
+  mkdir -p "$work/dev/web" "$work/t"
+  cp -R "$app/fw" "$app/bin" "$work/dev/" && cp "$app/web/index.html" "$work/dev/web/"
   cp "$here"/*.py "$work/"
-  cp -R "$here/fakebin" "$work/"
-  ( cd "$work" && FW_EDIT="$work/dev/fw_edit.py" FW_MEANING_URL="${FW_MEANING_URL-off}" "$py" "$1" ) >"$root/$1.out" 2>&1
+  ( cd "$work" && PYTHONPATH="$work/dev" FW_DATA="$work/t/freewrites.json" "$py" "$1" ) >"$root/$1.out" 2>&1
   print -- $(( EPOCHREALTIME - t0 )) >"$root/$1.time"
 }
 
-run_web() {  # the web editor's page (web/): built from its source, its node tests, then the browser suite -> web.out
+run_web() {  # the page (web/): built, its node tests, the browser suite, the sweep -> web.out
   local t0=$EPOCHREALTIME out="$root/web.out"
   {
     if ! command -v node >/dev/null && command -v fnm >/dev/null; then eval "$(fnm env --shell zsh)"; fi
@@ -53,12 +44,14 @@ run_web() {  # the web editor's page (web/): built from its source, its node tes
       node --test test/*.test.mjs 2>&1 | sed -nE 's/^ok [0-9]+ - (.*)/ok    \1/p; s/^not ok [0-9]+ - (.*)/FAIL  \1/p'
       if [[ -x "${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}" ]]; then
         VERBOSE=1 node test/e2e.mjs 2>&1 | sed -E 's/^    //' | grep -E '^(ok|FAIL|no error)|E2E'
-        # the sweep: every pericope of a copy of the real store (taken under fw's lock; the real one never written)
-        # opened and left in the browser, nothing changed by it
+        # the sweep: every pericope of a copy of the store this code is installed beside (taken under its lock; that
+        # store is never written) opened and left in the browser, nothing changed by it
         local real="$root/real"; mkdir -p "$real"
-        if (cd "$app" && "${FW_PYTHON:-$app/.venv/bin/python}" -c "
-import fw_store as S, shutil, sys
+        if (cd "$app" && env -u FW_DATA PYTHONPATH="$app" "$py" -c "
+from fw import store as S
+import shutil, sys
 d = sys.argv[1]
+if not S.LORO_PATH.exists(): sys.exit(1)
 with S.store_lock():
     shutil.copy(S.LORO_PATH, d); shutil.copy(S.DATA_PATH, d)
 for f in (S.TITLES_PATH, S.GUESSES_PATH):
@@ -66,7 +59,7 @@ for f in (S.TITLES_PATH, S.GUESSES_PATH):
 if S.IMAGES_PATH.exists(): shutil.copytree(S.IMAGES_PATH, d + '/images')" "$real") 2>/dev/null; then
           VERBOSE=1 node test/e2e.mjs --sweep "$real" 2>&1 | sed -E 's/^    //' | grep -E '^(ok|FAIL|no error)'
         else
-          print -- "(no real store to sweep)"
+          print -- "(no store beside this code to sweep)"
         fi
       else
         print -- "(no Chrome: the browser suite skipped)"
@@ -78,9 +71,8 @@ if S.IMAGES_PATH.exists(): shutil.copytree(S.IMAGES_PATH, d + '/images')" "$real
 }
 
 suites=("$@")
-(( $#suites )) || suites=(${(f)"$(cd "$here" && ls *_test.py e2e_blocks.py drive.py)"} web)
-# the slowest first, so the others fill in around them
-order=(web undo_edit_test.py undo_test.py maskui_test.py fix_test.py maskkeys_test.py drive.py block_test.py live_test.py)
+(( $#suites )) || suites=(${(f)"$(cd "$here" && ls *_test.py)"} web)
+order=(web live_test.py kinds_test.py mask_test.py)   # the slowest first, so the others fill in around them
 suites=(${order:*suites} ${suites:|order})
 
 if [[ -t 1 && -z "$NO_COLOR" ]]; then

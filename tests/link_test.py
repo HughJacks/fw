@@ -1,101 +1,69 @@
-import os, sys
+# links (a span of a block of text pointing at a pericope, moved along with every edit of its text) and backlinks
+# (what points at a block: quotes of it, masked or not, links to it, kinds, paraphrases)
+import sys
 sys.path.insert(0, "."); import fwtest as F
-from fwtest import check, same, blk, UP, DOWN, LEFT, RIGHT, HOME, END, ESC, ENTER, BS, QUIT as Q, UNDO as Z, REDO as Y, MENU
-S = F.use_store("t/link.json", clean=True)
-HOST, CH, C2 = "20261001T100000-b000", "20261001T100000-b001", "20261001T100000-b002"
-BOWL, CB = "20261001T100000-c000", "20261001T100000-c001"
+from fwtest import check, same, blk
+S = F.use_store("link")
+HOST, CH, C2, BOWL, CB = ("20261001T100000-b000", "20261001T100000-b001", "20261001T100000-b002",
+                          "20261001T100000-c000", "20261001T100000-c001")
 SENT = "I went to the alley and the lanes were waxed."
 def fresh():
-    F.write_store([blk(HOST, [CH, C2], "host"), blk(CH, SENT), blk(C2, "next block"),
-                   blk(BOWL, [CB], "Bowling"), blk(CB, "bowling notes")], [HOST, BOWL])
-def B(): return S.index(S.load_data())
-def undated(links): return [{k: v for k, v in l.items() if k != "created"} for l in links or []]   # (dates checked in backlink_test)
-def ls(): return undated(B()[CH].get("links", []))
-def bar(t): return t.row(t.scr.lines - 1)
-SEL, CTRL_K, CTRL_SK, CTRL_O = "\x1b[1;2C", "\x0b", "\x1b[107;6u", "\x0f"
-def link_alley(t, pick=("bowl", ENTER)):  # "alley" (14-19) -> Bowling
-    t.key(UP, HOME, *[RIGHT] * 14, *[SEL] * 5, CTRL_K, *pick); t.settle()
+    F.store(blk(HOST, [CH, C2], "host", entry=True), blk(CH, SENT), blk(C2, "next block"),
+            blk(BOWL, [CB], "Bowling", entry=True), blk(CB, "bowling notes"))
+def ls(i=CH): return [{k: v for k, v in l.items() if k != "created"} for l in F.blocks()[i].get("links", [])]
+def write(text):   # the host's first block's text, as an editor saves it
+    S.commit(HOST, S.block_draft(F.blocks(), HOST).replace(F.content(CH), text, 1), [])
 
-fresh(); t = F.fw("host", rows=20)
-t.key(UP, HOME, *[RIGHT] * 14, *[SEL] * 5, MENU)
-check("with a selection the menu offers Link to an entry, ctrl+k", "Link to a pericope" in t.text() and "ctrl+k" in t.text(), t.text())
-t.key(ESC, CTRL_K)
-check("ctrl+k: the entry search, with + new entry", "link ›" in t.text() and "+ new pericope" in t.text(), t.text())
-t.key("bowl", ENTER); t.settle()
-same("picking one links the selection to it", ls(), [{"to": BOWL, "at": [14, 19]}])
-check("  drawn with an ↗ after it", "alley↗ and" in t.text(), t.text())
-t.key(LEFT)
-check("  and the bar names where it points, with the cursor on it", "↗ Bowling" in bar(t), bar(t))
-t.key(RIGHT)
-check("  the cursor after it sits after the ↗", t.scr.cursor.x == t.row(t.scr.cursor.y).index("↗") + 1, (t.scr.cursor.x, t.row(t.scr.cursor.y)))
-check("  the header doesn't show links", "links" not in t.row(1), t.row(1))
-t.key(HOME, "XX"); t.settle()
+fresh()
+_, record = S.link_text(CH, SENT, [14, 19], BOWL)
+same("a span linked to a pericope", ls(), [{"to": BOWL, "at": [14, 19]}])
+check("  dated", all(l.get("created") for l in F.blocks()[CH]["links"]))
+write("XX" + SENT)
 same("typing before it moves it along", ls()[0]["at"], [16, 21])
-t.key(*[RIGHT] * 19, "s"); t.settle()
-check("typing right after it stays outside it", ls()[0]["at"] == [16, 21] and "alley↗s" in t.text(), (ls(), t.text()))
-t.key(*[LEFT] * 3, "-"); t.settle()
+write("XXI went to the alleys and the lanes were waxed.")
+same("typing right after it stays outside it", ls()[0]["at"], [16, 21])
+write("XXI went to the al-leys and the lanes were waxed.")
 same("typing inside it grows it", ls()[0]["at"], [16, 22])
-t.key(Q, ESC); t.done()
+fresh(); S.link_text(CH, SENT, [14, 19], BOWL)
+d = S.block_draft(F.blocks(), HOST)
+S.commit(HOST, d.replace("I went ", "I went \n{{block}}\n"), [])
+second = S.children(F.blocks()[HOST])[1]
+same("a block split before it: the link goes with its text to the new block", (ls(), ls(second)), ([], [{"to": BOWL, "at": [7, 12]}]))
+S.commit(HOST, d, [])
+same("  joined back: where it was", ls(), [{"to": BOWL, "at": [14, 19]}])
+write(SENT.replace("alley", ""))
+check("its text deleted: the link kept, empty", ls()[0]["at"][0] == ls()[0]["at"][1], ls())
+fresh(); S.link_text(CH, SENT, [14, 19], BOWL)
+record = S.unlink_text(CH, BOWL, [14, 19])
+check("unlinked: the link gone, the text stays", ls() == [] and F.content(CH) == SENT)
+S.restore(record)
+same("  undone: back", ls(), [{"to": BOWL, "at": [14, 19]}])
+new, record = S.link_text(CH, SENT, [26, 31], None, "Lanes")
+same("to a new pericope: one titled so, linked", (F.blocks()[new]["title"], F.blocks()[new].get("entry"), ls()[-1]["to"]), ("Lanes", True, new))
+S.restore(record)
+check("  undone: the link and the pericope gone", new not in F.blocks() and len(ls()) == 1)
+check("only text can be linked; only to a pericope", F.refused(S.link_text, HOST, "", [0, 1], BOWL) and F.refused(S.link_text, CH, SENT, [0, 1], CB))
+record = S.add_links(C2, "next block", [{"to": BOWL, "at": [0, 4]}, {"to": "20261001T100000-ffff", "at": [5, 10]}])
+same("links pasted with their text: kept, but not to a pericope that's gone", ls(C2), [{"to": BOWL, "at": [0, 4]}])
+S.delete_entry(BOWL)
+same("deleting the pericope it points to drops the link", (ls(), ls(C2)), ([], []))
 
-fresh(); t = F.fw("host", rows=20)
-link_alley(t)
-t.key(CTRL_O)
-check("ctrl+o on a link opens the entry it points to", "host ›" in bar(t) and "bowling notes" in t.text(), bar(t))
-t.key(Q)
-check("  ^Q comes back", "host ›" not in bar(t) and "alley↗" in t.text(), bar(t))
-t.key(CTRL_SK); t.settle()
-check("ctrl+shift+k removes the link; the text stays", ls() == [] and B()[CH]["content"] == SENT and "↗" not in t.text(), ls())
-t.key(Z); t.settle()
-same("  ^Z brings it back", ls(), [{"to": BOWL, "at": [14, 19]}])
-t.key(Z); t.settle()
-same("^Z again: the link was never made", ls(), [])
-t.key(Y); t.settle()
-same("  ^Y makes it again", len(ls()), 1)
-t.key(*[SEL] * 0, HOME, *[RIGHT] * 14, *[SEL] * 5, BS); t.settle()
-check("deleting the linked text empties the link (kept)", ls()[0]["at"][0] == ls()[0]["at"][1] and "↗" not in t.text(), ls())
-t.key(Z); t.settle()
-check("  ^Z: the text and the link are back", ls()[0]["at"] == [14, 19] and "alley↗" in t.text(), (ls(), t.text()))
-t.key(Q, ESC); t.done()
-
-fresh(); t = F.fw("host", rows=20)
-link_alley(t, ("Lanes", UP, UP, ENTER))
-new = next(r for r in S.entry_ids(S.load_data()) if r not in (HOST, BOWL))
-check("+ new entry: an entry titled with what you typed, linked", B()[new]["title"] == "Lanes" and ls()[0]["to"] == new, (B()[new], ls()))
-t.key(Q, ESC); t.done()
-S.delete_entry(new)
-same("deleting the entry it points to drops the link", ls(), [])
-
-fresh(); t = F.fw("host", rows=20)
-link_alley(t)
-t.key(Q, ESC); t.done()
-t = F.fw("host", rows=20)
-check("reopened, the link is still drawn", "alley↗" in t.text(), t.text())
-row = next(i for i in range(t.scr.lines) if "alley↗" in t.row(i))
-x = t.row(row).index("↗") + 1
-t.key("\x1b[M" + chr(32) + chr(33 + x) + chr(33 + row) + "\x1b[M" + chr(35) + chr(33 + x) + chr(33 + row), "Q"); t.settle()
-check("a click just past the ↗ lands just after the link", "alley↗Q and" in t.text() and B()[CH]["content"].startswith("I went to the alleyQ"), t.text())
-t.key(Q, ESC); t.done()
-fresh(); t = F.fw("host", rows=20)
-link_alley(t)
-t.key(HOME, *[RIGHT] * 10, ENTER); t.settle()
-second = S.children(B()[HOST])[1]
-check("Enter before a link: the link goes with its text to the new block",
-      ls() == [] and undated(B()[second].get("links")) == [{"to": BOWL, "at": [4, 9]}] and "alley↗" in t.text(), (ls(), B()[second].get("links")))
-t.key(BS); t.settle()
-same("  Backspace joining them back: it's back where it was", ls(), [{"to": BOWL, "at": [14, 19]}])
-t.key(END, ENTER, "more"); t.settle()
-same("  Enter after it leaves it be", ls(), [{"to": BOWL, "at": [14, 19]}])
-t.key(Q, ESC); t.done()
-
-QB = "20261001T100000-b003"
-F.write_store([blk(HOST, [CH, QB, C2], "host"), blk(CH, SENT), blk(QB, {"quote": BOWL}), blk(C2, "next block"),
-               blk(BOWL, [CB], "Bowling"), blk(CB, "bowling notes")], [HOST, BOWL])
-t = F.fw("host", rows=24)
-click = lambda x, y: "\x1b[M" + chr(32) + chr(33 + x) + chr(33 + y) + "\x1b[M" + chr(35) + chr(33 + x) + chr(33 + y)
-t.key(click(6 + 14, 6), *[SEL] * 5, CTRL_K, "bowl", ENTER); t.settle()   # "alley", by a click before it
-t.key(click(8, 9))   # into the quote's text
-check("inside a quote, the entry's own links still show", "Bowling" in bar(t) and "bowling notes" in t.text() and "alley↗" in t.text(),
-      (bar(t), t.text()))
-t.key(Q, ESC); t.done()
-check("no drafts left behind", not [x for x in os.listdir(F.DEV) if x.startswith(".fw-")], os.listdir(F.DEV))
-F.report("LINK")
+# --- backlinks
+T, T1, T2 = "20261001T100000-a000", "20261001T100000-a001", "20261001T100000-a002"
+P1, Q1, P2, Q2, P3, L3, LOOSE = ("20261002T100000-b000", "20261002T100000-b001", "20261003T100000-c000", "20261003T100000-c001",
+                                 "20261004T100000-d000", "20261004T100000-d001", "20261005T100000-e000")
+F.store(blk(T, [T1, T2], "target", entry=True), blk(T1, "first part"), blk(T2, "second part"),
+        blk(P1, [Q1], "plain quoter", entry=True, created="2026-10-02T10:00:00-04:00"), blk(Q1, {"quote": T}, created="2026-10-02T10:00:00-04:00"),
+        blk(P2, [Q2], "masked quoter", entry=True, created="2026-10-03T10:00:00-04:00"), blk(Q2, {"quote": T}, created="2026-10-03T10:00:00-04:00"),
+        blk(P3, [L3], "linker", entry=True), {**blk(L3, "see the target here"), "links": [{"to": T, "at": [8, 14]}]},
+        blk(LOOSE, {"quote": T}), version=9)
+S.mask_quote_to(Q2, T2)
+same("the store at the current schema (links dated since v13)", S.load_data()["schemaVersion"], S.SCHEMA_VERSION)
+found = S.backlinks(F.blocks(), T)
+same("backlinks: each quote of it, masked or not, and the link; oldest first, the undated link first",
+     [(x["kind"], x["home"]) for x in found], [("link", P3), ("quote", P1), ("masked quote", P2)])
+same("  a masked quote of it points at it, not at the block it shows", S.backlinks(F.blocks(), T2), [])
+check("  a quote no entry reaches isn't one", all(x["by"] != LOOSE for x in found))
+same("  summed up", S.backlink_summary(found), "3 · 1 quote, 1 masked quote, 1 link")
+same("  nothing pointing: none", S.backlinks(F.blocks(), P3), [])
+F.report()

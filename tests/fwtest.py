@@ -1,51 +1,34 @@
-"""fwtest — what the suites share: a throwaway store, fw or the editor in a
-pseudo-terminal, waiting on it, and check/report.
+"""fwtest — what the suites share: a throwaway store, blocks to fill it, and checks.
 
     import fwtest as F
-    S = F.use_store("t/store.json")             # fw_store, on a throwaway store
-    F.write_store([F.blk(A, "alpha body", "Alpha")], [A])
-    t = F.editor("t/f.txt", "--meta", "t/f.meta.json")   # or F.fw("garden notes")
-    t.key("hello", F.ENTER)                     # each key sent, then waited on
-    t.settle()                                  # the next idle tick: saved
-    F.check("typed", "hello" in t.text(), t.row(0))
-    y = t.find("hello")                          # a row by its text, not its number
-    F.check("in a box", t.cell(y - 1, 2).data == "┌" and t.lines()[-1] == "hello")
-    t.close(); F.report("MINE")
+    S = F.use_store("quote")                     # fw.store, on t/quote.json (fresh)
+    F.store(F.blk(A, [A1], "alpha", entry=True), F.blk(A1, "words"))
+    F.same("its text", S.own_text(F.blocks(), A), "words")
+    F.report()
 
-Find rows by what they show (`find`, `lines`) rather than by number: then a
-change of layout (a box more, a taller header) only breaks the checks that
-are about the layout.
-
-The programs run with $FW_SYNC, so fw tells us each time it's about to wait
-for a key: how many it has read, how often it has woken idle, and whether
-there's unsaved writing. key() waits until fw has read and drawn each key,
-settle() until it has woken idle once with nothing unsaved (the save as the
-keys stop, or a look at the store), and until() on anything else, with a
-timeout as a backstop. pump() still sleeps a fixed time, for tests of timing
-itself.
+A suite prints one line per check ("ok" or "FAIL") and ends with "<NAME> OK" or "<NAME> FAILURES" (run.sh reads them).
+The code under test is the copy run.sh puts on PYTHONPATH; the store is always under t/, never a real one.
 """
-import fcntl, json, os, pty, re, select, signal, struct, sys, termios, time
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import pyte_fix, pyte
+import copy, json, os, struct, sys, time, zlib
 
-DEV = os.path.abspath("dev")                     # the copy of the code under test
-ED = os.environ.get("FW_EDIT", f"{DEV}/fw_edit.py")
-UP, DOWN, LEFT, RIGHT, HOME, END = "\x1b[A", "\x1b[B", "\x1b[D", "\x1b[C", "\x1b[H", "\x1b[F"
-ESC, BS, DEL, ENTER, TAB, BTAB = "\x1b", "\x7f", "\x1b[3~", "\r", "\t", "\x1b[Z"
-QUIT, SAVE, UNDO, REDO, MENU = "\x11", "\x13", "\x1a", "\x19", "\x1f"
-SYNC = re.compile(rb"\x1b\]777;fw;(\d+);(\d+);(\d);(\d+)\x07")   # keys read, idle wakes, unsaved?, bytes unread
-WAIT = 10   # seconds before a wait gives up (the check after it then fails)
+T = "2026-10-01T10:00:00-04:00"   # when the test blocks were made (and last updated)
+NAME = os.path.basename(sys.argv[0]).removesuffix("_test.py").upper()
 
 # --- check and report
 ok = True
 def check(label, cond, detail=""):
-    global ok; ok &= bool(cond); print(f"{'ok' if cond else 'FAIL':5} {label}" + (f": {detail}" if detail else ""))
+    global ok; ok &= bool(cond); print(f"{'ok' if cond else 'FAIL':5} {label}" + (f": {detail}" if detail and not cond else ""))
 def same(label, got, want):
-    global ok; good = got == want; ok &= good; print(f"{'ok' if good else 'FAIL':5} {label}: {got!r}" + ("" if good else f"  want {want!r}"))
-def report(name): print(f"{name} OK" if ok else f"{name} FAILURES")
+    global ok; good = got == want; ok &= good; print(f"{'ok' if good else 'FAIL':5} {label}" + ("" if good else f": {got!r}  want {want!r}"))
+def report(name=NAME): print(f"{name} OK" if ok else f"{name} FAILURES")
 
-def wait_for(cond, timeout=WAIT):
-    """Poll cond() until it holds (True) or time runs out (False)."""
+def refused(fn, *args, **kw):
+    """The StoreError `fn(*args)` raises, as text; None if it went through."""
+    try: fn(*args, **kw)
+    except S.StoreError as e: return str(e) or "refused"
+    return None
+
+def wait_for(cond, timeout=10):
     end = time.time() + timeout
     while not cond():
         if time.time() >= end: return False
@@ -53,115 +36,72 @@ def wait_for(cond, timeout=WAIT):
     return True
 
 # --- a throwaway store
-def use_store(path="t/store.json", clean=False):
-    """fw_store, reading and writing `path` (it reads $FW_DATA once, on import)."""
-    os.environ["FW_DATA"] = os.path.abspath(path)
-    if clean and os.path.exists(path): os.remove(path)
-    sys.path.insert(0, os.path.dirname(ED)); import fw_store
-    assert str(fw_store.DATA_PATH) == os.environ["FW_DATA"], "use_store before anything imports fw_store"
-    return fw_store
-def blk(i, content, title=None, created="2026-10-01T10:00:00-04:00", words=0):
-    """A block: content is text, a list of child ids, or {"quote": id[, "mask": [...]]}."""
-    return {"id": i, "title": title, "content": content, "words": words, "created": created}
-def write_store(blocks, entries, path=None, version=5):
-    json.dump({"schemaVersion": version, "entries": entries, "blocks": blocks}, open(path or os.environ["FW_DATA"], "w"))
-def write_meta(i, path="t/f.meta.json", fields=()):
-    json.dump({"id": i, "fields": list(fields)}, open(path, "w"))
+S = None
+def use_store(name):
+    """fw.store, on a fresh t/<name>.json (it reads $FW_DATA once, on import)."""
+    global S
+    os.makedirs("t", exist_ok=True)
+    path = os.path.abspath(f"t/{name}.json")
+    for f in (path, path[:-5] + ".loro"):
+        if os.path.exists(f): os.remove(f)
+    os.environ["FW_DATA"] = path
+    from fw import store
+    assert str(store.DATA_PATH) == path, "use_store before anything imports fw.store"
+    S = store
+    return store
 
-# --- a program in a pseudo-terminal
-class Term:
-    """argv in a pty of cols x rows, its screen read with pyte."""
-    def __init__(self, argv, cols=60, rows=12, env=None, ready=True):
-        self.scr = pyte.Screen(cols, rows); self.st = pyte.ByteStream(self.scr)
-        self.sync, self.at_key, self.dead, self.tail = None, (-1, 0), False, b""
-        self.pid, self.fd = pty.fork()
-        if self.pid == 0:
-            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))   # sized before it starts
-            os.environ.update(TERM="xterm-256color", FW_SYNC="1", **(env or {}))
-            os.execvp(argv[0], argv)
-        if ready: self.until(lambda: self.sync)
-    def read(self, secs):
-        """Read what comes within `secs`; False once the program has gone."""
-        if self.dead or not select.select([self.fd], [], [], max(secs, 0))[0]: return not self.dead
-        try: data = os.read(self.fd, 65536)
-        except OSError: data = b""
-        if not data: self.dead = True; return False   # it's gone (macOS: EOF, or EIO)
-        self.st.feed(data)
-        buf = self.tail + data
-        for m in SYNC.finditer(buf): self.sync = tuple(map(int, m.groups()))
-        self.tail = buf[-40:]   # a marker split across two reads
-        return True
-    def pump(self, secs):   # read for a fixed time
-        end = time.time() + secs
-        while self.read(end - time.time()) and time.time() < end: pass
-    def until(self, cond, timeout=WAIT):
-        """Read until cond() holds (True), or the program ends or time runs out."""
-        end = time.time() + timeout
-        while not cond():
-            if not self.read(min(end - time.time(), 0.05)) or time.time() >= end: return bool(cond())
-        return True
-    def key(self, *ks, wait=0):
-        """Send each key, then wait until fw has read it and drawn the result."""
-        for k in ks:
-            if isinstance(k, float): self.pump(k); continue
-            n = self.sync[0] if self.sync else -1
-            os.write(self.fd, k.encode())
-            self.until(lambda: self.sync and self.sync[0] > n and not self.sync[3])
-            if self.sync: self.at_key = self.sync[:2]
-            self.pump(wait)
-    def settle(self, timeout=WAIT):
-        """Wait for the next idle tick that leaves nothing unsaved: the save as
-        the keys stop, or a look at the store (every 0.25 s)."""
-        return self.until(lambda: self.sync and self.sync[1] > self.at_key[1] and not self.sync[2], timeout)
-    def text(self): return "\n".join(l.rstrip() for l in self.scr.display)
-    def row(self, y): return self.scr.display[y].rstrip()
-    def inside(self, y):
-        """Row y's text inside its boxes: no block number, no box sides."""
-        return re.sub(r"^[\d ]*[│┃ ]*", "", self.row(y)).rstrip(" │┃")
-    def lines(self):
-        """The rows that hold text, as their text inside the boxes (a dot
-        before a block with no room for a box left out), top to bottom: what
-        reads on screen, wherever the layout puts it."""
-        return [t for t in (self.inside(y).lstrip("·") for y in range(self.scr.lines - 1)) if t and t[0] not in "┌└┏┗"]
-    def find(self, text, after=-1):
-        """The first row below `after` whose text (as in lines) is `text`, else None."""
-        return next((y for y in range(after + 1, self.scr.lines - 1) if self.inside(y).lstrip("·") == text), None)
-    def cell(self, y, x): return self.scr.buffer[y][x]
-    def cursor(self): return self.scr.cursor.y, self.scr.cursor.x
-    def done(self, timeout=3):
-        """Wait for it to exit; True if it did."""
-        end = time.time() + timeout
-        while time.time() < end:
-            if os.waitpid(self.pid, os.WNOHANG)[0]: self.pid = None; return True
-            self.read(0.01) or time.sleep(0.005)
-        return False
-    def kill(self, sig=signal.SIGKILL):
-        if self.pid:
-            try: os.kill(self.pid, sig)
-            except OSError: pass
-    def close(self, keys=QUIT):
-        """Quit it (killed if that doesn't work)."""
-        if self.pid:
-            self.key(keys)
-            if not self.done(): self.kill(); os.waitpid(self.pid, 0); self.pid = None
-        os.close(self.fd)
+def blk(i, content, title=None, entry=False, **more):
+    """A block: content is text, a list of child ids, or a dict ({"quote": id}, {"image": f}, {"kind": …}, …)."""
+    return {"id": i, "title": title, **({"entry": True} if entry else {}), "content": content, "words": 0,
+            "created": T, "updated": T, **more}
 
-def editor(*args, cols=60, rows=12, env=None):
-    """The editor on a draft file: editor("t/f.txt", "--meta", "t/f.meta.json")."""
-    return Term([os.environ.get("FW_PYTHON", "python3"), ED, *args], cols, rows, env)
-def fw(*args, cols=70, rows=16, env=None, home=f"{DEV}/fw"):
-    """fw's terminal editor (zsh fw term ARGS), on the store in $FW_DATA. (Plain `fw` is the web editor.)"""
-    return Term(["zsh", home, "term", *args], cols, rows, env)
+def store(*blocks, version=17):
+    """The store as just these blocks (written as schema `version`: before 11, a quote's mask is anchors into its
+    target's draft; from 11, spans per block), migrated as fw does on every run."""
+    old = {"entries": [b["id"] for b in blocks if b.get("entry")]} if version < 10 else {}
+    json.dump({"schemaVersion": version, **old, "blocks": list(blocks)}, open(os.environ["FW_DATA"], "w"))
+    for f in (S.LORO_PATH, S.CLIP_PATH):
+        if os.path.exists(f): os.remove(f)
+    S.forget()
+    S.cmd_migrate(None)
 
+def blocks(): return S.index(S.load_data())
+def content(i): return blocks()[i]["content"]
 
-def loro_merge(base: dict, laptop: dict, mini: dict) -> dict:
-    """Block `base` in two machines' documents (fw_loro; the mini's a copy of
-    the laptop's), changed on each to `laptop` and `mini`, then merged: the
-    block as the merged document says it."""
-    import fw_loro as L
-    store = lambda b: {"schemaVersion": 17, "blocks": [b]}
-    a = L.load(None, 1); L.write(a, store(base))
+def kids(i, b=None):
+    """Block i's blocks as what they are: text, ("quote", its target), ("para", text, source), a list for a container."""
+    b = b or blocks()
+    def one(k):
+        x = b[k]
+        if S.quoted(x): return ("quote", S.quoted(x)[0])
+        if S.paraphrases(x): return ("para", S.text_of(x), S.paraphrases(x))
+        return kids(k, b) if S.children(x) else x["content"]
+    return [one(k) for k in S.children(b[i])]
+
+def state():
+    """The store as it matters for undo: the pericopes, and every block's content."""
+    d = S.load_data()
+    return sorted(S.entry_ids(d)), {b["id"]: b["content"] for b in d["blocks"]}
+
+def edit(fn):
+    """One store write, fn(data, blocks) changing it in place."""
+    return S.transact(S.editing(fn))
+
+def png(path=None, w=4, h=4):
+    """A plain grey picture, w × h pixels (written to `path`, if given); its bytes."""
+    chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    data = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"".join(b"\x00" + b"\x80" * w for _ in range(h)))) + chunk(b"IEND", b""))
+    if path: open(path, "wb").write(data)
+    return data
+
+def loro_merge(base: dict, laptop: dict, other: dict) -> dict:
+    """Block `base` in two machines' documents (the other machine's a copy of the laptop's), changed on each to `laptop` and
+    `other`, then merged: the block as the merged document says it."""
+    from fw import loro as L
+    one = lambda b: {"schemaVersion": 17, "blocks": [copy.deepcopy(b)]}
+    a = L.load(None, 1); L.write(a, one(base))
     b = L.load(L.snapshot(a), 2)
-    L.write(a, store(laptop)); L.write(b, store(mini))
+    L.write(a, one(laptop)); L.write(b, one(other))
     L.merge(a, L.snapshot(b))
     return L.to_data(a)["blocks"][0]
