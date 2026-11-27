@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import socketserver
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -118,8 +119,14 @@ class Handler(BaseHTTPRequestHandler):
             active(-1)
 
 
+class Server(ThreadingHTTPServer):
+    def server_bind(self):   # (without HTTPServer's name lookup, which a slow resolver stalls for half a minute)
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def serve(port: int = 0) -> ThreadingHTTPServer:
     """The server on 127.0.0.1:`port` (0: any free one), running in a thread."""
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    httpd = Server(("127.0.0.1", port), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd

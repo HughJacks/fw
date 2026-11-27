@@ -8,11 +8,10 @@ import signal
 import sys
 import threading
 import webbrowser
-from http.server import ThreadingHTTPServer
 
 from fw import store
 from fw.web import current, visits
-from fw.web.server import Handler
+from fw.web.server import Handler, Server
 
 PORT = 8020
 JSON_LATER = 1.0   # s: the store's .json copy written this long after the last save
@@ -39,7 +38,7 @@ def main() -> int:
     store.json_later(JSON_LATER)
     atexit.register(store.flush_json)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # atexit's flush still runs
-    httpd = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+    httpd = Server(("127.0.0.1", a.port), Handler)
     url = f"http://127.0.0.1:{a.port}/"
     print(f"fw web: {url}", file=sys.stderr, flush=True)
     if not a.no_open:
