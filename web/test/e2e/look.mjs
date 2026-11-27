@@ -1,4 +1,4 @@
-import { A, A1, B, N, R, S0, T, T1, T2 } from "./fixture.mjs";
+import { A, A1, B, N, R, S0, T, T1, T2, sleep } from "./fixture.mjs";
 
 export const scenarios = {};
 
@@ -16,6 +16,9 @@ scenarios.spread = async (t) => {   // (motion on: ?motion) the room round the b
   const full = (await t.js(sample))[0], rest = 1.6;   // (the room round the block you're in, all there; .1rem at rest)
   // (recorded in the page, a sample each frame, so a busy machine can't make the test miss the motion)
   await t.js(`window.__rec = []; (function rec() { const s = ${sample}; if (s) window.__rec.push(s); if (window.__rec.length < 400) window.__recFrame = requestAnimationFrame(rec); })(); 1`);
+  // (ProseMirror takes a caret landing on the page's very start within 200 ms of focus for the browser resetting it, and
+  // puts it back: the up below lands there)
+  await sleep(250);
   await t.key("ArrowUp");   // (into the block above: its room eases out, the tab goes up with it)
   await t.until(`(() => { const r = window.__rec.filter((s) => s[5]); return r.length > 2 && r.at(-1)[0] === ${full} && r.at(-1)[1] === r.at(-2)[1] && r.at(-2)[1] === r.at(-3)[1]; })()`, 4000);
   await t.js(`cancelAnimationFrame(window.__recFrame); 1`);
