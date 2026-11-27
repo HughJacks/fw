@@ -100,21 +100,44 @@ export class ExprView {
   deps() {
     return deps([hazel.run(this.node.attrs.source || "", this.node.attrs.id, hereOf(this.parent))], hereOf(this.parent), this.node.attrs.source);
   }
-  /** Its dependency tabs drawn, under its ƒ (TYPE.md's tab rule): as many as fit from there down
-   * to where the next block's own tab sits (at the page's end, as many as there are), the last slot a "+n" for the rest
-   * (a click lists them, titles only). */
+  /** Its right side, one stack of tabs, each its own slot, none overlapping (TYPE.md's tab rule): its ƒ at the top;
+   * the tabs its value draws there (its quotes' ↗, ƒs inside) where they sit, each moved down past the one above if
+   * they'd meet; its dependency tabs in the free slots from under the ƒ down to where the next block's own tab sits (at
+   * the page's end, as many as there are), the last slot a "+n" for the rest (a click lists them, titles only). */
   layoutDeps() {
     const deps = this.deps();
-    const step = 25;   // (px: a tab, its line and the gap: 1.2rem + 2px + .35rem)
-    const stackTop = this.dom.getBoundingClientRect().top + (this.fn.offsetTop || 2) + (this.fn.offsetHeight || 19) + 7;
+    for (const x of this.moved || []) x.style.translate = "";
+    const box = this.dom.getBoundingClientRect(), fn = this.fn.getBoundingClientRect();
+    const h = fn.height + 2, gap = parseFloat(getComputedStyle(this.depsEl).rowGap) || 5;   // (a tab: the ƒ's square, its line 1px outside)
+    const taken = [];   // (the value's tabs, [top, bottom] each, their lines included)
+    this.moved = [];
+    let floor = fn.bottom + 1 + gap;
+    const theirs = [...this.dom.querySelectorAll(".fw-open, .fw-fn")].filter((x) => x !== this.fn && x.getBoundingClientRect().width
+      && x.checkVisibility({ visibilityProperty: true })).map((x) => [x, x.getBoundingClientRect()]).sort((p, q) => p[1].top - q[1].top);
+    for (const [x, r] of theirs) {
+      const by = Math.max(0, floor - (r.top - 1));
+      if (by) { x.style.translate = `0 ${by}px`; this.moved.push(x); }
+      taken.push([r.top - 1 + by, r.bottom + 1 + by]);
+      floor = r.bottom + 1 + by + gap;
+    }
     let next = this.dom.nextElementSibling;
     while (next && !next.matches?.(".fw-text, .fw-container, .fw-quote, .fw-image, .fw-expr")) next = next.nextElementSibling;
-    const limit = next ? next.getBoundingClientRect().top + (this.fn.offsetTop || 2) - 6 : Infinity;
-    const room = Math.max(1, Math.floor((limit - stackTop + 6) / step));
-    const key = `${deps.join(",")}|${Number.isFinite(room) ? room : "all"}|${deps.map((id) => labelOf(id)).join(",")}`;
-    if (key === this.depsKey) return;
-    this.depsKey = key;
-    this.depsEl.replaceChildren(...depTabs(deps, room, this.open));
+    const limit = next ? next.getBoundingClientRect().top + (this.fn.offsetTop || 2) - 4 : Infinity;
+    const slots = [];
+    for (let y = fn.bottom + 1 + gap; slots.length < Math.max(1, deps.length);) {
+      const hit = taken.find(([a, z]) => y < z + gap && y + h + gap > a);
+      if (hit) { y = hit[1] + gap; continue; }
+      if (slots.length && y + h > limit) break;
+      slots.push(y);
+      y += h + gap;
+    }
+    const key = `${deps.join(",")}|${slots.length}|${deps.map((id) => labelOf(id)).join(",")}`;
+    if (key !== this.depsKey) {
+      this.depsKey = key;
+      this.depsEl.replaceChildren(...depTabs(deps, slots.length, this.open));
+    }
+    this.depsEl.style.top = `${slots[0] - box.top - this.dom.clientTop}px`;
+    [...this.depsEl.children].forEach((x, i) => { x.style.marginTop = i ? `${slots[i] - slots[i - 1] - h - gap}px` : ""; });
   }
 
   /** What it shows: its value (a Block value as blocks you can move through, not change), or why it can't yet; its

@@ -478,3 +478,18 @@ scenarios.castmore = async (t) => {   // casting: branches of differing types, t
   await addExpr(t, `"x" ++ Some(3)`);
   t.check("  an Option: what's in it", await t.until(`${lastOut}?.textContent === "x3"`, 4000), await t.js(`${lastOut}?.outerHTML`));
 };
+
+scenarios.tabstack = async (t) => {   // an expression block's right side: one stack, its ƒ, its value's ↗s and its dependencies, none overlapping
+  await t.open(`#/p/${R}`);
+  const ex = `[...document.querySelectorAll(".fw-doc .fw-expr")].at(-1)`;
+  const tabs = `[...${ex}.querySelectorAll(".fw-fn, .fw-dep, .fw-open")].filter((x) => x.getBoundingClientRect().width && x.checkVisibility({ visibilityProperty: true }))
+    .map((x) => { const r = x.getBoundingClientRect(); return [x.className.split(" ")[0], r.left, r.top, r.right, r.bottom]; })`;
+  const meet = `(() => { const ts = ${tabs}; return ts.flatMap((a, i) => ts.slice(i + 1).filter((b) => a[1] < b[3] && b[1] < a[3] && a[2] < b[4] && b[2] < a[4]).map((b) => a[0] + "/" + b[0])); })()`;
+  for (const [what, src, n] of [["ƒ and one ↙", `wordCount(@${T})`, 2], ["ƒ and several ↙", `Blocks([text("one"), text("two"), text("three"), text(@${A}.title ++ @${B}.title ++ @${T}.title)])`, 4],
+    ["ƒ, its value's ↗s and several ↙", `Blocks([body(@${A}), text("two"), body(@${B}), text(@${A}.title ++ @${B}.title ++ @${T}.title)])`, 6]]) {
+    await addExpr(t, src);
+    await t.key("x", 4 | 8);
+    await t.settle();
+    t.check(`${what}: each tab its own slot, none overlapping`, await t.until(`${tabs}.length >= ${n} && !${meet}.length`, 3000), await t.js(`JSON.stringify([${meet}, ${tabs}.map((x) => x.map((v) => (typeof v === "number" ? Math.round(v) : v)))])`));
+  }
+};
