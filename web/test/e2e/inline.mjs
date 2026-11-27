@@ -473,3 +473,22 @@ scenarios.liveexpr.setup = (dir, data) => {
     like(EC, [ECQ], { entry: true, title: "caller" }), like(ECQ, { quote: EP }));
   writeFileSync(join(dir, "freewrites.json"), JSON.stringify(data));
 };
+
+scenarios.backslash = async (t) => {   // a backslash written just before an inline expression: kept a backslash, the expression still one
+  await t.open(`#/p/${B}`);
+  await t.select("beta's words", { collapse: true });
+  await t.type(" ab");
+  await t.type("$");
+  await t.type("1 + 1");
+  await t.type("$");
+  await t.type(" c:\\dir");
+  await t.select(" ab", { collapse: true });
+  await t.type("\\");
+  await t.settle();
+  const b1 = (await t.kids(B))[0].text;
+  t.check("stored with the backslash before it doubled; one elsewhere as written", b1 === "beta's words ab\\\\$1 + 1$ c:\\dir", b1);
+  await t.open(`#/p/${A}`);
+  await t.open(`#/p/${B}`);
+  const line = `document.querySelector(".fw-doc .fw-text")?.innerText`;
+  t.check("  read back: the backslash, then its value", await t.until(`${line}?.replace(/[ƒ$]/g, "") === "beta's words ab\\\\2 c:\\\\dir"`, 4000), await t.js(line));
+};

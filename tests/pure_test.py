@@ -110,4 +110,9 @@ check("an unreadable store: load_data raises StoreError, never exits", raised an
 cli = subprocess.run([sys.executable, "-m", "fw.store", "migrate"], capture_output=True, text=True)
 check("  python -m fw.store migrate on it: says so and stops (exit 1)", cli.returncode == 1 and cli.stderr.startswith("fw: "), (cli.returncode, cli.stderr))
 
+from fw.block.text import inline_codes, unescape
+from fw.block.view import readable
+same("a backslash run before a $: pairs halved, an even run leaves code", (inline_codes("a\\\\$1$ b \\$2"), readable({}, "a\\\\$1$ \\$x c:\\d")),
+     (["1"], "a\\1 $x c:\\d"))
+
 F.report()

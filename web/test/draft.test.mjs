@@ -87,6 +87,18 @@ test("inline expressions: $…$ closed on its line is code; \\$ and a lone $ are
   assert.equal(kinds("$@20261001T100000-a000$"), "[@20261001T100000-a000]");
 });
 
+test("a backslash right before an expression or a dollar sign: kept a backslash, read back so", () => {
+  const code = (t) => ({ type: "text", text: t, marks: [{ type: "icode", attrs: { key: "k" } }] });
+  const plain = (t) => ({ type: "text", text: t });
+  for (const content of [[plain("a\\"), code("$1$")], [plain("a\\\\"), code("$1$"), plain(" \\$ b\\")], [plain("x\\"), plain("$ y")], [plain("c:\\dir")]]) {
+    const stored = storedText({ type: "text_block", content });
+    const back = inline(stored).map((c) => [c.text, !!c.marks?.length]);
+    const want = content.map((c) => [c.text, !!c.marks?.length]).reduce((a, x) => (a.length && !a.at(-1)[1] && !x[1] ? (a.at(-1)[0] += x[0], a) : [...a, [...x]]), []);
+    assert.deepEqual(back, want, stored);
+  }
+  assert.equal(storedText({ type: "text_block", content: [plain("c:\\dir")] }), "c:\\dir");   // (elsewhere, as written)
+});
+
 test("inline expressions round-trip: stored text -> the editor's content -> stored text, links where they were", () => {
   for (const [text, links] of [
     ["the train $wordCount(@x)$ arrives", []],

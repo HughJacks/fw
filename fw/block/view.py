@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from fw.block.case import children, expr_of, image_of, index, kind_of, merge_inner, quote_inner, quote_show, quoted, text_of
-from fw.block.text import EXPR_REF, INLINE_CODE, derive_title
+from fw.block.text import EXPR_REF, INLINE_CODE, derive_title, unescape
 from fw.block.tree import ancestors, flat, fold, subtree
 from fw.draft import BLOCK_RE, IMAGE_RE, QUOTE_RE, block_line, draft_digest, expr_line, image_line, parse_draft, quote_line
 from fw.lens import ELLIPSIS, intersect, view
@@ -22,7 +22,9 @@ def named_refs(blocks: dict, src: str, seen: frozenset = frozenset()) -> str:
 
 def readable(blocks: dict, text: str, seen: frozenset = frozenset()) -> str:
     """A stored text as a title reads it: each inline expression its code, references named; `\\$` a dollar."""
-    return INLINE_CODE.sub(lambda m: named_refs(blocks, m.group(1), seen), text).replace("\\$", "$")
+    parts = INLINE_CODE.split(text)   # (text, pre, code, text, …)
+    return "".join(unescape(parts[i]) if i % 3 == 0 else "\\" * (len(parts[i]) // 2) if i % 3 == 1
+                   else named_refs(blocks, parts[i], seen) for i in range(len(parts)))
 
 
 def own_text(blocks: dict, ref: str, seen: frozenset = frozenset()) -> str:

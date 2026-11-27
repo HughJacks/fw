@@ -10,7 +10,15 @@ _SEP_RE = re.compile(r"^-{2,}")
 _LEAD_MARKUP_RE = re.compile(r"^[#>\-\*\s]+")
 PUNCTUATION = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~" + "–—…“”‘’«»•·")
 EXPR_REF = re.compile(r"@([0-9]{8}T[0-9]{6}-[0-9a-f]{4})")
-INLINE_CODE = re.compile(r"(?<!\\)\$((?:[^$\n\\]|\\.)*?)\$")   # an inline expression in a text: $source$
+# an inline expression in a text: $source$, after an even run of backslashes (each pair one; an odd one makes the $ a
+# dollar sign, the page's draft.units); `pre` that run
+INLINE_CODE = re.compile(r"(?<!\\)(?P<pre>(?:\\\\)*)\$((?:[^$\n\\]|\\.)*?)\$")
+_ESCAPES = re.compile(r"(\\+)\$")
+
+
+def unescape(text: str) -> str:
+    """Stored text outside its inline expressions as read: backslashes before a `$` halved, an odd one gone."""
+    return _ESCAPES.sub(lambda m: "\\" * (len(m.group(1)) // 2) + "$", text)
 
 
 def human_date(dt: datetime) -> str:
@@ -45,7 +53,7 @@ def word_count(content: str) -> int:
 
 def inline_codes(text: str) -> list:
     """The sources of a text's inline expressions (`$…$`; `\\$` a dollar sign), in order."""
-    return [m.group(1) for m in INLINE_CODE.finditer(text or "")]
+    return [m.group(2) for m in INLINE_CODE.finditer(text or "")]
 
 
 def pretty_time(iso: str | None, clock: bool = True) -> str:

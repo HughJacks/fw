@@ -17,12 +17,21 @@ export function newId(now = new Date(), rand = Math.random) {
 
 /** A stored text's units (TYPE.md "Inline": a text is a string with code spliced in): each {k: "char", c, from, to},
  * {k: "code", source, from, to} or {k: "break", from, to}, offsets into the stored text. `$…$` (closed on its line)
- * is an inline expression; `\$` a dollar sign; a `$` with no partner on its line a dollar sign too. */
+ * is an inline expression; a `$` with no partner on its line a dollar sign. Backslashes right before a `$` escape:
+ * each pair one backslash, an odd one left making the `$` a dollar sign (`\$`); backslashes elsewhere are themselves. */
 export function units(text) {
   const out = [];
   for (let i = 0; i < text.length;) {
     const c = text[i];
-    if (c === "\\" && text[i + 1] === "$") { out.push({ k: "char", c: "$", from: i, to: i + 2 }); i += 2; continue; }
+    if (c === "\\") {
+      let k = 0;
+      while (text[i + k] === "\\") k++;
+      if (text[i + k] === "$") {
+        for (let n = 0; n + 1 < k; n += 2) out.push({ k: "char", c: "\\", from: i + n, to: i + n + 2 });
+        if (k % 2) { out.push({ k: "char", c: "$", from: i + k - 1, to: i + k + 1 }); i += k + 1; } else i += k;
+        continue;
+      }
+    }
     if (c === "\n") { out.push({ k: "break", from: i, to: i + 1 }); i += 1; continue; }
     if (c === "$") {
       let j = i + 1;
@@ -64,11 +73,23 @@ let codeKeys = 0;
 /** A key for a new inline expression's mark (two side by side stay two). */
 export const newCodeKey = () => `c${++codeKeys}`;
 
-/** One inline node's stored text: an inline expression (marked code) as written, $source$; a dollar sign elsewhere
- * as \$. */
-const stored = (c) => (c.type === "hard_break" ? "\n"
-  : (c.marks || []).some((m) => m.type === "icode") ? c.text || ""
-  : (c.text || "").replaceAll("$", "\\$"));
+const isCode = (c) => (c?.marks || []).some((m) => m.type === "icode");
+/** Each inline node's stored text (units read it back): an inline expression (marked code) as written, $source$; a
+ * dollar sign elsewhere as \$, the backslashes just before it doubled, and so those just before an expression. */
+function storedAll(content) {
+  let run = 0;   // (backslashes just written, outside code)
+  return content.map((c, n) => {
+    if (c.type === "hard_break") { run = 0; return "\n"; }
+    if (isCode(c)) { run = 0; return c.text || ""; }
+    let out = "";
+    for (const ch of c.text || "") {
+      if (ch === "$") { out += "\\".repeat(run) + "\\$"; run = 0; }
+      else { out += ch; run = ch === "\\" ? run + 1 : 0; }
+    }
+    if (isCode(content[n + 1])) { out += "\\".repeat(run); run = 0; }
+    return out;
+  });
+}
 
 /** One node of the core's tree -> a ProseMirror node (JSON). */
 export function pmNode(node) {
@@ -91,7 +112,7 @@ export function pmDoc(children) {
 
 /** A block of text's text (JSON), as it's stored: its lines, its inline expressions as $source$. */
 export function textOf(node) {
-  return (node.content || []).map(stored).join("");
+  return storedAll(node.content || []).join("");
 }
 
 const within = (ids) => ids.map((c) => " " + c).join("");
@@ -143,8 +164,9 @@ export function snapNode(n) {
 function linksOf(node) {
   const out = [];
   let at = 0;
-  for (const c of node.content || []) {
-    const len = stored(c).length;   // (offsets into the stored text)
+  const texts = storedAll(node.content || []);
+  for (const [n, c] of (node.content || []).entries()) {
+    const len = texts[n].length;   // (offsets into the stored text)
     const to = (c.marks || []).find((m) => m.type === "link")?.attrs.to;
     const last = out[out.length - 1];
     if (to && last && last.to === to && last.at[1] === at) last.at[1] = at + len;

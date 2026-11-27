@@ -446,7 +446,7 @@ scenarios.tuples = async (t) => {   // a mixed tuple: each part its own colour, 
   await t.open(`#/p/${R}`);
   await addExpr(t, `(1, "a", @${T}, @${K}, ?)`);
   const tones = (sel) => `[...(${sel}?.querySelectorAll(".fw-part") || [])].map((x) => [...x.classList].find((c) => c.startsWith("fw-tone-")).slice(8) + ":" + x.textContent).join(" ")`;
-  t.check("a tuple: its parts, each its type's tone (data, text, a Ref red, a tag blue, a hole amber)", await t.until(`${tones(lastOut)} === "data:1 text:a ref:fox tag:poem hole:?"`, 4000), await t.js(tones(lastOut)));
+  t.check("a tuple: its parts, each its type's tone (data, text, a Ref red, a tag blue, a hole amber)", await t.until(`${tones(lastOut)} === 'data:1 text:"a" ref:fox tag:poem hole:?'`, 4000), await t.js(tones(lastOut)));
   t.check("  coloured so: a number green, a tag blue, a hole amber", await t.js(`(() => { const p = [...${lastOut}.querySelectorAll(".fw-part")].map((x) => getComputedStyle(x).color);
     return new Set(p).size >= 4; })()`), await t.js(`[...${lastOut}.querySelectorAll(".fw-part")].map((x) => getComputedStyle(x).color).join(" ")`));
   t.check("  its parts stepped through as a list's items", await t.js(`${lastOut}.querySelectorAll(":scope > .fw-item").length === 5`));
@@ -465,4 +465,16 @@ scenarios.unicode = async (t) => {   // a value's links after text that isn't AS
   await addExpr(t, `Text([Plain("é😀 wörd "), Link(("fox", @${T})), Plain(" ü")])`);
   const link = `${lastOut}?.querySelector(".fw-link")?.textContent`;
   t.check("its link on just its words", await t.until(`${link} === "fox"`, 4000), await t.js(`${lastOut}?.outerHTML`));
+};
+
+scenarios.castmore = async (t) => {   // casting: branches of differing types, tuples and Options where text is wanted
+  await t.open(`#/p/${R}`);
+  await addExpr(t, `if true then 1 else "a"`);
+  t.check("branches of differing types: the number cast to text, no error", await t.until(`${lastOut}?.textContent === "1" && !${lastOut}.matches(".fw-expr-holes")`, 4000), await t.js(`${lastOut}?.outerHTML`));
+  await addExpr(t, `if true then @${T} else text("x")`);
+  t.check("  a Ref and a Block: the Ref's body", await t.until(`!!${lastOut}?.querySelector(".fw-from, .fw-quote")`, 4000), await t.js(`${lastOut}?.outerHTML`));
+  await addExpr(t, `"n: " ++ (1, @${T})`);
+  t.check("  a tuple where text is wanted: its parts' text", await t.until(`${lastOut}?.textContent === "n: (1, fox)"`, 4000), await t.js(`${lastOut}?.outerHTML`));
+  await addExpr(t, `"x" ++ Some(3)`);
+  t.check("  an Option: what's in it", await t.until(`${lastOut}?.textContent === "x3"`, 4000), await t.js(`${lastOut}?.outerHTML`));
 };

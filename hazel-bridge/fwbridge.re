@@ -137,7 +137,7 @@ let parts = (v: Exp.t, ty: Typ.t): option(list(Yojson.Safe.t)) =>
     Some(
       List.map2_exn(l, tys, ~f=(x, t) =>
         `Assoc([
-          ("printed", `String(item_text(x))),
+          ("printed", `String(print(x))),
           ("type", `String(Option.value_map(t, ~default="", ~f=ty_string))),
         ])
       ),
@@ -190,6 +190,25 @@ let desugar = (src: string): string => {
 
 /* Offsets as the page counts them, UTF-16 units, and as OCaml does, bytes of UTF-8: `utf16_length(s)` the units in
    `s`; `byte_of_utf16(s, u)` the byte where unit `u` falls. */
+/* Words as the page stores text (web/src/editor/draft.js units): each `$` as `\$`, the backslashes just before it
+   doubled; with `before_dollar`, the trailing ones too (a `$` comes next). */
+let escape_dollars = (~before_dollar: bool, t: string): string => {
+  let b = Stdlib.Buffer.create(String.length(t) + 4);
+  let run = ref(0);
+  String.iter(t, ~f=c =>
+    if (Char.equal(c, '$')) {
+      Stdlib.Buffer.add_string(b, String.make(run^, '\\') ++ "\\$");
+      run := 0;
+    } else {
+      Stdlib.Buffer.add_char(b, c);
+      run := Char.equal(c, '\\') ? run^ + 1 : 0;
+    }
+  );
+  if (before_dollar) {
+    Stdlib.Buffer.add_string(b, String.make(run^, '\\'));
+  };
+  Stdlib.Buffer.contents(b);
+};
 let utf8_len = (b: int): int => b < 0x80 ? 1 : b < 0xE0 ? 2 : b < 0xF0 ? 3 : 4;
 let utf16_length = (s: string): int => {
   let n = String.length(s);
@@ -421,10 +440,12 @@ type ran = {
    wrapped in an ordinary call (asText, text, body, asBlock), the program checked again. Type-directed and visible
    (each reported); a hole's type is unknown, so it's never cast. */
 let ty_name = (ty: Typ.t): string => named(Typ.pretty_print(ty));
-let cast_for = (syn: Typ.t, ana: Typ.t): option(string) => {
-  let s = ty_name(syn) and a = ty_name(ana);
+let cast_named = (s: string, a: string): option(string) => {
   let listy = String.is_prefix(s, ~prefix="[") && String.is_suffix(s, ~suffix="]");
-  let texty = List.mem(["Int", "Float", "Bool", "Date", "Ref"], s, ~equal=String.equal) || listy;
+  let tuply = String.is_prefix(s, ~prefix="(") && String.is_suffix(s, ~suffix=")");   /* (a tuple: its parts as text) */
+  let texty =
+    List.mem(["Int", "Float", "Bool", "Date", "Ref"], s, ~equal=String.equal)
+    || listy || tuply || String.is_prefix(s, ~prefix="Option(") || String.is_prefix(s, ~prefix="None + Some(");
   switch (a) {
   | "String" when texty => Some("asText")
   | "Block" when String.equal(s, "String") => Some("text")
@@ -433,19 +454,36 @@ let cast_for = (syn: Typ.t, ana: Typ.t): option(string) => {
   | _ => None
   };
 };
+let cast_for = (syn: Typ.t, ana: Typ.t): option(string) => cast_named(ty_name(syn), ty_name(ana));
+/* Branches (or a list's items) of differing types: each cast to what they can all be, a Block if one is, else text;
+   (id, the cast, from, to) for each that isn't that already, or none if one can't be. */
+let meet_casts = (sources: list(Typ.source)): list((Id.t, string, string, string)) => {
+  let names = List.map(sources, ~f=(x: Typ.source) => (x.id, ty_name(x.ty)));
+  if (List.exists(names, ~f=((_, n)) => String.is_substring(n, ~substring="?"))) {
+    [];   /* (a hole's type is unknown: never cast) */
+  } else {
+    let target = List.exists(names, ~f=((_, n)) => String.equal(n, "Block")) ? "Block" : "String";
+    let casts =
+      List.filter_map(names, ~f=((id, n)) =>
+        String.equal(n, target) ? None : Some(Option.map(cast_named(n, target), ~f=c => (id, c, n, target)))
+      );
+    List.for_all(casts, ~f=Option.is_some) ? List.filter_opt(casts) : [];
+  };
+};
 /* The mismatches a cast mends, by the term's id: (id, the cast, from, to). */
 let castable = (info: Statics.Map.t): list((Id.t, string, string, string)) =>
   Id.Map.bindings(info)
-  |> List.filter_map(~f=((_, i)) =>
+  |> List.concat_map(~f=((_, i)) =>
        switch (i) {
        | Info.InfoExp(e) =>
-         List.find_map(e.marks, ~f=
+         List.concat_map(e.marks, ~f=
            fun
            | Mark.ExpectationMismatch({ana, syn}) =>
-             Option.map(cast_for(syn, ana), ~f=c => (Exp.rep_id(e.user_term), c, ty_name(syn), ty_name(ana)))
-           | _ => None
+             Option.to_list(Option.map(cast_for(syn, ana), ~f=c => (Exp.rep_id(e.user_term), c, ty_name(syn), ty_name(ana))))
+           | Mark.NoMeet(_, sources) => meet_casts(sources)
+           | _ => []
          )
-       | _ => None
+       | _ => []
        }
      )
   |> List.dedup_and_sort(~compare=((a, _, _, _), (b, _, _, _)) => Id.compare(a, b));
@@ -455,7 +493,7 @@ let with_casts = (exp: Exp.t) => {
   let rec go = (exp, n, done_) => {
     let (info, elab) = Statics.mk(CoreSettings.on, ctx, exp);
     switch (n > 0 ? castable(info) : []) {
-    | [] => (exp, info, elab, List.rev(done_))
+    | [] => (exp, info, elab, List.dedup_and_sort(done_, ~compare=Poly.compare))   /* (a term and its parentheses: one) */
     | found =>
       let at = Id.Map.of_list(List.map(found, ~f=((id, c, _, _)) => (id, c)));
       let exp =
@@ -646,20 +684,24 @@ let rec tree = (d: Exp.t): Yojson.Safe.t => {
       if (List.exists(~f=Option.is_none, parts)) {
         hole();
       } else {
-        let (text, links, _) =
+        let parts = List.filter_opt(parts);
+        let (text, links, _, _) =
           List.fold(
-            List.filter_opt(parts),
-            ~init=("", [], 0),
-            ~f=((text, links, at), (t, to_)) => {
-              /* (a value's words as the page stores text: a dollar sign \$, never read back as code) */
-              let t = String.substr_replace_all(t, ~pattern="$", ~with_="\\$");
+            parts,
+            ~init=("", [], 0, List.tl(parts) |> Option.value(~default=[])),
+            ~f=((text, links, at, next), (t, to_)) => {
+              /* (a value's words as the page stores text, draft.units: a dollar sign \$, the backslashes just before
+                 it doubled, never read back as code; parts joined, so the next part's start counts) */
+              let next_dollar = switch (next) { | [(w, _), ..._] => String.is_prefix(w, ~prefix="$") | [] => false };
+              let t = escape_dollars(t, ~before_dollar=next_dollar);
+              let next = List.tl(next) |> Option.value(~default=[]);
               let e = at + utf16_length(t);
               let links =
                 switch (to_) {
                 | Some(id) => [`Assoc([("to", `String(id)), ("at", `List([`Int(at), `Int(e)]))]), ...links]
                 | None => links
                 };
-              (text ++ t, links, e);
+              (text ++ t, links, e, next);
             },
           );
         `Assoc([("t", `String("text")), ("text", `String(text)), ("links", `List(List.rev(links)))]);
@@ -863,7 +905,12 @@ let () = {
       | _ =>
         switch (Exp.term_of(d)) {
         | ListLit(l) => String.concat(~sep=", ", List.map(~f=text_of_value, l))
-        | _ => print(d)
+        | Tuple(l) => "(" ++ String.concat(~sep=", ", List.map(~f=text_of_value, l)) ++ ")"
+        | _ =>
+          switch (Unboxing.unbox(SumWithArg("Some"), d)) {   /* (an Option: Some(x) x's text, None nothing) */
+          | Matches(x) => text_of_value(x)
+          | _ => String.equal(print(d), "None") ? "" : print(d)
+          }
         }
       }
     };

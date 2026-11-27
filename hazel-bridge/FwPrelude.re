@@ -279,11 +279,21 @@ let units = (s: string): list((int, int, text_unit)) => {
     } else {
       close(j + 1);
     };
+  /* (a run of backslashes from i: its length if a $ follows it, else 0) */
+  let backslashes_then_dollar = i => {
+    let rec run = j => j < n && Char.equal(s.[j], '\\') ? run(j + 1) : j;
+    let j = run(i);
+    j < n && Char.equal(s.[j], '$') ? j - i : 0;
+  };
   let rec go = (i, acc) =>
     if (i >= n) {
       List.rev(acc);
-    } else if (Char.equal(s.[i], '\\') && i + 1 < n && Char.equal(s.[i + 1], '$')) {
-      go(i + 2, [(i, i + 2, Chr('$')), ...acc]);
+    } else if (Char.equal(s.[i], '\\') && backslashes_then_dollar(i) > 0) {
+      /* (backslashes right before a $: each pair one backslash, an odd one making the $ a dollar sign) */
+      let k = backslashes_then_dollar(i);
+      let rec pairs = (m, acc) => m + 1 < k ? pairs(m + 2, [(i + m, i + m + 2, Chr('\\')), ...acc]) : acc;
+      let acc = pairs(0, acc);
+      k mod 2 == 1 ? go(i + k + 1, [(i + k - 1, i + k + 1, Chr('$')), ...acc]) : go(i + k, acc);
     } else if (Char.equal(s.[i], '$')) {
       switch (close(i + 1)) {
       | Some(j) => go(j + 1, [(i, j + 1, Code(String.sub(s, ~pos=i + 1, ~len=j - i - 1))), ...acc])
